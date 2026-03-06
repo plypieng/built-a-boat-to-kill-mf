@@ -26,6 +26,26 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Approved design doc written to `docs/plans/2026-03-06-godot-coop-ocean-extraction-design.md`.
 - Fallback implementation plan written to `docs/plans/2026-03-06-godot-coop-ocean-extraction-implementation-plan.md` because the `writing-plans` skill is not available in this session.
 
+## 2026-03-06 Milestone 0 Scaffold
+
+- Installed Godot via Homebrew cask. Verified CLI version: `4.6.1.stable.official.14d19694e`.
+- Added initial Godot project scaffold:
+  - `project.godot`
+  - autoloads for runtime config and networking
+  - boot router, client boot scene, and headless server boot scene
+  - placeholder run client/server scenes
+  - helper scripts `tools/run_client.sh` and `tools/run_server.sh`
+  - root `README.md` and `.gitignore`
+- Verified:
+  - `bash -n` passes for helper scripts
+  - direct headless Godot boot succeeds with `godot --headless --path . --quit-after 2 -- --server --port=7000 --seed=424242`
+  - wrapper server launch succeeds with `./tools/run_server.sh --port=7001 --seed=777`
+  - a non-headless client launch starts the project without immediate parse errors
+- Not yet verified interactively:
+  - clicking through the client UI and joining a running server
+  - scene-to-scene transition from client boot into the placeholder run scene after connect
+  - full peer roster sync with multiple real clients
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.
@@ -35,6 +55,8 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Finish the Godot architecture design sections for progression, persistence, anti-cheat boundaries, and testing.
 - Convert the approved design into a concrete implementation plan and milestone breakdown.
 - Start Milestone 0 by scaffolding the Godot project, local client/server boot flow, and authoritative shared boat prototype.
+- Run an interactive local client/server test in the Godot app and fix any UI or networking issues found there.
+- Start Milestone 1 with a replicated shared boat movement prototype once the client connect flow is confirmed.
 
 ## Suggestions For Next Agent
 

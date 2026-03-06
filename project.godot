@@ -1,0 +1,24 @@
+; Engine configuration file.
+; Prefer editing this in the Godot editor once the project opens cleanly.
+
+config_version=5
+
+[application]
+config/name="BuiltaBoat"
+config/features=PackedStringArray("4.6")
+run/main_scene="res://scenes/boot/router.tscn"
+boot_splash/show_image=false
+
+[autoload]
+GameConfig="*res://autoload/game_config.gd"
+NetworkRuntime="*res://autoload/network_runtime.gd"
+
+[display]
+window/size/viewport_width=1600
+window/size/viewport_height=900
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+renderer/rendering_method="forward_plus"
+
