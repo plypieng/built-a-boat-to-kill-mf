@@ -34,6 +34,12 @@ Optional client overrides:
 ./tools/run_client.sh --host=127.0.0.1 --port=7000 --name=Captain
 ```
 
+Headless smoke-test client:
+
+```bash
+godot --headless --path . --quit-after 300 -- --host=127.0.0.1 --port=7000 --name=Verifier --autoconnect --quit-after-connect-ms=1000
+```
+
 ## Notes
 
 - The current client scene is intentionally a placeholder ocean view that proves the connection/bootstrap flow.

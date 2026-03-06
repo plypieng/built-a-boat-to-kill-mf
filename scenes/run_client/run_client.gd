@@ -10,6 +10,8 @@ func _ready() -> void:
 	_build_world()
 	_build_hud()
 	_refresh_hud()
+	_schedule_optional_quit()
+	print("Run client ready with seed %d and peer id %d." % [NetworkRuntime.run_seed, multiplayer.get_unique_id()])
 
 	NetworkRuntime.status_changed.connect(_on_status_changed)
 	NetworkRuntime.peer_snapshot_changed.connect(_on_peer_snapshot_changed)
@@ -68,8 +70,8 @@ func _build_world() -> void:
 
 	var camera := Camera3D.new()
 	camera.position = Vector3(0.0, 5.5, 10.5)
-	camera.look_at(Vector3(0.0, 0.6, 0.0), Vector3.UP)
 	add_child(camera)
+	camera.look_at(Vector3(0.0, 0.6, 0.0), Vector3.UP)
 
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
@@ -118,13 +120,13 @@ func _build_hud() -> void:
 
 func _refresh_hud() -> void:
 	run_label.text = "Mode: %s | Run Seed: %d | Peer ID: %d" % [
-		NetworkRuntime._mode_name(),
+		NetworkRuntime.get_mode_name(),
 		NetworkRuntime.run_seed,
 		multiplayer.get_unique_id(),
 	]
 	status_label.text = "Status: %s" % NetworkRuntime.status_message
 
-	var peer_ids := NetworkRuntime.peer_snapshot.keys()
+	var peer_ids: Array = NetworkRuntime.peer_snapshot.keys()
 	peer_ids.sort()
 	var lines := PackedStringArray()
 	for peer_id in peer_ids:
@@ -145,3 +147,20 @@ func _on_peer_snapshot_changed(_snapshot: Dictionary) -> void:
 func _on_run_seed_changed(_seed: int) -> void:
 	_refresh_hud()
 
+func _schedule_optional_quit() -> void:
+	var overrides := GameConfig.parse_cmdline_overrides()
+	var quit_after_connect_ms := int(overrides.get("quit_after_connect_ms", 0))
+	if quit_after_connect_ms <= 0:
+		return
+
+	var timer := Timer.new()
+	timer.one_shot = true
+	timer.wait_time = float(quit_after_connect_ms) / 1000.0
+	timer.timeout.connect(_quit_after_connect_timer)
+	add_child(timer)
+	timer.start()
+	print("Client auto-quit armed for %d ms after connect." % quit_after_connect_ms)
+
+func _quit_after_connect_timer() -> void:
+	print("Client auto-quit triggered.")
+	get_tree().quit()

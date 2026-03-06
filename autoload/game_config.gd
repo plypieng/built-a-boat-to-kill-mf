@@ -9,8 +9,6 @@ const DEFAULT_RUN_SEED := 424242
 func is_server_mode() -> bool:
 	if OS.has_feature("dedicated_server"):
 		return true
-	if DisplayServer.get_name() == "headless":
-		return true
 	return "--server" in OS.get_cmdline_user_args()
 
 func parse_cmdline_overrides() -> Dictionary:
@@ -19,6 +17,8 @@ func parse_cmdline_overrides() -> Dictionary:
 		"port": DEFAULT_PORT,
 		"player_name": DEFAULT_PLAYER_NAME,
 		"seed": DEFAULT_RUN_SEED,
+		"autoconnect": false,
+		"quit_after_connect_ms": 0,
 	}
 
 	for arg in OS.get_cmdline_user_args():
@@ -30,6 +30,9 @@ func parse_cmdline_overrides() -> Dictionary:
 			overrides["player_name"] = arg.trim_prefix("--name=").strip_edges()
 		elif arg.begins_with("--seed="):
 			overrides["seed"] = arg.trim_prefix("--seed=").to_int()
+		elif arg == "--autoconnect":
+			overrides["autoconnect"] = true
+		elif arg.begins_with("--quit-after-connect-ms="):
+			overrides["quit_after_connect_ms"] = max(0, arg.trim_prefix("--quit-after-connect-ms=").to_int())
 
 	return overrides
-

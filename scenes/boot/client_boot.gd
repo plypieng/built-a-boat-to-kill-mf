@@ -7,6 +7,7 @@ var port_input: LineEdit
 var name_input: LineEdit
 var connect_button: Button
 var status_label: Label
+var launch_overrides: Dictionary
 
 func _ready() -> void:
 	_build_ui()
@@ -16,6 +17,9 @@ func _ready() -> void:
 	NetworkRuntime.connection_ready.connect(_on_connection_ready)
 	NetworkRuntime.client_connect_failed.connect(_on_connect_interrupted)
 	NetworkRuntime.client_disconnected.connect(_on_connect_interrupted)
+
+	if bool(launch_overrides.get("autoconnect", false)):
+		call_deferred("_on_connect_pressed")
 
 func _build_ui() -> void:
 	var background := ColorRect.new()
@@ -88,10 +92,10 @@ func _build_ui() -> void:
 	layout.add_child(status_label)
 
 func _populate_defaults() -> void:
-	var overrides := GameConfig.parse_cmdline_overrides()
-	host_input.text = str(overrides["host"])
-	port_input.text = str(overrides["port"])
-	name_input.text = str(overrides["player_name"])
+	launch_overrides = GameConfig.parse_cmdline_overrides()
+	host_input.text = str(launch_overrides["host"])
+	port_input.text = str(launch_overrides["port"])
+	name_input.text = str(launch_overrides["player_name"])
 	status_label.text = "Ready to connect."
 
 func _make_field_label(text: String) -> Label:
@@ -102,7 +106,7 @@ func _make_field_label(text: String) -> Label:
 
 func _on_connect_pressed() -> void:
 	var host := host_input.text.strip_edges()
-	var port := max(1, port_input.text.to_int())
+	var port: int = max(1, port_input.text.to_int())
 	var player_name := name_input.text.strip_edges()
 
 	connect_button.disabled = true
@@ -118,4 +122,3 @@ func _on_connection_ready() -> void:
 
 func _on_connect_interrupted() -> void:
 	connect_button.disabled = false
-

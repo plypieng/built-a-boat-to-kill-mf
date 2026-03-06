@@ -122,7 +122,6 @@ func _on_peer_connected(peer_id: int) -> void:
 		"name": "Crewmate %d" % peer_id,
 		"status": "connecting",
 	}
-	_send_bootstrap(peer_id)
 	_broadcast_peer_snapshot()
 	_set_status("Peer %d connected." % peer_id)
 
@@ -144,6 +143,9 @@ func _on_connection_failed() -> void:
 func _on_server_disconnected() -> void:
 	_set_status("Server disconnected.")
 	emit_signal("client_disconnected")
+
+func get_mode_name() -> String:
+	return _mode_name()
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_register_player(player_name: String) -> void:
@@ -169,4 +171,3 @@ func client_receive_bootstrap(seed: int, server_port: int, max_players: int) -> 
 func client_receive_peer_snapshot(snapshot: Dictionary) -> void:
 	peer_snapshot = snapshot.duplicate(true)
 	_emit_peer_snapshot()
-

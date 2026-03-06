@@ -46,6 +46,21 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - scene-to-scene transition from client boot into the placeholder run scene after connect
   - full peer roster sync with multiple real clients
 
+## 2026-03-06 Connect Flow Validation
+
+- Adjusted launch mode detection so headless execution does not automatically force server mode.
+- Added CLI test flags:
+  - `--autoconnect`
+  - `--quit-after-connect-ms=<n>`
+- Fixed a client parse error caused by Variant inference in `client_boot.gd`.
+- Fixed a placeholder run-scene camera error by moving the `look_at()` call after the camera enters the tree.
+- Removed a duplicate bootstrap RPC so the client only receives one run-seed bootstrap on join.
+- Verified end-to-end automated handshake:
+  - server launched with `./tools/run_server.sh --port=7002 --seed=999`
+  - headless client joined with `godot --headless --path . --quit-after 300 -- --host=127.0.0.1 --port=7002 --name=Verifier --autoconnect --quit-after-connect-ms=1000`
+  - server log showed connect, register, heartbeat with 2 peers, disconnect, and return to 1 peer
+  - client log showed connect, run bootstrap, run scene load, and auto-quit
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.
