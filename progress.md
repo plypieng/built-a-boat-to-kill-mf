@@ -24,6 +24,7 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - bounded seeded ocean instances made of connected regions instead of a giant seamless world
   - co-op role design based on stations/actions such as helm, brace, grapple, repair, and navigation
 - Approved design doc written to `docs/plans/2026-03-06-godot-coop-ocean-extraction-design.md`.
+- Fallback implementation plan written to `docs/plans/2026-03-06-godot-coop-ocean-extraction-implementation-plan.md` because the `writing-plans` skill is not available in this session.
 
 ## TODOs
 
@@ -33,6 +34,7 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Decide how much of the modular boat fantasy must exist in phase 1 versus later phases.
 - Finish the Godot architecture design sections for progression, persistence, anti-cheat boundaries, and testing.
 - Convert the approved design into a concrete implementation plan and milestone breakdown.
+- Start Milestone 0 by scaffolding the Godot project, local client/server boot flow, and authoritative shared boat prototype.
 
 ## Suggestions For Next Agent
 
