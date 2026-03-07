@@ -83,6 +83,22 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - server log showed helm claim, movement, drift-down after input stopped, disconnect, and stable post-disconnect state
   - client log reported final replicated boat position and heading before auto-quit
 
+## 2026-03-07 Crew And Brace Expansion
+
+- Added visible placeholder crew members on the shared boat, with the active driver highlighted.
+- Added replicated hazard state and floating hazard markers on the client.
+- Added server-authoritative brace handling with collision mitigation, hull integrity tracking, and collision count.
+- Added headless auto-brace support via CLI flags for repeatable hazard tests.
+- Fixed broadcast behavior so disconnects do not trigger ENet send errors when multiple clients are connected.
+- Verified hazard mitigation comparison:
+  - unbraced run on port `7021` ended at `82.0` hull integrity after one impact
+  - braced run on port `7022` ended at `93.0` hull integrity after one impact
+- Verified two-client crew sync smoke test on port `7024`:
+  - `DriverBot` claimed helm and drove
+  - `Deckhand` stayed connected as a second crew member
+  - both clients ended with matching replicated boat state
+  - server handled both disconnects without network send errors
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.

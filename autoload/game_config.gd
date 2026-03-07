@@ -22,6 +22,8 @@ func parse_cmdline_overrides() -> Dictionary:
 		"autodrive_ms": 0,
 		"autodrive_throttle": 1.0,
 		"autodrive_steer": 0.0,
+		"autobrace": false,
+		"autobrace_distance": 7.5,
 	}
 
 	for arg in OS.get_cmdline_user_args():
@@ -43,5 +45,9 @@ func parse_cmdline_overrides() -> Dictionary:
 			overrides["autodrive_throttle"] = clampf(arg.trim_prefix("--autodrive-throttle=").to_float(), -1.0, 1.0)
 		elif arg.begins_with("--autodrive-steer="):
 			overrides["autodrive_steer"] = clampf(arg.trim_prefix("--autodrive-steer=").to_float(), -1.0, 1.0)
+		elif arg == "--autobrace":
+			overrides["autobrace"] = true
+		elif arg.begins_with("--autobrace-distance="):
+			overrides["autobrace_distance"] = maxf(1.0, arg.trim_prefix("--autobrace-distance=").to_float())
 
 	return overrides

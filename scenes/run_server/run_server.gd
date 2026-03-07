@@ -23,12 +23,17 @@ func _on_heartbeat_timeout() -> void:
 		NetworkRuntime.peer_snapshot.size(),
 		NetworkRuntime.run_seed,
 	])
-	print("Boat: driver=%s pos=%s speed=%.2f throttle=%.2f steer=%.2f" % [
+	print("Boat: driver=%s pos=%s speed=%.2f throttle=%.2f steer=%.2f hp=%.1f brace=%.2f cooldown=%.2f collisions=%d hazards=%d" % [
 		NetworkRuntime.get_driver_name(),
 		str(boat_position),
 		float(NetworkRuntime.boat_state.get("speed", 0.0)),
 		float(NetworkRuntime.boat_state.get("throttle", 0.0)),
 		float(NetworkRuntime.boat_state.get("steer", 0.0)),
+		float(NetworkRuntime.boat_state.get("hull_integrity", 100.0)),
+		float(NetworkRuntime.boat_state.get("brace_timer", 0.0)),
+		float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0)),
+		int(NetworkRuntime.boat_state.get("collision_count", 0)),
+		NetworkRuntime.hazard_state.size(),
 	])
 
 func _on_peer_snapshot_changed(snapshot: Dictionary) -> void:

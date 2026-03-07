@@ -20,6 +20,8 @@ Milestone 1 prototype adds:
 - explicit helm claiming
 - replicated boat transform, heading, speed, and driver state
 - local keyboard controls plus headless autodrive flags for smoke tests
+- on-deck crew placeholder visuals with helm highlighting
+- replicated hazard props and a server-authoritative brace/collision loop
 
 ## Local Run
 
@@ -53,8 +55,22 @@ Headless movement smoke test:
 godot --headless --path . --quit-after 400 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autodrive-ms=1800 --autodrive-throttle=1.0 --autodrive-steer=0.2 --quit-after-connect-ms=2600
 ```
 
+Headless brace comparison:
+
+```bash
+godot --headless --path . --quit-after 400 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autodrive-ms=1800 --autodrive-throttle=1.0 --autodrive-steer=0.0 --autobrace --autobrace-distance=8.0 --quit-after-connect-ms=2600
+```
+
+Two-client crew sync smoke test:
+
+```bash
+godot --headless --path . --quit-after 450 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autodrive-ms=1600 --autodrive-throttle=1.0 --autodrive-steer=0.15 --autobrace --autobrace-distance=8.0 --quit-after-connect-ms=2600
+godot --headless --path . --quit-after 450 -- --host=127.0.0.1 --port=7000 --name=Deckhand --autoconnect --quit-after-connect-ms=2600
+```
+
 ## Notes
 
 - The current client scene renders a simple ocean and replicated shared-boat placeholder.
-- The current server scene logs heartbeat, roster, helm ownership, and boat state.
+- The current client scene also renders placeholder crew members and floating hazard markers.
+- The current server scene logs heartbeat, roster, helm ownership, hull state, brace windows, and hazard count.
 - Manual desktop testing still matters for feel and control tuning even though the headless handshake and movement loop are now scriptable.
