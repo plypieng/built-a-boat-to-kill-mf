@@ -275,6 +275,16 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - server transitioned back to `phase=hangar`
   - no more null-`multiplayer` script errors after the teardown fix
 
+## 2026-03-08 Runtime Block Damage Design
+
+- Approved the next milestone to make the built boat materially matter during the run.
+- Approved design decisions:
+  - disconnected launch chunks sink immediately
+  - impact damage hits a small local block cluster
+  - detached chunks remove their gameplay contribution immediately
+- Wrote the milestone design doc to `docs/plans/2026-03-08-runtime-block-damage-design.md`.
+- Wrote the fallback implementation plan to `docs/plans/2026-03-08-runtime-block-damage-implementation-plan.md`.
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.
