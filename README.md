@@ -47,6 +47,14 @@ Milestone 4 prototype adds:
 - a limited patch-kit repair economy instead of infinite free repairs
 - an optional resupply cache encounter that grants a bonus reward package and one extra patch kit
 
+Milestone A shared builder foundation adds:
+
+- a shared authoritative team boat blueprint on the dedicated server
+- a live co-op 3D hangar builder with true 3D grid placement, remove, and 90-degree rotation
+- permissive disconnected builds plus seaworthiness warnings before launch
+- derived boat stats from the built boat, including hull strength, top speed, cargo capacity, and repair kits
+- hangar-to-run scene routing so the current extraction loop launches from the shared builder instead of a post-run dock stub
+
 ## Local Run
 
 Start the local dedicated server:
@@ -60,6 +68,8 @@ Start a client:
 ```bash
 ./tools/run_client.sh
 ```
+
+The client now lands in the shared hangar builder after connecting. Build the crew boat there, then press `Launch Run`.
 
 Optional client overrides:
 
@@ -92,22 +102,41 @@ godot --headless --path . --quit-after 450 -- --host=127.0.0.1 --port=7000 --nam
 godot --headless --path . --quit-after 450 -- --host=127.0.0.1 --port=7000 --name=Deckhand --autoconnect --quit-after-connect-ms=2600
 ```
 
+Headless shared-builder smoke test:
+
+```bash
+godot --headless --path . --quit-after 260 -- --host=127.0.0.1 --port=7000 --name=BuilderA --autoconnect --autobuild-role=builder_a --quit-after-connect-ms=2600
+```
+
+Two-client live co-build smoke test:
+
+```bash
+godot --headless --path . --quit-after 260 -- --host=127.0.0.1 --port=7000 --name=BuilderA --autoconnect --autobuild-role=builder_a --quit-after-connect-ms=2600
+godot --headless --path . --quit-after 260 -- --host=127.0.0.1 --port=7000 --name=BuilderB --autoconnect --autobuild-role=builder_b --quit-after-connect-ms=2600
+```
+
+Headless hangar-to-run handoff smoke test:
+
+```bash
+godot --headless --path . --quit-after 360 -- --host=127.0.0.1 --port=7000 --name=LaunchBot --autoconnect --autobuild-role=builder_launch --quit-after-connect-ms=3200
+```
+
 Headless first-run-loop success demo:
 
 ```bash
-godot --headless --path . --quit-after 1600 -- --host=127.0.0.1 --port=7000 --name=DemoCaptain --autoconnect --autorun-demo --quit-after-connect-ms=12000
+godot --headless --path . --quit-after 1600 -- --host=127.0.0.1 --port=7000 --name=DemoCaptain --autoconnect --autobuild-role=builder_launch --autorun-demo --quit-after-connect-ms=12000
 ```
 
 Headless failure-path crash test:
 
 ```bash
-godot --headless --path . --quit-after 3000 -- --host=127.0.0.1 --port=7000 --name=CrashBot --autoconnect --autoclaim-station=helm --autodrive-ms=22000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=23000
+godot --headless --path . --quit-after 3000 -- --host=127.0.0.1 --port=7000 --name=CrashBot --autoconnect --autobuild-role=builder_launch --autoclaim-station=helm --autodrive-ms=22000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=23000
 ```
 
 Three-client co-op salvage smoke test:
 
 ```bash
-godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autorun-role=driver --quit-after-connect-ms=17000
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autobuild-role=builder_launch --autorun-role=driver --quit-after-connect-ms=17000
 godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=GrapplerBot --autoconnect --autorun-role=grapple --quit-after-connect-ms=17000
 godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autorun-role=brace --quit-after-connect-ms=17000
 ```
@@ -115,14 +144,14 @@ godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --na
 Two-client repair-pressure soak test:
 
 ```bash
-godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=CrashBot --autoconnect --autoclaim-station=helm --autodrive-ms=20000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=21000
+godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=CrashBot --autoconnect --autobuild-role=builder_launch --autoclaim-station=helm --autodrive-ms=20000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=21000
 godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=RepairBot --autoconnect --autorun-role=repair --quit-after-connect-ms=21000
 ```
 
 Four-client coordinated clean extraction smoke test:
 
 ```bash
-godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autorun-role=driver --quit-after-connect-ms=20000
+godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autobuild-role=builder_launch --autorun-role=driver --quit-after-connect-ms=20000
 godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=GrapplerBot --autoconnect --autorun-role=grapple --quit-after-connect-ms=20000
 godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autorun-role=brace --quit-after-connect-ms=20000
 godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=RepairBot --autoconnect --autorun-role=repair --quit-after-connect-ms=20000
@@ -131,7 +160,7 @@ godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --na
 Headless dock handoff check:
 
 ```bash
-godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --name=DockVerifier --autoconnect --autorun-demo --autocontinue-to-dock
+godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --name=DockVerifier --autoconnect --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock
 ```
 
 ## Notes
@@ -142,5 +171,7 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 - The current autorun route and hazard layout now support a clean four-role extraction pass with no damage when the crew coordinates correctly.
 - The current run result now banks local gold and salvage into the dock scene after extraction or failure.
 - Repairs are limited by shared patch kits, and the resupply cache can top the team back up once per run while adding bonus rewards.
+- The current connect flow now lands in a shared 3D hangar builder where the crew can edit one live blueprint together before launching.
+- The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.
 - The current server scene logs heartbeat, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
 - Manual desktop testing still matters for feel and control tuning even though the headless handshake and movement loop are now scriptable.

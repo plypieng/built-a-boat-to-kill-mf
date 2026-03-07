@@ -26,6 +26,7 @@ func parse_cmdline_overrides() -> Dictionary:
 		"autobrace_distance": 7.5,
 		"autorun_demo": false,
 		"autorun_role": "",
+		"autobuild_role": "",
 		"autoclaim_station": "",
 		"autocontinue_to_dock": false,
 	}
@@ -57,6 +58,8 @@ func parse_cmdline_overrides() -> Dictionary:
 			overrides["autorun_demo"] = true
 		elif arg.begins_with("--autorun-role="):
 			overrides["autorun_role"] = arg.trim_prefix("--autorun-role=").strip_edges().to_lower()
+		elif arg.begins_with("--autobuild-role="):
+			overrides["autobuild_role"] = arg.trim_prefix("--autobuild-role=").strip_edges().to_lower()
 		elif arg.begins_with("--autoclaim-station="):
 			overrides["autoclaim_station"] = arg.trim_prefix("--autoclaim-station=").strip_edges().to_lower()
 		elif arg == "--autocontinue-to-dock":

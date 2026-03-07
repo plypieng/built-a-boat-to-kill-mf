@@ -221,6 +221,60 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Wrote the milestone design doc to `docs/plans/2026-03-08-live-coop-3d-boat-builder-design.md`.
 - Wrote a direct implementation-plan fallback to `docs/plans/2026-03-08-live-coop-3d-boat-builder-implementation-plan.md` because the `writing-plans` skill is still not available in this session.
 
+## 2026-03-08 Milestone A Shared Builder Foundation
+
+- Replaced the old post-run dock stub with a networked 3D hangar scene that clients enter immediately after connecting.
+- Added an authoritative shared blueprint model to `NetworkRuntime`, including:
+  - session phase routing between `hangar` and `run`
+  - replicated live boat blueprint snapshots
+  - authoritative place/remove/launch/return RPCs
+  - derived boat stats and launch warnings from the main connected chunk
+- Added shared blueprint persistence via `DockState` so the local dedicated server carries the team boat forward between sessions.
+- Added the first true 3D co-op builder controls in the hangar:
+  - arrow keys for X/Z cursor movement
+  - `PageUp` / `PageDown` for height
+  - `Q` / `E` to cycle block types
+  - `R` to rotate
+  - `F` to place
+  - `X` to remove
+  - `Enter` to launch
+- Added the first block set:
+  - `core`
+  - `hull`
+  - `engine`
+  - `cargo`
+  - `utility`
+  - `structure`
+- Hooked the current extraction loop back up so launching from the hangar snapshots the current build and derives:
+  - max hull integrity
+  - top speed
+  - cargo capacity
+  - repair kit count
+  - brace multiplier
+- Added headless builder smoke-test roles:
+  - `builder_a`
+  - `builder_b`
+  - `builder_demo`
+  - `builder_launch`
+- Fixed a teardown bug found in full-loop validation where late run-scene callbacks could fire during the hangar transition and access a null local `multiplayer`.
+- Verified builder-only smoke on port `7072`:
+  - one client connected into the hangar
+  - `builder_a` produced blueprint versions `2 -> 4`
+  - server ended at `blueprintVersion=4`, `blocks=8`, `loose=0`
+- Verified two-client live co-build on port `7073`:
+  - `BuilderA` and `BuilderB` joined the same hangar
+  - `BuilderB` edits advanced the shared blueprint to `version=7`, `blocks=11`
+  - both clients received the replicated blueprint updates live
+- Verified hangar-to-run handoff on port `7074`:
+  - `builder_launch` launched the run from the hangar
+  - client log reached `Run client ready...`
+  - server log switched from `phase=hangar` to `phase=run`
+- Verified full hangar -> run -> hangar loop on port `7076`:
+  - `builder_launch + autorun-demo + autocontinue-to-dock`
+  - run ended `phase=success`
+  - server transitioned back to `phase=hangar`
+  - no more null-`multiplayer` script errors after the teardown fix
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.

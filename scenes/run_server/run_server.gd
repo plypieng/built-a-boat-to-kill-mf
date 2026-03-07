@@ -5,6 +5,8 @@ var last_run_summary := ""
 
 func _ready() -> void:
 	print("Run server ready with seed %d on port %d." % [NetworkRuntime.run_seed, NetworkRuntime.current_port])
+	NetworkRuntime.session_phase_changed.connect(_on_session_phase_changed)
+	NetworkRuntime.boat_blueprint_changed.connect(_on_boat_blueprint_changed)
 	NetworkRuntime.peer_snapshot_changed.connect(_on_peer_snapshot_changed)
 	NetworkRuntime.helm_changed.connect(_on_helm_changed)
 	NetworkRuntime.station_state_changed.connect(_on_station_state_changed)
@@ -33,6 +35,12 @@ func _on_heartbeat_timeout() -> void:
 		NetworkRuntime.peer_snapshot.size(),
 		NetworkRuntime.run_seed,
 	])
+	print("Session: phase=%s blueprintVersion=%d blocks=%d loose=%d" % [
+		NetworkRuntime.get_session_phase(),
+		int(NetworkRuntime.boat_blueprint.get("version", 1)),
+		int(NetworkRuntime.get_blueprint_stats().get("block_count", 0)),
+		int(NetworkRuntime.get_blueprint_stats().get("loose_blocks", 0)),
+	])
 	print("Boat: driver=%s pos=%s speed=%.2f/%.2f throttle=%.2f steer=%.2f hp=%.1f breaches=%d brace=%.2f repairCd=%.2f collisions=%d hazards=%d" % [
 		NetworkRuntime.get_driver_name(),
 		str(boat_position),
@@ -60,6 +68,17 @@ func _on_heartbeat_timeout() -> void:
 
 func _on_peer_snapshot_changed(snapshot: Dictionary) -> void:
 	print("Peer snapshot updated: %s" % [snapshot])
+
+func _on_session_phase_changed(phase: String) -> void:
+	print("Session phase changed: %s" % phase)
+
+func _on_boat_blueprint_changed(_snapshot: Dictionary) -> void:
+	print("Blueprint changed: version=%d blocks=%d loose=%d warnings=%s" % [
+		int(NetworkRuntime.boat_blueprint.get("version", 1)),
+		int(NetworkRuntime.get_blueprint_stats().get("block_count", 0)),
+		int(NetworkRuntime.get_blueprint_stats().get("loose_blocks", 0)),
+		str(NetworkRuntime.get_blueprint_warnings()),
+	])
 
 func _on_helm_changed(driver_peer_id: int) -> void:
 	print("Helm changed: peer=%d name=%s" % [driver_peer_id, NetworkRuntime.get_driver_name()])

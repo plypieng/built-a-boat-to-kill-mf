@@ -1,5 +1,6 @@
 extends Control
 
+const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 
 var host_input: LineEdit
@@ -53,7 +54,7 @@ func _build_ui() -> void:
 	layout.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "Milestone 0 client bootstrap for the local dedicated server flow."
+	subtitle.text = "Connect to the shared hangar, co-build the crew boat, and launch into the extraction run."
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	layout.add_child(subtitle)
@@ -118,7 +119,8 @@ func _on_status_changed(message: String) -> void:
 	status_label.text = message
 
 func _on_connection_ready() -> void:
-	get_tree().change_scene_to_file(RUN_CLIENT_SCENE)
+	var target_scene := HANGAR_SCENE if NetworkRuntime.get_session_phase() == NetworkRuntime.SESSION_PHASE_HANGAR else RUN_CLIENT_SCENE
+	get_tree().change_scene_to_file(target_scene)
 
 func _on_connect_interrupted() -> void:
 	connect_button.disabled = false

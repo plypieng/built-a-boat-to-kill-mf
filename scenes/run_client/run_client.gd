@@ -77,9 +77,10 @@ func _ready() -> void:
 	_refresh_hud()
 	_schedule_optional_quit()
 	_initialize_autopilot()
-	print("Run client ready with seed %d and peer id %d." % [NetworkRuntime.run_seed, multiplayer.get_unique_id()])
+	print("Run client ready with seed %d and peer id %d." % [NetworkRuntime.run_seed, _get_local_peer_id()])
 
 	NetworkRuntime.status_changed.connect(_on_status_changed)
+	NetworkRuntime.session_phase_changed.connect(_on_session_phase_changed)
 	NetworkRuntime.peer_snapshot_changed.connect(_on_peer_snapshot_changed)
 	NetworkRuntime.run_seed_changed.connect(_on_run_seed_changed)
 	NetworkRuntime.helm_changed.connect(_on_helm_changed)
@@ -118,7 +119,7 @@ func _physics_process(delta: float) -> void:
 	if bool(input_state.get("request_repair", false)):
 		NetworkRuntime.request_repair()
 
-	if NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) == "helm":
+	if NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
 		NetworkRuntime.send_local_boat_input(
 			float(input_state.get("throttle", 0.0)),
 			float(input_state.get("steer", 0.0))
@@ -486,12 +487,12 @@ func _build_result_overlay() -> void:
 	layout.add_child(result_body_label)
 
 	result_continue_button = Button.new()
-	result_continue_button.text = "Continue To Dock"
+	result_continue_button.text = "Continue To Hangar"
 	result_continue_button.pressed.connect(_continue_to_dock)
 	layout.add_child(result_continue_button)
 
 	var hint_label := Label.new()
-	hint_label.text = "Press Enter to bank the result and return to the dock."
+	hint_label.text = "Press Enter to bank the result and return to the hangar."
 	hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	layout.add_child(hint_label)
 
@@ -509,7 +510,7 @@ func _refresh_world() -> void:
 	_update_boat_material()
 
 func _refresh_hud() -> void:
-	var local_peer_id := multiplayer.get_unique_id()
+	var local_peer_id := _get_local_peer_id()
 	var local_station_id := NetworkRuntime.get_peer_station_id(local_peer_id)
 	var selected_station_id := _get_selected_station_id()
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
@@ -517,6 +518,7 @@ func _refresh_hud() -> void:
 	var extraction_progress: float = float(NetworkRuntime.run_state.get("extraction_progress", 0.0))
 	var extraction_duration: float = float(NetworkRuntime.run_state.get("extraction_duration", 1.0))
 	var hull_integrity: float = float(NetworkRuntime.boat_state.get("hull_integrity", 100.0))
+	var max_hull_integrity: float = float(NetworkRuntime.boat_state.get("max_hull_integrity", 100.0))
 	var breach_stacks := int(NetworkRuntime.boat_state.get("breach_stacks", 0))
 	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
 	var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
@@ -561,10 +563,13 @@ func _refresh_hud() -> void:
 	station_label.text = "Stations:\n%s" % ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")
 
 	interaction_label.text = _build_interaction_text(selected_station_id, local_station_id)
-	boat_label.text = "Boat: hp=%.1f speed=%.2f/%.2f pos=(%.2f, %.2f, %.2f) heading=%.2f breaches=%d repairCd=%.2f collisions=%d lastImpact=%.1f braced=%s" % [
+	boat_label.text = "Boat: hp=%.1f/%.1f speed=%.2f/%.2f cargo=%d/%d pos=(%.2f, %.2f, %.2f) heading=%.2f breaches=%d repairCd=%.2f collisions=%d lastImpact=%.1f braced=%s blueprint=v%d" % [
 		hull_integrity,
+		max_hull_integrity,
 		float(NetworkRuntime.boat_state.get("speed", 0.0)),
 		float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED)),
+		int(NetworkRuntime.run_state.get("cargo_count", 0)),
+		int(NetworkRuntime.run_state.get("cargo_capacity", int(NetworkRuntime.boat_state.get("cargo_capacity", 1)))),
 		boat_position.x,
 		boat_position.y,
 		boat_position.z,
@@ -574,6 +579,7 @@ func _refresh_hud() -> void:
 		int(NetworkRuntime.boat_state.get("collision_count", 0)),
 		float(NetworkRuntime.boat_state.get("last_impact_damage", 0.0)),
 		"yes" if bool(NetworkRuntime.boat_state.get("last_impact_braced", false)) else "no",
+		int(NetworkRuntime.run_state.get("blueprint_version", 1)),
 	]
 	status_label.text = "Status: %s" % NetworkRuntime.status_message
 
@@ -595,7 +601,7 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 	var selected_label := NetworkRuntime.get_station_label(selected_station_id)
 	var occupant_name := NetworkRuntime.get_station_occupant_name(selected_station_id)
 	var occupant_peer_id := int(NetworkRuntime.station_state.get(selected_station_id, {}).get("occupant_peer_id", 0))
-	var local_peer_id := multiplayer.get_unique_id()
+	var local_peer_id := _get_local_peer_id()
 	var lines := PackedStringArray()
 	lines.append("Selected: %s" % selected_label)
 
@@ -627,7 +633,7 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 
 func _refresh_station_visuals() -> void:
 	_ensure_selected_station_valid()
-	var local_peer_id := multiplayer.get_unique_id()
+	var local_peer_id := _get_local_peer_id()
 	var selected_station_id := _get_selected_station_id()
 
 	for station_id in NetworkRuntime.get_station_ids():
@@ -682,7 +688,7 @@ func _refresh_crew_visuals() -> void:
 		body_mesh.radius = 0.24
 		body.mesh = body_mesh
 		var material := StandardMaterial3D.new()
-		if int(peer_id) == multiplayer.get_unique_id():
+		if int(peer_id) == _get_local_peer_id():
 			material.albedo_color = Color(0.30, 0.82, 0.52)
 		elif station_id == "helm":
 			material.albedo_color = Color(0.94, 0.76, 0.18)
@@ -914,14 +920,14 @@ func _collect_station_interaction_input(input_state: Dictionary) -> void:
 		var selected_station_id := _get_selected_station_id()
 		var selected_station: Dictionary = NetworkRuntime.station_state.get(selected_station_id, {})
 		var occupant_peer_id := int(selected_station.get("occupant_peer_id", 0))
-		if occupant_peer_id == multiplayer.get_unique_id():
+		if occupant_peer_id == _get_local_peer_id():
 			input_state["claim_station"] = "__release__"
 		elif occupant_peer_id == 0:
 			input_state["claim_station"] = selected_station_id
 	interact_latched = interact_pressed
 
 func _collect_action_input(input_state: Dictionary) -> void:
-	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 
 	var brace_pressed := Input.is_key_pressed(KEY_SPACE)
 	if brace_pressed and not brace_request_latched and local_station_id == "brace":
@@ -939,7 +945,7 @@ func _collect_action_input(input_state: Dictionary) -> void:
 	repair_request_latched = repair_pressed
 
 func _collect_drive_input(input_state: Dictionary) -> void:
-	if NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) != "helm":
+	if NetworkRuntime.get_peer_station_id(_get_local_peer_id()) != "helm":
 		return
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
@@ -970,13 +976,13 @@ func _apply_scripted_station_input(delta: float, input_state: Dictionary) -> voi
 	if not desired_station_id.is_empty():
 		_request_station_if_needed(desired_station_id, input_state)
 
-	if desired_station_id == "helm" and autopilot_remaining_seconds > 0.0 and NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) == "helm":
+	if desired_station_id == "helm" and autopilot_remaining_seconds > 0.0 and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
 		input_state["throttle"] = float(launch_overrides.get("autodrive_throttle", 1.0))
 		input_state["steer"] = float(launch_overrides.get("autodrive_steer", 0.0))
-	elif desired_station_id == "brace" and bool(launch_overrides.get("autobrace", false)) and NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) == "brace" and action_request_cooldown <= 0.0 and _should_autobrace():
+	elif desired_station_id == "brace" and bool(launch_overrides.get("autobrace", false)) and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "brace" and action_request_cooldown <= 0.0 and _should_autobrace():
 		input_state["request_brace"] = true
 		action_request_cooldown = 0.35
-	elif desired_station_id == "repair" and NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) == "repair" and action_request_cooldown <= 0.0 and int(NetworkRuntime.boat_state.get("breach_stacks", 0)) > 0:
+	elif desired_station_id == "repair" and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "repair" and action_request_cooldown <= 0.0 and int(NetworkRuntime.boat_state.get("breach_stacks", 0)) > 0:
 		input_state["request_repair"] = true
 		action_request_cooldown = 0.45
 
@@ -997,7 +1003,7 @@ func _apply_autorun_demo(_delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
 
-	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var boat_speed: float = float(NetworkRuntime.boat_state.get("speed", 0.0))
@@ -1067,7 +1073,7 @@ func _apply_driver_role(input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
 
-	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 	_request_station_if_needed("helm", input_state)
 	if local_station_id != "helm":
 		return
@@ -1093,7 +1099,7 @@ func _apply_grapple_role(input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
 
-	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 	_request_station_if_needed("grapple", input_state)
 	if local_station_id != "grapple":
 		return
@@ -1128,7 +1134,7 @@ func _apply_grapple_role(input_state: Dictionary) -> void:
 func _apply_brace_role(input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
-	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 	_request_station_if_needed("brace", input_state)
 	if local_station_id != "brace":
 		return
@@ -1153,7 +1159,7 @@ func _apply_repair_role(input_state: Dictionary) -> void:
 	if int(NetworkRuntime.run_state.get("repair_supplies", 0)) <= 0:
 		return
 
-	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 	_request_station_if_needed("repair", input_state)
 	if local_station_id != "repair":
 		return
@@ -1233,12 +1239,12 @@ func _hold_position_over_target(target: Vector3, max_speed: float, input_state: 
 func _request_station_if_needed(station_id: String, input_state: Dictionary) -> void:
 	if station_request_cooldown > 0.0:
 		return
-	if NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) == station_id:
+	if NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == station_id:
 		return
 
 	var station_data: Dictionary = NetworkRuntime.station_state.get(station_id, {})
 	var occupant_peer_id := int(station_data.get("occupant_peer_id", 0))
-	if occupant_peer_id != 0 and occupant_peer_id != multiplayer.get_unique_id():
+	if occupant_peer_id != 0 and occupant_peer_id != _get_local_peer_id():
 		return
 
 	input_state["claim_station"] = station_id
@@ -1340,7 +1346,8 @@ func _update_boat_material() -> void:
 		return
 
 	var hull_integrity: float = float(NetworkRuntime.boat_state.get("hull_integrity", 100.0))
-	var health_ratio := clampf(hull_integrity / 100.0, 0.0, 1.0)
+	var max_hull_integrity: float = maxf(1.0, float(NetworkRuntime.boat_state.get("max_hull_integrity", 100.0)))
+	var health_ratio := clampf(hull_integrity / max_hull_integrity, 0.0, 1.0)
 	var damaged_color := Color(0.45, 0.14, 0.12)
 	var healthy_color := Color(0.44, 0.27, 0.16)
 	hull_material.albedo_color = damaged_color.lerp(healthy_color, health_ratio)
@@ -1350,6 +1357,11 @@ func _boat_within_extraction_zone() -> bool:
 	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
 	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
 	return boat_position.distance_to(extraction_position) <= extraction_radius
+
+func _get_local_peer_id() -> int:
+	if NetworkRuntime.multiplayer == null:
+		return 0
+	return NetworkRuntime.multiplayer.get_unique_id()
 
 func _schedule_optional_quit() -> void:
 	var quit_after_connect_ms := int(launch_overrides.get("quit_after_connect_ms", 0))
@@ -1410,7 +1422,7 @@ func _select_station(station_id: String) -> void:
 func _continue_to_dock() -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) == "running":
 		return
-	get_tree().change_scene_to_file(HANGAR_SCENE)
+	NetworkRuntime.request_return_to_hangar()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) == "running":
@@ -1420,6 +1432,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _on_status_changed(_message: String) -> void:
 	_refresh_hud()
+
+func _on_session_phase_changed(phase: String) -> void:
+	if phase == NetworkRuntime.SESSION_PHASE_HANGAR:
+		get_tree().change_scene_to_file(HANGAR_SCENE)
 
 func _on_peer_snapshot_changed(_snapshot: Dictionary) -> void:
 	_refresh_crew_visuals()
@@ -1479,9 +1495,9 @@ func _on_run_state_changed(_state: Dictionary) -> void:
 func _build_objective_text() -> String:
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
 	if phase == "success":
-		return "Objective: Return to the dock to bank the run rewards."
+		return "Objective: Return to the hangar to bank the run rewards."
 	if phase == "failed":
-		return "Objective: Return to the dock and review the failed extraction."
+		return "Objective: Return to the hangar and review the failed extraction."
 
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))

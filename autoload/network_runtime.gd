@@ -5,6 +5,8 @@ signal status_changed(message: String)
 signal connection_ready()
 signal client_connect_failed()
 signal client_disconnected()
+signal session_phase_changed(phase: String)
+signal boat_blueprint_changed(snapshot: Dictionary)
 signal peer_snapshot_changed(snapshot: Dictionary)
 signal run_seed_changed(seed: int)
 signal helm_changed(driver_peer_id: int)
@@ -20,6 +22,8 @@ enum Mode {
 	SERVER,
 }
 
+const SESSION_PHASE_HANGAR := "hangar"
+const SESSION_PHASE_RUN := "run"
 const STATION_ORDER := ["helm", "brace", "grapple", "repair"]
 const STATION_LAYOUT := {
 	"helm": {
@@ -37,6 +41,89 @@ const STATION_LAYOUT := {
 	"repair": {
 		"label": "Repair Bench",
 		"position": Vector3(-0.95, 0.92, 1.05),
+	},
+}
+const BUILDER_BOUNDS_MIN := Vector3i(-5, 0, -6)
+const BUILDER_BOUNDS_MAX := Vector3i(5, 4, 6)
+const BUILDER_BLOCK_ORDER := ["core", "hull", "engine", "cargo", "utility", "structure"]
+const BUILDER_BLOCK_LIBRARY := {
+	"core": {
+		"label": "Core",
+		"color": Color(0.84, 0.30, 0.24),
+		"size": Vector3(1.05, 1.05, 1.05),
+		"max_hp": 34.0,
+		"weight": 3.0,
+		"buoyancy": 5.5,
+		"thrust": 0.0,
+		"cargo": 0,
+		"repair": 0,
+		"brace": 0.08,
+		"hull": 1.0,
+	},
+	"hull": {
+		"label": "Hull",
+		"color": Color(0.54, 0.35, 0.20),
+		"size": Vector3(1.2, 0.8, 1.2),
+		"max_hp": 24.0,
+		"weight": 2.1,
+		"buoyancy": 5.2,
+		"thrust": 0.0,
+		"cargo": 0,
+		"repair": 0,
+		"brace": 0.03,
+		"hull": 1.0,
+	},
+	"engine": {
+		"label": "Engine",
+		"color": Color(0.27, 0.34, 0.38),
+		"size": Vector3(1.0, 0.9, 1.2),
+		"max_hp": 18.0,
+		"weight": 2.5,
+		"buoyancy": 1.8,
+		"thrust": 1.0,
+		"cargo": 0,
+		"repair": 0,
+		"brace": 0.0,
+		"hull": 0.35,
+	},
+	"cargo": {
+		"label": "Cargo",
+		"color": Color(0.82, 0.62, 0.22),
+		"size": Vector3(1.0, 1.0, 1.0),
+		"max_hp": 16.0,
+		"weight": 1.8,
+		"buoyancy": 1.6,
+		"thrust": 0.0,
+		"cargo": 2,
+		"repair": 0,
+		"brace": 0.0,
+		"hull": 0.3,
+	},
+	"utility": {
+		"label": "Utility",
+		"color": Color(0.24, 0.62, 0.50),
+		"size": Vector3(1.0, 1.0, 1.0),
+		"max_hp": 20.0,
+		"weight": 1.6,
+		"buoyancy": 1.9,
+		"thrust": 0.0,
+		"cargo": 0,
+		"repair": 1,
+		"brace": 0.18,
+		"hull": 0.5,
+	},
+	"structure": {
+		"label": "Structure",
+		"color": Color(0.68, 0.74, 0.78),
+		"size": Vector3(1.0, 1.0, 1.0),
+		"max_hp": 14.0,
+		"weight": 1.2,
+		"buoyancy": 1.1,
+		"thrust": 0.0,
+		"cargo": 0,
+		"repair": 0,
+		"brace": 0.06,
+		"hull": 0.5,
 	},
 }
 
@@ -78,6 +165,8 @@ var current_host: String = GameConfig.DEFAULT_HOST
 var current_port: int = GameConfig.DEFAULT_PORT
 var local_player_name: String = GameConfig.DEFAULT_PLAYER_NAME
 var run_seed: int = GameConfig.DEFAULT_RUN_SEED
+var session_phase := SESSION_PHASE_HANGAR
+var boat_blueprint: Dictionary = {}
 var peer_snapshot: Dictionary = {}
 var status_message := "Offline"
 var driver_peer_id := 0
@@ -91,6 +180,7 @@ var _peer_inputs: Dictionary = {}
 var _boat_broadcast_accumulator := 0.0
 var _next_hazard_id: int = 1
 var _next_loot_id: int = 1
+var _client_bootstrap_complete := false
 
 func _ready() -> void:
 	multiplayer.peer_connected.connect(_on_peer_connected)
@@ -113,12 +203,15 @@ func start_server(listen_port: int = GameConfig.DEFAULT_PORT, seed: int = GameCo
 	current_host = "0.0.0.0"
 	current_port = listen_port
 	run_seed = seed
+	session_phase = SESSION_PHASE_HANGAR
+	_client_bootstrap_complete = false
 	peer_snapshot = {
 		1: {
 			"name": "Dedicated Server",
 			"status": "hosting",
 		},
 	}
+	_reset_blueprint_runtime()
 	_reset_run_runtime()
 
 	emit_signal("mode_changed", _mode_name())
@@ -142,6 +235,7 @@ func start_client(host: String, connect_port: int, player_name: String) -> int:
 	current_host = host
 	current_port = connect_port
 	local_player_name = player_name if not player_name.is_empty() else GameConfig.DEFAULT_PLAYER_NAME
+	_client_bootstrap_complete = false
 	emit_signal("mode_changed", _mode_name())
 	_set_status("Connecting to %s:%d..." % [current_host, current_port])
 	return OK
@@ -152,8 +246,11 @@ func shutdown() -> void:
 		multiplayer.multiplayer_peer = null
 
 	mode = Mode.OFFLINE
+	session_phase = SESSION_PHASE_HANGAR
+	boat_blueprint = _decorate_blueprint(DockState.get_boat_blueprint())
 	peer_snapshot = {}
 	status_message = "Offline"
+	_client_bootstrap_complete = false
 	_reset_run_runtime()
 	emit_signal("mode_changed", _mode_name())
 	emit_signal("run_seed_changed", run_seed)
@@ -161,6 +258,29 @@ func shutdown() -> void:
 
 func get_mode_name() -> String:
 	return _mode_name()
+
+func get_session_phase() -> String:
+	return session_phase
+
+func get_builder_bounds_min() -> Vector3i:
+	return BUILDER_BOUNDS_MIN
+
+func get_builder_bounds_max() -> Vector3i:
+	return BUILDER_BOUNDS_MAX
+
+func get_builder_block_ids() -> Array:
+	return BUILDER_BLOCK_ORDER.duplicate()
+
+func get_builder_block_definition(block_type: String) -> Dictionary:
+	var block_id := block_type.strip_edges().to_lower()
+	var definition: Dictionary = BUILDER_BLOCK_LIBRARY.get(block_id, BUILDER_BLOCK_LIBRARY["structure"])
+	return definition.duplicate(true)
+
+func get_blueprint_stats() -> Dictionary:
+	return Dictionary(boat_blueprint.get("stats", {})).duplicate(true)
+
+func get_blueprint_warnings() -> Array:
+	return Array(boat_blueprint.get("warnings", [])).duplicate(true)
 
 func get_driver_name() -> String:
 	if driver_peer_id <= 0:
@@ -253,6 +373,38 @@ func request_repair() -> void:
 
 	server_request_repair.rpc_id(1)
 
+func request_place_blueprint_block(cell_value: Variant, block_type: String, rotation_steps: int) -> void:
+	var cell := _normalize_blueprint_cell(cell_value)
+	var normalized_type := block_type.strip_edges().to_lower()
+	var normalized_rotation := wrapi(rotation_steps, 0, 4)
+	if multiplayer.is_server():
+		_place_blueprint_block(multiplayer.get_unique_id(), cell, normalized_type, normalized_rotation)
+		return
+
+	server_request_place_blueprint_block.rpc_id(1, cell, normalized_type, normalized_rotation)
+
+func request_remove_blueprint_block(cell_value: Variant) -> void:
+	var cell := _normalize_blueprint_cell(cell_value)
+	if multiplayer.is_server():
+		_remove_blueprint_block(multiplayer.get_unique_id(), cell)
+		return
+
+	server_request_remove_blueprint_block.rpc_id(1, cell)
+
+func request_launch_run() -> void:
+	if multiplayer.is_server():
+		_launch_run_session(multiplayer.get_unique_id())
+		return
+
+	server_request_launch_run.rpc_id(1)
+
+func request_return_to_hangar() -> void:
+	if multiplayer.is_server():
+		_return_to_hangar_session(multiplayer.get_unique_id())
+		return
+
+	server_request_return_to_hangar.rpc_id(1)
+
 func send_local_boat_input(throttle: float, steer: float) -> void:
 	var clamped_throttle := clampf(throttle, -1.0, 1.0)
 	var clamped_steer := clampf(steer, -1.0, 1.0)
@@ -264,6 +416,8 @@ func send_local_boat_input(throttle: float, steer: float) -> void:
 
 func server_step_shared_boat(delta: float) -> void:
 	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_RUN:
 		return
 
 	if str(run_state.get("phase", "running")) != "running":
@@ -277,7 +431,8 @@ func server_step_shared_boat(delta: float) -> void:
 	boat_state["repair_cooldown"] = repair_cooldown
 
 	var breach_stacks := int(boat_state.get("breach_stacks", 0))
-	var top_speed_limit := BOAT_TOP_SPEED * maxf(0.45, 1.0 - float(breach_stacks) * BREACH_SPEED_PENALTY)
+	var base_top_speed: float = float(boat_state.get("base_top_speed", BOAT_TOP_SPEED))
+	var top_speed_limit := base_top_speed * maxf(0.45, 1.0 - float(breach_stacks) * BREACH_SPEED_PENALTY)
 	boat_state["top_speed_limit"] = top_speed_limit
 
 	var input_state: Dictionary = _peer_inputs.get(driver_peer_id, {
@@ -341,6 +496,8 @@ func _set_status(message: String) -> void:
 	print(message)
 
 func _emit_all_runtime_state() -> void:
+	emit_signal("session_phase_changed", session_phase)
+	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
 	emit_signal("helm_changed", driver_peer_id)
 	emit_signal("boat_state_changed", boat_state.duplicate(true))
@@ -348,6 +505,19 @@ func _emit_all_runtime_state() -> void:
 	emit_signal("station_state_changed", station_state.duplicate(true))
 	emit_signal("loot_state_changed", loot_state.duplicate(true))
 	emit_signal("run_state_changed", run_state.duplicate(true))
+
+func _broadcast_session_phase() -> void:
+	emit_signal("session_phase_changed", session_phase)
+	if multiplayer.is_server():
+		for peer_id in get_player_peer_ids():
+			client_receive_session_phase.rpc_id(int(peer_id), session_phase)
+
+func _broadcast_blueprint_state() -> void:
+	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
+	if multiplayer.is_server():
+		var snapshot := boat_blueprint.duplicate(true)
+		for peer_id in get_player_peer_ids():
+			client_receive_blueprint_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_peer_snapshot() -> void:
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
@@ -395,12 +565,15 @@ func _send_bootstrap(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
 
-	client_receive_bootstrap.rpc_id(peer_id, run_seed, current_port, GameConfig.MAX_PLAYERS)
+	client_receive_bootstrap.rpc_id(peer_id, run_seed, current_port, GameConfig.MAX_PLAYERS, session_phase, boat_blueprint.duplicate(true))
 	client_receive_boat_state.rpc_id(peer_id, boat_state.duplicate(true), driver_peer_id)
 	client_receive_hazard_state.rpc_id(peer_id, hazard_state.duplicate(true))
 	client_receive_station_state.rpc_id(peer_id, station_state.duplicate(true))
 	client_receive_loot_state.rpc_id(peer_id, loot_state.duplicate(true))
 	client_receive_run_state.rpc_id(peer_id, run_state.duplicate(true))
+
+func _reset_blueprint_runtime() -> void:
+	boat_blueprint = _decorate_blueprint(DockState.get_boat_blueprint())
 
 func _reset_run_runtime() -> void:
 	driver_peer_id = 0
@@ -408,6 +581,13 @@ func _reset_run_runtime() -> void:
 	_boat_broadcast_accumulator = 0.0
 	_next_hazard_id = 1
 	_next_loot_id = 1
+	var blueprint_stats := Dictionary(boat_blueprint.get("stats", {}))
+	var max_hull_integrity := float(blueprint_stats.get("max_hull_integrity", BOAT_MAX_INTEGRITY))
+	var top_speed := float(blueprint_stats.get("top_speed", BOAT_TOP_SPEED))
+	var cargo_capacity := int(blueprint_stats.get("cargo_capacity", 1))
+	var repair_capacity := int(blueprint_stats.get("repair_capacity", REPAIR_SUPPLIES_START))
+	var brace_multiplier := float(blueprint_stats.get("brace_multiplier", 1.0))
+	var launch_warning_text := _build_blueprint_warning_text()
 
 	boat_state = {
 		"position": Vector3.ZERO,
@@ -417,15 +597,20 @@ func _reset_run_runtime() -> void:
 		"steer": 0.0,
 		"tick": 0,
 		"driver_peer_id": 0,
-		"hull_integrity": BOAT_MAX_INTEGRITY,
+		"max_hull_integrity": max_hull_integrity,
+		"hull_integrity": max_hull_integrity,
 		"brace_timer": 0.0,
 		"brace_cooldown": 0.0,
 		"repair_cooldown": 0.0,
-		"top_speed_limit": BOAT_TOP_SPEED,
+		"base_top_speed": top_speed,
+		"top_speed_limit": top_speed,
 		"breach_stacks": 0,
 		"last_impact_damage": 0.0,
 		"last_impact_braced": false,
 		"collision_count": 0,
+		"cargo_capacity": cargo_capacity,
+		"brace_multiplier": brace_multiplier,
+		"blueprint_version": int(boat_blueprint.get("version", 1)),
 	}
 
 	station_state = {}
@@ -439,7 +624,7 @@ func _reset_run_runtime() -> void:
 
 	_initialize_hazards()
 	_initialize_loot()
-	_initialize_run_state()
+	_initialize_run_state(repair_capacity, cargo_capacity, launch_warning_text)
 
 func _initialize_hazards() -> void:
 	hazard_state = [
@@ -454,7 +639,7 @@ func _initialize_loot() -> void:
 		_make_loot(Vector3(1.05, 0.0, 11.15), 1, "Sunken Supply Crate"),
 	]
 
-func _initialize_run_state() -> void:
+func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_warning_text: String) -> void:
 	run_state = {
 		"phase": "running",
 		"cargo_count": 0,
@@ -466,8 +651,9 @@ func _initialize_run_state() -> void:
 		"wreck_radius": 4.1,
 		"salvage_max_speed": SALVAGE_MAX_SPEED,
 		"repair_actions": 0,
-		"repair_supplies": REPAIR_SUPPLIES_START,
-		"repair_supplies_max": REPAIR_SUPPLIES_MAX,
+		"repair_supplies": repair_capacity,
+		"repair_supplies_max": repair_capacity,
+		"cargo_capacity": cargo_capacity,
 		"cache_position": Vector3(-5.8, 0.0, 24.8),
 		"cache_radius": RESUPPLY_CACHE_RADIUS,
 		"cache_max_speed": RESUPPLY_CACHE_MAX_SPEED,
@@ -485,7 +671,354 @@ func _initialize_run_state() -> void:
 		"result_title": "",
 		"result_message": "",
 		"failure_reason": "",
+		"launch_warning": launch_warning_text,
+		"blueprint_version": int(boat_blueprint.get("version", 1)),
 	}
+
+func _launch_run_session(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_HANGAR:
+		return
+
+	_reset_run_runtime()
+	_set_session_phase(SESSION_PHASE_RUN)
+	_broadcast_boat_state()
+	_broadcast_hazard_state()
+	_broadcast_station_state()
+	_broadcast_loot_state()
+	_broadcast_run_state()
+	_set_status("Run launched by %s using blueprint v%d." % [
+		_get_peer_name(peer_id),
+		int(boat_blueprint.get("version", 1)),
+	])
+
+func _return_to_hangar_session(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_RUN:
+		return
+	if str(run_state.get("phase", "running")) == "running":
+		return
+
+	_reset_run_runtime()
+	_set_session_phase(SESSION_PHASE_HANGAR)
+	_broadcast_boat_state()
+	_broadcast_hazard_state()
+	_broadcast_station_state()
+	_broadcast_loot_state()
+	_broadcast_run_state()
+	_set_status("%s returned the crew to the hangar." % _get_peer_name(peer_id))
+
+func _place_blueprint_block(peer_id: int, cell: Array, block_type: String, rotation_steps: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_HANGAR:
+		return
+	if not _cell_within_builder_bounds(cell):
+		return
+	if not BUILDER_BLOCK_LIBRARY.has(block_type):
+		return
+
+	var persisted := _extract_persisted_blueprint(boat_blueprint)
+	var blocks: Array = Array(persisted.get("blocks", [])).duplicate(true)
+	if _find_block_index_by_cell(blocks, cell) != -1:
+		return
+
+	var next_block_id := int(persisted.get("next_block_id", 1))
+	blocks.append({
+		"id": next_block_id,
+		"type": block_type,
+		"cell": _normalize_blueprint_cell(cell),
+		"rotation_steps": wrapi(rotation_steps, 0, 4),
+	})
+	persisted["blocks"] = blocks
+	persisted["next_block_id"] = next_block_id + 1
+	persisted["version"] = int(persisted.get("version", 1)) + 1
+	boat_blueprint = _decorate_blueprint(persisted)
+	_save_server_blueprint()
+	_broadcast_blueprint_state()
+	_set_status("%s placed %s at %s." % [
+		_get_peer_name(peer_id),
+		get_builder_block_definition(block_type).get("label", block_type.capitalize()),
+		str(_cell_to_vector3i(cell)),
+	])
+
+func _remove_blueprint_block(peer_id: int, cell: Array) -> void:
+	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_HANGAR:
+		return
+
+	var persisted := _extract_persisted_blueprint(boat_blueprint)
+	var blocks: Array = Array(persisted.get("blocks", [])).duplicate(true)
+	var block_index := _find_block_index_by_cell(blocks, cell)
+	if block_index == -1:
+		return
+	if blocks.size() <= 1:
+		return
+
+	var removed_block: Dictionary = blocks[block_index]
+	blocks.remove_at(block_index)
+	persisted["blocks"] = blocks
+	persisted["version"] = int(persisted.get("version", 1)) + 1
+	boat_blueprint = _decorate_blueprint(persisted)
+	_save_server_blueprint()
+	_broadcast_blueprint_state()
+	_set_status("%s removed %s from %s." % [
+		_get_peer_name(peer_id),
+		get_builder_block_definition(str(removed_block.get("type", "structure"))).get("label", "Block"),
+		str(_cell_to_vector3i(cell)),
+	])
+
+func _save_server_blueprint() -> void:
+	if multiplayer.is_server():
+		DockState.save_boat_blueprint(_extract_persisted_blueprint(boat_blueprint))
+
+func _extract_persisted_blueprint(snapshot: Dictionary) -> Dictionary:
+	return {
+		"version": int(snapshot.get("version", 1)),
+		"next_block_id": int(snapshot.get("next_block_id", 1)),
+		"blocks": Array(snapshot.get("blocks", [])).duplicate(true),
+	}
+
+func _decorate_blueprint(snapshot: Dictionary) -> Dictionary:
+	var normalized := _normalize_blueprint(snapshot)
+	var blocks: Array = Array(normalized.get("blocks", []))
+	var blocks_by_key := {}
+	var blocks_by_id := {}
+	var component_entries: Array = []
+	for block_variant in blocks:
+		var block: Dictionary = block_variant
+		var key := _cell_to_key(block.get("cell", [0, 0, 0]))
+		blocks_by_key[key] = block
+		blocks_by_id[int(block.get("id", 0))] = block
+
+	var visited := {}
+	for block_variant in blocks:
+		var block: Dictionary = block_variant
+		var cell := _normalize_blueprint_cell(block.get("cell", [0, 0, 0]))
+		var key := _cell_to_key(cell)
+		if visited.has(key):
+			continue
+
+		var queue: Array = [cell]
+		var component_block_ids: Array = []
+		var contains_core := false
+		visited[key] = true
+		while not queue.is_empty():
+			var current_cell: Array = queue.pop_front()
+			var current_key := _cell_to_key(current_cell)
+			var current_block: Dictionary = blocks_by_key.get(current_key, {})
+			if current_block.is_empty():
+				continue
+			component_block_ids.append(int(current_block.get("id", 0)))
+			if str(current_block.get("type", "")) == "core":
+				contains_core = true
+			for neighbor in _get_adjacent_cells(current_cell):
+				var neighbor_key := _cell_to_key(neighbor)
+				if not blocks_by_key.has(neighbor_key) or visited.has(neighbor_key):
+					continue
+				visited[neighbor_key] = true
+				queue.append(neighbor)
+		component_entries.append({
+			"block_ids": component_block_ids,
+			"contains_core": contains_core,
+		})
+
+	var main_component: Dictionary = {}
+	for component in component_entries:
+		if bool(component.get("contains_core", false)):
+			main_component = component
+			break
+	if main_component.is_empty():
+		for component in component_entries:
+			if Array(component.get("block_ids", [])).size() > Array(main_component.get("block_ids", [])).size():
+				main_component = component
+
+	var main_block_ids: Array = Array(main_component.get("block_ids", [])).duplicate(true)
+	var loose_block_ids: Array = []
+	for block_variant in blocks:
+		var block: Dictionary = block_variant
+		if main_block_ids.has(int(block.get("id", 0))):
+			continue
+		loose_block_ids.append(int(block.get("id", 0)))
+
+	var block_counts := {}
+	var total_weight := 0.0
+	var total_buoyancy := 0.0
+	var total_thrust := 0.0
+	var total_cargo := 0
+	var total_repair := 0
+	var total_brace := 0.0
+	var total_hull := 0.0
+	for block_id in main_block_ids:
+		var block: Dictionary = blocks_by_id.get(int(block_id), {})
+		var block_type := str(block.get("type", "structure"))
+		var block_def := get_builder_block_definition(block_type)
+		block_counts[block_type] = int(block_counts.get(block_type, 0)) + 1
+		total_weight += float(block_def.get("weight", 1.0))
+		total_buoyancy += float(block_def.get("buoyancy", 1.0))
+		total_thrust += float(block_def.get("thrust", 0.0))
+		total_cargo += int(block_def.get("cargo", 0))
+		total_repair += int(block_def.get("repair", 0))
+		total_brace += float(block_def.get("brace", 0.0))
+		total_hull += float(block_def.get("hull", 0.0))
+
+	var main_block_count := main_block_ids.size()
+	var engine_count := int(block_counts.get("engine", 0))
+	var buoyancy_margin := total_buoyancy - total_weight
+	var top_speed := 4.5 + total_thrust * 3.4 - maxf(0.0, total_weight - total_buoyancy * 0.78) * 0.22
+	if engine_count <= 0:
+		top_speed = 1.8
+	top_speed = clampf(top_speed, 1.8, 24.0)
+	var max_hull_integrity := clampf(38.0 + total_hull * 18.0 + float(main_block_count) * 1.8, 40.0, 240.0)
+	var cargo_capacity := maxi(1, 1 + total_cargo)
+	var repair_capacity := maxi(1, mini(REPAIR_SUPPLIES_MAX + 3, REPAIR_SUPPLIES_START + total_repair))
+	var brace_multiplier := clampf(1.0 + total_brace, 1.0, 2.3)
+	var seaworthy := main_block_count > 0 and engine_count > 0 and buoyancy_margin >= -1.2
+
+	var warnings: Array = []
+	if loose_block_ids.size() > 0:
+		warnings.append("%d disconnected block(s) will spawn loose and sink at launch." % loose_block_ids.size())
+	if engine_count <= 0:
+		warnings.append("The main chunk has no engine, so the run boat will barely move.")
+	if buoyancy_margin < 0.0:
+		warnings.append("The main chunk is overweight and may fail once it starts taking damage.")
+	elif buoyancy_margin < 2.0:
+		warnings.append("The main chunk has a thin buoyancy margin. Extra hits will matter.")
+	if cargo_capacity <= 1:
+		warnings.append("Cargo space is minimal. Add cargo blocks to haul more salvage per run.")
+
+	normalized["stats"] = {
+		"block_count": blocks.size(),
+		"main_chunk_blocks": main_block_count,
+		"loose_blocks": loose_block_ids.size(),
+		"component_count": component_entries.size(),
+		"block_counts": block_counts,
+		"weight": total_weight,
+		"buoyancy": total_buoyancy,
+		"buoyancy_margin": buoyancy_margin,
+		"top_speed": top_speed,
+		"max_hull_integrity": max_hull_integrity,
+		"cargo_capacity": cargo_capacity,
+		"repair_capacity": repair_capacity,
+		"brace_multiplier": brace_multiplier,
+		"engine_count": engine_count,
+	}
+	normalized["warnings"] = warnings
+	normalized["seaworthy"] = seaworthy
+	normalized["main_chunk_block_ids"] = main_block_ids
+	normalized["loose_block_ids"] = loose_block_ids
+	return normalized
+
+func _normalize_blueprint(snapshot: Dictionary) -> Dictionary:
+	var normalized := {
+		"version": maxi(1, int(snapshot.get("version", 1))),
+		"next_block_id": maxi(1, int(snapshot.get("next_block_id", 1))),
+		"blocks": [],
+	}
+	var normalized_blocks: Array = []
+	var seen_cells := {}
+	var next_block_id := int(normalized.get("next_block_id", 1))
+
+	for block_variant in Array(snapshot.get("blocks", [])):
+		if typeof(block_variant) != TYPE_DICTIONARY:
+			continue
+		var block: Dictionary = block_variant
+		var block_type := str(block.get("type", "structure")).strip_edges().to_lower()
+		if not BUILDER_BLOCK_LIBRARY.has(block_type):
+			continue
+		var block_id := int(block.get("id", 0))
+		if block_id <= 0:
+			block_id = next_block_id
+			next_block_id += 1
+		var cell := _normalize_blueprint_cell(block.get("cell", [0, 0, 0]))
+		if not _cell_within_builder_bounds(cell):
+			continue
+		var cell_key := _cell_to_key(cell)
+		if seen_cells.has(cell_key):
+			continue
+		seen_cells[cell_key] = true
+		normalized_blocks.append({
+			"id": block_id,
+			"type": block_type,
+			"cell": cell,
+			"rotation_steps": wrapi(int(block.get("rotation_steps", 0)), 0, 4),
+		})
+		next_block_id = maxi(next_block_id, block_id + 1)
+
+	if normalized_blocks.is_empty():
+		normalized_blocks = Array(DockState.get_boat_blueprint().get("blocks", [])).duplicate(true)
+		next_block_id = maxi(next_block_id, int(DockState.get_boat_blueprint().get("next_block_id", 1)))
+
+	normalized["blocks"] = normalized_blocks
+	normalized["next_block_id"] = next_block_id
+	return normalized
+
+func _build_blueprint_warning_text() -> String:
+	var warnings := get_blueprint_warnings()
+	if warnings.is_empty():
+		return ""
+	var lines := PackedStringArray()
+	for warning in warnings:
+		lines.append(str(warning))
+	return "\n".join(lines)
+
+func _normalize_blueprint_cell(cell_value: Variant) -> Array:
+	if cell_value is Vector3i:
+		var cell_vec := cell_value as Vector3i
+		return [cell_vec.x, cell_vec.y, cell_vec.z]
+	if typeof(cell_value) == TYPE_ARRAY and cell_value.size() >= 3:
+		return [int(cell_value[0]), int(cell_value[1]), int(cell_value[2])]
+	if typeof(cell_value) == TYPE_DICTIONARY:
+		return [
+			int(cell_value.get("x", 0)),
+			int(cell_value.get("y", 0)),
+			int(cell_value.get("z", 0)),
+		]
+	return [0, 0, 0]
+
+func _cell_within_builder_bounds(cell: Array) -> bool:
+	var cell_vec := _cell_to_vector3i(cell)
+	return cell_vec.x >= BUILDER_BOUNDS_MIN.x and cell_vec.x <= BUILDER_BOUNDS_MAX.x and cell_vec.y >= BUILDER_BOUNDS_MIN.y and cell_vec.y <= BUILDER_BOUNDS_MAX.y and cell_vec.z >= BUILDER_BOUNDS_MIN.z and cell_vec.z <= BUILDER_BOUNDS_MAX.z
+
+func _cell_to_key(cell_value: Variant) -> String:
+	var cell := _normalize_blueprint_cell(cell_value)
+	return "%d:%d:%d" % [int(cell[0]), int(cell[1]), int(cell[2])]
+
+func _cell_to_vector3i(cell_value: Variant) -> Vector3i:
+	var cell := _normalize_blueprint_cell(cell_value)
+	return Vector3i(int(cell[0]), int(cell[1]), int(cell[2]))
+
+func _get_adjacent_cells(cell_value: Variant) -> Array:
+	var cell_vec := _cell_to_vector3i(cell_value)
+	return [
+		[cell_vec.x + 1, cell_vec.y, cell_vec.z],
+		[cell_vec.x - 1, cell_vec.y, cell_vec.z],
+		[cell_vec.x, cell_vec.y + 1, cell_vec.z],
+		[cell_vec.x, cell_vec.y - 1, cell_vec.z],
+		[cell_vec.x, cell_vec.y, cell_vec.z + 1],
+		[cell_vec.x, cell_vec.y, cell_vec.z - 1],
+	]
+
+func _find_block_index_by_cell(blocks: Array, cell_value: Variant) -> int:
+	var target_key := _cell_to_key(cell_value)
+	for index in range(blocks.size()):
+		var block: Dictionary = blocks[index]
+		if _cell_to_key(block.get("cell", [0, 0, 0])) == target_key:
+			return index
+	return -1
+
+func _set_session_phase(next_phase: String) -> void:
+	if session_phase == next_phase:
+		return
+	session_phase = next_phase
+	_broadcast_session_phase()
+
+func _get_peer_name(peer_id: int) -> String:
+	var peer_data: Dictionary = peer_snapshot.get(peer_id, {})
+	return str(peer_data.get("name", "Peer %d" % peer_id))
 
 func _make_hazard(position: Vector3, radius: float, label: String) -> Dictionary:
 	var hazard_id: int = _next_hazard_id
@@ -523,6 +1056,8 @@ func _set_driver(peer_id: int, broadcast: bool = true) -> void:
 		_broadcast_boat_state()
 
 func _claim_station(peer_id: int, station_id: String) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
 	if not station_state.has(station_id):
 		return
 	if str(run_state.get("phase", "running")) != "running":
@@ -565,6 +1100,8 @@ func _release_station(peer_id: int, broadcast: bool = true) -> void:
 		_broadcast_boat_state()
 
 func _receive_boat_input(peer_id: int, throttle: float, steer: float) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
 	if peer_id != driver_peer_id:
@@ -578,6 +1115,8 @@ func _receive_boat_input(peer_id: int, throttle: float, steer: float) -> void:
 	}
 
 func _begin_brace(peer_id: int) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
 	if get_peer_station_id(peer_id) != "brace":
@@ -591,6 +1130,8 @@ func _begin_brace(peer_id: int) -> void:
 	_set_status("Brace station activated.")
 
 func _process_repair(peer_id: int) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
 	if get_peer_station_id(peer_id) != "repair":
@@ -603,11 +1144,12 @@ func _process_repair(peer_id: int) -> void:
 
 	var breach_stacks := int(boat_state.get("breach_stacks", 0))
 	var hull_integrity: float = float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY))
-	if breach_stacks <= 0 and hull_integrity >= BOAT_MAX_INTEGRITY - 0.1:
+	var max_hull_integrity: float = float(boat_state.get("max_hull_integrity", BOAT_MAX_INTEGRITY))
+	if breach_stacks <= 0 and hull_integrity >= max_hull_integrity - 0.1:
 		return
 
 	boat_state["breach_stacks"] = maxi(0, breach_stacks - 1)
-	boat_state["hull_integrity"] = minf(BOAT_MAX_INTEGRITY, hull_integrity + REPAIR_HULL_RECOVERY)
+	boat_state["hull_integrity"] = minf(max_hull_integrity, hull_integrity + REPAIR_HULL_RECOVERY)
 	boat_state["repair_cooldown"] = REPAIR_COOLDOWN_SECONDS
 	run_state["repair_actions"] = int(run_state.get("repair_actions", 0)) + 1
 	run_state["repair_supplies"] = maxi(0, int(run_state.get("repair_supplies", 0)) - 1)
@@ -616,6 +1158,8 @@ func _process_repair(peer_id: int) -> void:
 	_set_status("Repair bench patched the hull. %d patch kit(s) left." % int(run_state.get("repair_supplies", 0)))
 
 func _process_grapple(peer_id: int) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
 	if get_peer_station_id(peer_id) != "grapple":
@@ -651,6 +1195,10 @@ func _process_grapple(peer_id: int) -> void:
 
 	var loot_target: Dictionary = loot_state[closest_index]
 	var cargo_value := int(loot_target.get("value", 1))
+	var cargo_capacity := int(run_state.get("cargo_capacity", int(boat_state.get("cargo_capacity", 1))))
+	if int(run_state.get("cargo_count", 0)) + cargo_value > cargo_capacity:
+		_set_status("Cargo hold is full. Expand the shared boat before hauling more salvage.")
+		return
 	var requires_brace := bool(loot_target.get("requires_brace", true))
 	var was_braced := float(boat_state.get("brace_timer", 0.0)) > 0.0
 	run_state["cargo_count"] = int(run_state.get("cargo_count", 0)) + cargo_value
@@ -718,6 +1266,8 @@ func _process_resupply_cache_grapple() -> bool:
 	return true
 
 func _process_hazard_collisions() -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
 
@@ -730,7 +1280,10 @@ func _process_hazard_collisions() -> void:
 			continue
 
 		var was_braced := float(boat_state.get("brace_timer", 0.0)) > 0.0
+		var brace_multiplier: float = float(boat_state.get("brace_multiplier", 1.0))
 		var damage := COLLISION_DAMAGE_BRACED if was_braced else COLLISION_DAMAGE_UNBRACED
+		if was_braced:
+			damage = maxf(2.0, damage / maxf(1.0, brace_multiplier))
 		var breach_delta := 1 if was_braced else 2
 		boat_state["hull_integrity"] = maxf(0.0, float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) - damage)
 		boat_state["speed"] = float(boat_state.get("speed", 0.0)) * (0.72 if was_braced else 0.38)
@@ -749,6 +1302,8 @@ func _process_hazard_collisions() -> void:
 		return
 
 func _process_extraction(delta: float) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
 
@@ -864,7 +1419,6 @@ func _broadcast_disconnect_updates() -> void:
 func _on_connected_to_server() -> void:
 	_set_status("Connected to %s:%d as %s." % [current_host, current_port, local_player_name])
 	server_register_player.rpc_id(1, local_player_name)
-	emit_signal("connection_ready")
 
 func _on_connection_failed() -> void:
 	_set_status("Connection failed.")
@@ -935,6 +1489,38 @@ func server_request_repair() -> void:
 	var peer_id := multiplayer.get_remote_sender_id()
 	_process_repair(peer_id)
 
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_place_blueprint_block(cell: Array, block_type: String, rotation_steps: int) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_place_blueprint_block(peer_id, cell, block_type, rotation_steps)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_remove_blueprint_block(cell: Array) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_remove_blueprint_block(peer_id, cell)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_launch_run() -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_launch_run_session(peer_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_return_to_hangar() -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_return_to_hangar_session(peer_id)
+
 @rpc("any_peer", "call_remote", "unreliable")
 func server_receive_boat_input(throttle: float, steer: float) -> void:
 	if not multiplayer.is_server():
@@ -944,11 +1530,28 @@ func server_receive_boat_input(throttle: float, steer: float) -> void:
 	_receive_boat_input(peer_id, throttle, steer)
 
 @rpc("authority", "call_remote", "reliable")
-func client_receive_bootstrap(seed: int, server_port: int, max_players: int) -> void:
+func client_receive_bootstrap(seed: int, server_port: int, max_players: int, phase: String, blueprint_snapshot: Dictionary) -> void:
 	run_seed = seed
 	current_port = server_port
+	session_phase = phase
+	boat_blueprint = _decorate_blueprint(blueprint_snapshot)
 	emit_signal("run_seed_changed", run_seed)
+	emit_signal("session_phase_changed", session_phase)
+	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
 	_set_status("Run bootstrap received: seed %d, max players %d." % [run_seed, max_players])
+	if not _client_bootstrap_complete:
+		_client_bootstrap_complete = true
+		emit_signal("connection_ready")
+
+@rpc("authority", "call_remote", "reliable")
+func client_receive_session_phase(phase: String) -> void:
+	session_phase = phase
+	emit_signal("session_phase_changed", session_phase)
+
+@rpc("authority", "call_remote", "reliable")
+func client_receive_blueprint_state(snapshot: Dictionary) -> void:
+	boat_blueprint = _decorate_blueprint(snapshot)
+	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
 
 @rpc("authority", "call_remote", "reliable")
 func client_receive_peer_snapshot(snapshot: Dictionary) -> void:
