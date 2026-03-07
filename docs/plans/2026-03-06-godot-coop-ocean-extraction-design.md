@@ -32,7 +32,8 @@ The launch target is intentionally co-op only. The design preserves a future pat
 
 ## Non-Goals For V1
 
-- PvP or PvPvE
+- PvE combat
+- Player-to-player communication
 - Live in-run boat rebuilding
 - Fully seamless ocean world
 - Full per-block destruction and buoyancy simulation
