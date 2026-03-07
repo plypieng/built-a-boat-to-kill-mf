@@ -63,6 +63,14 @@ Milestone B runtime block damage adds:
 - destroyed blocks can split off attached chunks, which sink and immediately remove their thrust, cargo, repair, and hull contribution
 - runtime boat sync is now split so the fast boat-state packet stays lean while structural damage replicates as its own reliable snapshot
 
+Milestone C social builder avatars adds:
+
+- a third-person hangar avatar for the local player with walk, jump, gravity, and dock collision
+- a local follow camera so the hangar starts feeling like a shared build space instead of a static editor view
+- solid collision on placed boat blocks so the hangar boat is becoming a walkable shared object
+- replicated hangar avatar state for connected builders
+- the existing cursor-based block placement path remains active while the forward build-tool milestone is still in progress
+
 ## Local Run
 
 Start the local dedicated server:
@@ -202,6 +210,7 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 - The current run result now banks local gold and salvage into the dock scene after extraction or failure.
 - Repairs are limited by shared patch kits, and the resupply cache can top the team back up once per run while adding bonus rewards.
 - The current connect flow now lands in a shared 3D hangar builder where the crew can edit one live blueprint together before launching.
+- The current hangar now has a first-pass third-person builder avatar with walk and jump, but the actual Roblox-style forward build tool is still the next step.
 - The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.
 - The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.
 - The current networking model now sends boat motion separately from structural runtime state so large block boats do not overflow the unreliable ENet packet budget during launch.

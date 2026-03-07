@@ -372,13 +372,45 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Wrote the approved design doc to `docs/plans/2026-03-08-roblox-style-social-builder-hangar-design.md`.
 - Wrote the fallback implementation plan to `docs/plans/2026-03-08-roblox-style-social-builder-hangar-implementation-plan.md`.
 
+## 2026-03-08 Social Builder Avatar Prototype
+
+- Started implementation on Milestone 1 from the approved Roblox-style social-builder plan.
+- Added hangar avatar replication state to `NetworkRuntime`:
+  - per-peer hangar position
+  - velocity
+  - facing
+  - grounded flag
+- Added a first-pass third-person hangar avatar in `scenes/hangar/hangar.gd`:
+  - walk
+  - jump
+  - gravity
+  - follow camera
+  - simple builder placeholder visual
+- Added solid collision for:
+  - the dock
+  - placed hangar boat blocks
+- Kept the old cursor-based build controls alive temporarily so the builder remains usable while the forward build-tool milestone is still pending.
+- Verified a fresh single-client desktop hangar pass on port `7120`:
+  - captured `/tmp/builtaboat-hangar-Fml9Z6/hangar-avatar.png`
+  - local avatar rendered correctly in third-person
+  - the boat remained visible in front of the player
+  - roster now reports hangar avatar position
+- Re-verified the existing hangar-to-run launch regression on port `7123`:
+  - `builder_launch` still transitioned from hangar into the run client cleanly
+  - server switched from `phase=hangar` to `phase=run`
+- Partial multiplayer validation:
+  - multiple clients still connected to the same hangar on ports `7121` and `7122`
+  - the simultaneous visual pass for remote-avatar readability is not fully signed off yet and still needs a cleaner shared-frame capture or manual desktop check
+- Next implementation target is unchanged:
+  - replace the detached cursor with the short-range forward build tool tied to avatar position
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
-  - third-person builder avatars
   - short-range forward build tool
   - walkable shared boat collision
   - simple reaction system instead of ragdolls
+- Finish multiplayer visual verification for the new hangar avatars with a clearer shared-frame or hands-on local co-op pass.
 - Return to narrower readability polish after the new social builder baseline exists.
 - Re-verify the full `hangar -> successful run -> dock/hangar` handoff after the hangar builder changes land.
 - Add stronger client-side feedback for block loss, such as recent-hit flashes, clearer chunk-detach messaging, and better destroyed-block readability.

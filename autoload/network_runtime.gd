@@ -8,6 +8,7 @@ signal client_disconnected()
 signal session_phase_changed(phase: String)
 signal boat_blueprint_changed(snapshot: Dictionary)
 signal peer_snapshot_changed(snapshot: Dictionary)
+signal hangar_avatar_state_changed(snapshot: Dictionary)
 signal run_seed_changed(seed: int)
 signal helm_changed(driver_peer_id: int)
 signal boat_state_changed(state: Dictionary)
@@ -45,6 +46,12 @@ const STATION_LAYOUT := {
 }
 const BUILDER_BOUNDS_MIN := Vector3i(-5, 0, -6)
 const BUILDER_BOUNDS_MAX := Vector3i(5, 4, 6)
+const HANGAR_SPAWN_POINTS := [
+	Vector3(-3.6, 0.55, 6.8),
+	Vector3(-1.2, 0.55, 6.4),
+	Vector3(1.2, 0.55, 6.4),
+	Vector3(3.6, 0.55, 6.8),
+]
 const BUILDER_BLOCK_ORDER := ["core", "hull", "engine", "cargo", "utility", "structure"]
 const BUILDER_BLOCK_LIBRARY := {
 	"core": {
@@ -174,6 +181,7 @@ var run_seed: int = GameConfig.DEFAULT_RUN_SEED
 var session_phase := SESSION_PHASE_HANGAR
 var boat_blueprint: Dictionary = {}
 var peer_snapshot: Dictionary = {}
+var hangar_avatar_state: Dictionary = {}
 var status_message := "Offline"
 var driver_peer_id := 0
 var boat_state: Dictionary = {}
@@ -218,6 +226,7 @@ func start_server(listen_port: int = GameConfig.DEFAULT_PORT, seed: int = GameCo
 			"status": "hosting",
 		},
 	}
+	_reset_hangar_avatar_state()
 	_reset_blueprint_runtime()
 	_reset_run_runtime()
 
@@ -256,6 +265,7 @@ func shutdown() -> void:
 	session_phase = SESSION_PHASE_HANGAR
 	boat_blueprint = _decorate_blueprint(DockState.get_boat_blueprint())
 	peer_snapshot = {}
+	hangar_avatar_state = {}
 	status_message = "Offline"
 	_client_bootstrap_complete = false
 	_reset_run_runtime()
@@ -282,6 +292,9 @@ func get_builder_block_definition(block_type: String) -> Dictionary:
 	var block_id := block_type.strip_edges().to_lower()
 	var definition: Dictionary = BUILDER_BLOCK_LIBRARY.get(block_id, BUILDER_BLOCK_LIBRARY["structure"])
 	return definition.duplicate(true)
+
+func get_hangar_avatar_state() -> Dictionary:
+	return hangar_avatar_state.duplicate(true)
 
 func get_blueprint_stats() -> Dictionary:
 	return Dictionary(boat_blueprint.get("stats", {})).duplicate(true)
@@ -412,6 +425,14 @@ func request_return_to_hangar() -> void:
 
 	server_request_return_to_hangar.rpc_id(1)
 
+func send_local_hangar_avatar_state(position: Vector3, velocity: Vector3, facing_y: float, grounded: bool) -> void:
+	if session_phase != SESSION_PHASE_HANGAR:
+		return
+	if multiplayer.is_server():
+		_receive_hangar_avatar_state(multiplayer.get_unique_id(), position, velocity, facing_y, grounded)
+		return
+	server_receive_hangar_avatar_state.rpc_id(1, position, velocity, facing_y, grounded)
+
 func send_local_boat_input(throttle: float, steer: float) -> void:
 	var clamped_throttle := clampf(throttle, -1.0, 1.0)
 	var clamped_steer := clampf(steer, -1.0, 1.0)
@@ -507,6 +528,7 @@ func _emit_all_runtime_state() -> void:
 	emit_signal("session_phase_changed", session_phase)
 	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
+	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
 	emit_signal("helm_changed", driver_peer_id)
 	emit_signal("boat_state_changed", boat_state.duplicate(true))
 	emit_signal("hazard_state_changed", hazard_state.duplicate(true))
@@ -533,6 +555,13 @@ func _broadcast_peer_snapshot() -> void:
 		var snapshot := peer_snapshot.duplicate(true)
 		for peer_id in get_player_peer_ids():
 			client_receive_peer_snapshot.rpc_id(int(peer_id), snapshot)
+
+func _broadcast_hangar_avatar_state() -> void:
+	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
+	if multiplayer.is_server():
+		var snapshot := hangar_avatar_state.duplicate(true)
+		for peer_id in get_player_peer_ids():
+			client_receive_hangar_avatar_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_boat_state() -> void:
 	emit_signal("boat_state_changed", boat_state.duplicate(true))
@@ -579,6 +608,7 @@ func _send_bootstrap(peer_id: int) -> void:
 	client_receive_station_state.rpc_id(peer_id, station_state.duplicate(true))
 	client_receive_loot_state.rpc_id(peer_id, loot_state.duplicate(true))
 	client_receive_run_state.rpc_id(peer_id, run_state.duplicate(true))
+	client_receive_hangar_avatar_state.rpc_id(peer_id, hangar_avatar_state.duplicate(true))
 	if session_phase == SESSION_PHASE_RUN:
 		client_receive_runtime_boat_state.rpc_id(peer_id, _build_client_runtime_boat_snapshot())
 
@@ -638,6 +668,29 @@ func _broadcast_runtime_boat_state() -> void:
 
 func _reset_blueprint_runtime() -> void:
 	boat_blueprint = _decorate_blueprint(DockState.get_boat_blueprint())
+
+func _reset_hangar_avatar_state() -> void:
+	hangar_avatar_state = {}
+
+func _reset_connected_hangar_avatars() -> void:
+	if not multiplayer.is_server():
+		return
+	hangar_avatar_state = {}
+	var peer_ids := get_player_peer_ids()
+	for index in range(peer_ids.size()):
+		var peer_id := int(peer_ids[index])
+		hangar_avatar_state[peer_id] = _make_default_hangar_avatar_state(index)
+	_broadcast_hangar_avatar_state()
+
+func _make_default_hangar_avatar_state(spawn_index: int) -> Dictionary:
+	var clamped_index := wrapi(spawn_index, 0, HANGAR_SPAWN_POINTS.size())
+	var spawn_position: Vector3 = HANGAR_SPAWN_POINTS[clamped_index]
+	return {
+		"position": spawn_position,
+		"velocity": Vector3.ZERO,
+		"facing_y": 0.0,
+		"grounded": true,
+	}
 
 func _reset_run_runtime() -> void:
 	driver_peer_id = 0
@@ -1210,6 +1263,7 @@ func _return_to_hangar_session(peer_id: int) -> void:
 		return
 
 	_reset_run_runtime()
+	_reset_connected_hangar_avatars()
 	_set_session_phase(SESSION_PHASE_HANGAR)
 	_broadcast_boat_state()
 	_broadcast_hazard_state()
@@ -1925,12 +1979,14 @@ func _on_peer_connected(peer_id: int) -> void:
 		"status": "connecting",
 	}
 	_broadcast_peer_snapshot()
+	_reset_connected_hangar_avatars()
 	_set_status("Peer %d connected." % peer_id)
 
 func _on_peer_disconnected(peer_id: int) -> void:
 	_peer_inputs.erase(peer_id)
 	_release_station(peer_id, false)
 	peer_snapshot.erase(peer_id)
+	hangar_avatar_state.erase(peer_id)
 	call_deferred("_broadcast_disconnect_updates")
 	if multiplayer.is_server():
 		_set_status("Peer %d disconnected." % peer_id)
@@ -1941,6 +1997,7 @@ func _broadcast_disconnect_updates() -> void:
 	_broadcast_station_state()
 	_broadcast_boat_state()
 	_broadcast_peer_snapshot()
+	_broadcast_hangar_avatar_state()
 
 func _on_connected_to_server() -> void:
 	_set_status("Connected to %s:%d as %s." % [current_host, current_port, local_player_name])
@@ -1964,8 +2021,11 @@ func server_register_player(player_name: String) -> void:
 		"name": player_name,
 		"status": "ready",
 	}
+	if not hangar_avatar_state.has(peer_id):
+		hangar_avatar_state[peer_id] = _make_default_hangar_avatar_state(hangar_avatar_state.size())
 	_send_bootstrap(peer_id)
 	_broadcast_peer_snapshot()
+	_broadcast_hangar_avatar_state()
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_request_driver_control() -> void:
@@ -2048,12 +2108,27 @@ func server_request_return_to_hangar() -> void:
 	_return_to_hangar_session(peer_id)
 
 @rpc("any_peer", "call_remote", "unreliable")
+func server_receive_hangar_avatar_state(position: Vector3, velocity: Vector3, facing_y: float, grounded: bool) -> void:
+	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_HANGAR:
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_receive_hangar_avatar_state(peer_id, position, velocity, facing_y, grounded)
+
+@rpc("any_peer", "call_remote", "unreliable")
 func server_receive_boat_input(throttle: float, steer: float) -> void:
 	if not multiplayer.is_server():
 		return
 
 	var peer_id := multiplayer.get_remote_sender_id()
 	_receive_boat_input(peer_id, throttle, steer)
+
+@rpc("authority", "call_remote", "unreliable")
+func client_receive_hangar_avatar_state(snapshot: Dictionary) -> void:
+	hangar_avatar_state = snapshot.duplicate(true)
+	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
 
 @rpc("authority", "call_remote", "reliable")
 func client_receive_bootstrap(seed: int, server_port: int, max_players: int, phase: String, blueprint_snapshot: Dictionary) -> void:
@@ -2083,6 +2158,20 @@ func client_receive_blueprint_state(snapshot: Dictionary) -> void:
 func client_receive_peer_snapshot(snapshot: Dictionary) -> void:
 	peer_snapshot = snapshot.duplicate(true)
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
+
+func _receive_hangar_avatar_state(peer_id: int, position: Vector3, velocity: Vector3, facing_y: float, grounded: bool) -> void:
+	if not multiplayer.is_server():
+		return
+	if not peer_snapshot.has(peer_id):
+		return
+
+	hangar_avatar_state[peer_id] = {
+		"position": position,
+		"velocity": velocity,
+		"facing_y": facing_y,
+		"grounded": grounded,
+	}
+	_broadcast_hangar_avatar_state()
 
 @rpc("authority", "call_remote", "unreliable")
 func client_receive_boat_state(state: Dictionary, current_driver_id: int) -> void:
