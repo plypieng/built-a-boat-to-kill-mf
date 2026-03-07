@@ -85,6 +85,12 @@ Optional client overrides:
 ./tools/run_client.sh --host=127.0.0.1 --port=7000 --name=Captain
 ```
 
+Desktop frame capture for visual checks:
+
+```bash
+./tools/run_client.sh --host=127.0.0.1 --port=7000 --name=VisualCheck --autoconnect --capture-frame-path=/tmp/builtaboat-frame.png --capture-frame-delay-ms=1800 --quit-after-connect-ms=3200
+```
+
 Headless smoke-test client:
 
 ```bash
@@ -200,4 +206,5 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 - The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.
 - The current networking model now sends boat motion separately from structural runtime state so large block boats do not overflow the unreliable ENet packet budget during launch.
 - The current server scene logs heartbeat, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
-- Manual desktop testing still matters for feel and control tuning even though the headless handshake and movement loop are now scriptable.
+- `--capture-frame-path` and `--capture-frame-delay-ms` let the hangar and run client save a viewport PNG for local visual inspections without relying on OS-level window capture.
+- A manual visual pass confirmed the post-run reward handoff, but also showed that the hangar boat reads too small beneath the current UI and the in-run nameplates/station labels are overcrowded once multiple crew stand on deck.

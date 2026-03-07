@@ -19,6 +19,8 @@ func parse_cmdline_overrides() -> Dictionary:
 		"port": DEFAULT_PORT,
 		"player_name": DEFAULT_PLAYER_NAME,
 		"seed": DEFAULT_RUN_SEED,
+		"capture_frame_path": "",
+		"capture_frame_delay_ms": 0,
 		"autoconnect": false,
 		"quit_after_connect_ms": 0,
 		"autodrive_ms": 0,
@@ -42,6 +44,10 @@ func parse_cmdline_overrides() -> Dictionary:
 			overrides["player_name"] = arg.trim_prefix("--name=").strip_edges()
 		elif arg.begins_with("--seed="):
 			overrides["seed"] = arg.trim_prefix("--seed=").to_int()
+		elif arg.begins_with("--capture-frame-path="):
+			overrides["capture_frame_path"] = arg.trim_prefix("--capture-frame-path=").strip_edges()
+		elif arg.begins_with("--capture-frame-delay-ms="):
+			overrides["capture_frame_delay_ms"] = max(0, arg.trim_prefix("--capture-frame-delay-ms=").to_int())
 		elif arg == "--autoconnect":
 			overrides["autoconnect"] = true
 		elif arg.begins_with("--quit-after-connect-ms="):

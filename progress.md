@@ -335,12 +335,33 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - successful extraction returned to `phase=hangar` cleanly
   - fixed a follow-up bug where `--autobuild-role` would rerun after hangar return and immediately relaunch the run
   - `autobuild` roles are now one-shot per client process via `GameConfig`
-- Attempted a true visual desktop pass, but macOS Screen Recording permission blocked live screenshot capture in this environment, so the remaining manual-feel gap is still unresolved.
+
+## 2026-03-08 Desktop Visual Pass
+
+- Added lightweight viewport-capture debug flags:
+  - `--capture-frame-path=<png path>`
+  - `--capture-frame-delay-ms=<delay>`
+- The hangar and run client now save a local viewport PNG after an optional delay, which gives us a deterministic visual-check path even when OS-level window capture is unreliable.
+- Re-ran the manual visual pass after Screen Recording was granted using a fresh temporary Godot `HOME`:
+  - captured the pre-run hangar at `/tmp/builtaboat-visual-MGgD9I/hangar.png`
+  - captured an in-run four-client co-op view at `/tmp/builtaboat-visual-MGgD9I/run.png`
+  - captured a post-success hangar reload with banked rewards at `/tmp/builtaboat-visual-MGgD9I/postrun_hangar.png`
+- Verified visually:
+  - the hangar shows the shared block-built boat and current derived stats
+  - the in-run view shows the real runtime block boat, crew placeholders, wreck ring, and hazard marker
+  - the successful run rewards persist back into the hangar profile (`Gold 88 | Salvage 5 | Runs 1 | Extracted 1`)
+- Visual-readability issues surfaced by the pass:
+  - the hangar boat is too small relative to the current camera framing and wide HUD panels
+  - the in-run deck labels stack on top of each other once several crew members occupy nearby stations
+  - the large hazard sphere reads more like a placeholder debug prop than a shippable encounter marker
 
 ## TODOs
 
-- Run a manual desktop play pass focused on builder readability, block damage clarity, detached-chunk presentation, and chase-camera feel.
-- Re-verify the full `hangar -> successful run -> dock/hangar` handoff after the runtime block-damage changes, not just the isolated run loop.
+- Polish the manual desktop presentation:
+  - better hangar boat framing
+  - less crowded in-run crew/station labels
+  - more intentional hazard visuals
+- Re-verify the full `hangar -> successful run -> dock/hangar` handoff in one continuous desktop capture path, not just as separate verified states.
 - Add stronger client-side feedback for block loss, such as recent-hit flashes, clearer chunk-detach messaging, and better destroyed-block readability.
 - Decide whether repairs should remain aggregate hull patches or start targeting specific damaged block clusters.
 - Decide whether cargo stored in detached cargo blocks should eventually be visualized per block instead of using aggregate overflow rules.

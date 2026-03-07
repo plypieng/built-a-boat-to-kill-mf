@@ -81,6 +81,7 @@ func _ready() -> void:
 	_build_result_overlay()
 	_refresh_world()
 	_refresh_hud()
+	_schedule_frame_capture()
 	_schedule_optional_quit()
 	_initialize_autopilot()
 	print("Run client ready with seed %d and peer id %d." % [NetworkRuntime.run_seed, _get_local_peer_id()])
@@ -1668,6 +1669,26 @@ func _schedule_optional_quit() -> void:
 
 	get_tree().create_timer(float(quit_after_connect_ms) / 1000.0).timeout.connect(_quit_after_connect_timer)
 	print("Client auto-quit armed for %d ms after connect." % quit_after_connect_ms)
+
+func _schedule_frame_capture() -> void:
+	var capture_path := str(launch_overrides.get("capture_frame_path", ""))
+	if capture_path.is_empty():
+		return
+	var delay_ms: int = maxi(0, int(launch_overrides.get("capture_frame_delay_ms", 0)))
+	get_tree().create_timer(float(delay_ms) / 1000.0).timeout.connect(_capture_frame)
+
+func _capture_frame() -> void:
+	var capture_path := str(launch_overrides.get("capture_frame_path", ""))
+	if capture_path.is_empty():
+		return
+	await RenderingServer.frame_post_draw
+	DirAccess.make_dir_recursive_absolute(capture_path.get_base_dir())
+	var image: Image = get_viewport().get_texture().get_image()
+	var result: int = image.save_png(capture_path)
+	if result == OK:
+		print("Captured run frame to %s" % capture_path)
+	else:
+		push_warning("Failed to capture run frame to %s (error %d)." % [capture_path, result])
 
 func _quit_after_connect_timer() -> void:
 	print("Client auto-quit triggered. Final run state: %s | boat=%s" % [
