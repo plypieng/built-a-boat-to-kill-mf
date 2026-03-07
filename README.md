@@ -31,6 +31,13 @@ Milestone 2 prototype adds:
 - a success/failure result overlay in the client scene
 - a scripted autorun demo for end-to-end success-path smoke tests
 
+Milestone 3 prototype adds:
+
+- a repair bench station for in-run hull recovery
+- a wreck salvage POI with multiple pickups instead of a single floating crate
+- hull breaches that reduce top speed and leak integrity over time until repaired
+- role-based autorun helpers for `driver`, `grapple`, `brace`, and `repair`
+
 ## Local Run
 
 Start the local dedicated server:
@@ -88,9 +95,25 @@ Headless failure-path crash test:
 godot --headless --path . --quit-after 3000 -- --host=127.0.0.1 --port=7000 --name=CrashBot --autoconnect --autoclaim-station=helm --autodrive-ms=22000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=23000
 ```
 
+Three-client co-op salvage smoke test:
+
+```bash
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autorun-role=driver --quit-after-connect-ms=17000
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=GrapplerBot --autoconnect --autorun-role=grapple --quit-after-connect-ms=17000
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autorun-role=brace --quit-after-connect-ms=17000
+```
+
+Two-client repair-pressure soak test:
+
+```bash
+godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=CrashBot --autoconnect --autoclaim-station=helm --autodrive-ms=20000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=21000
+godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=RepairBot --autoconnect --autorun-role=repair --quit-after-connect-ms=21000
+```
+
 ## Notes
 
 - The current client scene renders a simple ocean and replicated shared-boat placeholder.
-- The current client scene now renders deck stations, placeholder crew, loot, extraction markers, and a result overlay.
-- The current server scene logs heartbeat, roster, station ownership, cargo, extraction progress, and run outcomes.
+- The current client scene now renders deck stations, placeholder crew, wreck salvage, loot, extraction markers, and a result overlay.
+- The current run model includes breach-driven speed loss and hull leakage that can be countered at the repair bench.
+- The current server scene logs heartbeat, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
 - Manual desktop testing still matters for feel and control tuning even though the headless handshake and movement loop are now scriptable.

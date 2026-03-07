@@ -123,6 +123,38 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - result: `phase=failed`, `hull_integrity=0.0`, `collision_count=6`
   - failure reason: `Hull destroyed in open water.`
 
+## 2026-03-07 Co-op Pressure Slice
+
+- Expanded the shared boat stations to:
+  - `helm`
+  - `brace`
+  - `grapple`
+  - `repair`
+- Replaced the single floating loot pickup with a wreck salvage POI that contains multiple loot targets.
+- Added wreck-specific salvage rules:
+  - the boat must be inside the wreck ring
+  - the boat must be below salvage speed
+  - unbraced salvage surges damage the hull and add breaches
+- Added breach-driven damage pressure:
+  - breaches reduce effective top speed
+  - breaches leak hull integrity over time
+  - the repair bench clears breaches and restores hull integrity
+- Added `--autorun-role=<driver|grapple|brace|repair>` for headless role-based smoke tests.
+- Verified three-client co-op salvage run on port `7042`:
+  - `DriverBot` held the boat over the wreck and then piloted extraction
+  - `BraceBot` covered both salvage pulls and later braced on the return leg
+  - `GrapplerBot` recovered both wreck loot items
+  - result: `phase=success`, `cargo_secured=2`, `loot_remaining=0`
+  - the crew still took one later collision on the way out, finishing at `77.2` hull with `2` breaches
+- Verified repair-pressure soak on port `7043`:
+  - `CrashBot` continuously drove through hazards
+  - `RepairBot` claimed the repair bench and patched repeatedly
+  - result after `8` collisions: `repair_actions=14`, hull still above `90` when both clients disconnected
+  - this confirms the repair role is meaningfully counteracting breach pressure in-run
+- Ran an exploratory solo autorun pass on port `7044`:
+  - solo station swapping successfully recovered both loot items and used the repair bench
+  - extraction autopilot still needs tuning for reliable solo completion, so this path should be treated as experimental rather than a primary smoke test
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.
@@ -134,7 +166,8 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Start Milestone 0 by scaffolding the Godot project, local client/server boot flow, and authoritative shared boat prototype.
 - Run an interactive local client/server test in the Godot app and fix any UI or networking issues found there.
 - Start Milestone 1 with a replicated shared boat movement prototype once the client connect flow is confirmed.
-- Add a dedicated brace-station co-op smoke test now that helm and brace are separate stations.
+- Tune the driver/bracer path so the co-op salvage route can avoid the post-wreck collision consistently.
+- Decide whether solo autorun support should remain a dev convenience or become a supported single-player fallback.
 - Add at least one manual desktop play pass for station readability, camera feel, and result-screen presentation.
 
 ## Suggestions For Next Agent

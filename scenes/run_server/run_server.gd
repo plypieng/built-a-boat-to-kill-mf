@@ -33,23 +33,26 @@ func _on_heartbeat_timeout() -> void:
 		NetworkRuntime.peer_snapshot.size(),
 		NetworkRuntime.run_seed,
 	])
-	print("Boat: driver=%s pos=%s speed=%.2f throttle=%.2f steer=%.2f hp=%.1f brace=%.2f cooldown=%.2f collisions=%d hazards=%d" % [
+	print("Boat: driver=%s pos=%s speed=%.2f/%.2f throttle=%.2f steer=%.2f hp=%.1f breaches=%d brace=%.2f repairCd=%.2f collisions=%d hazards=%d" % [
 		NetworkRuntime.get_driver_name(),
 		str(boat_position),
 		float(NetworkRuntime.boat_state.get("speed", 0.0)),
+		float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED)),
 		float(NetworkRuntime.boat_state.get("throttle", 0.0)),
 		float(NetworkRuntime.boat_state.get("steer", 0.0)),
 		float(NetworkRuntime.boat_state.get("hull_integrity", 100.0)),
+		int(NetworkRuntime.boat_state.get("breach_stacks", 0)),
 		float(NetworkRuntime.boat_state.get("brace_timer", 0.0)),
-		float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0)),
+		float(NetworkRuntime.boat_state.get("repair_cooldown", 0.0)),
 		int(NetworkRuntime.boat_state.get("collision_count", 0)),
 		NetworkRuntime.hazard_state.size(),
 	])
-	print("Run: phase=%s cargo=%d secured=%d lootRemaining=%d extract=%.2f/%.2f stations=%s" % [
+	print("Run: phase=%s cargo=%d secured=%d lootRemaining=%d repairs=%d extract=%.2f/%.2f stations=%s" % [
 		str(NetworkRuntime.run_state.get("phase", "running")),
 		int(NetworkRuntime.run_state.get("cargo_count", 0)),
 		int(NetworkRuntime.run_state.get("cargo_secured", 0)),
 		int(NetworkRuntime.run_state.get("loot_remaining", 0)),
+		int(NetworkRuntime.run_state.get("repair_actions", 0)),
 		float(NetworkRuntime.run_state.get("extraction_progress", 0.0)),
 		float(NetworkRuntime.run_state.get("extraction_duration", 0.0)),
 		", ".join(station_summaries),
@@ -62,17 +65,19 @@ func _on_helm_changed(driver_peer_id: int) -> void:
 	print("Helm changed: peer=%d name=%s" % [driver_peer_id, NetworkRuntime.get_driver_name()])
 
 func _on_station_state_changed(_stations: Dictionary) -> void:
-	print("Stations updated: helm=%s brace=%s grapple=%s" % [
+	print("Stations updated: helm=%s brace=%s grapple=%s repair=%s" % [
 		NetworkRuntime.get_station_occupant_name("helm"),
 		NetworkRuntime.get_station_occupant_name("brace"),
 		NetworkRuntime.get_station_occupant_name("grapple"),
+		NetworkRuntime.get_station_occupant_name("repair"),
 	])
 
 func _on_run_state_changed(_state: Dictionary) -> void:
-	var summary := "phase=%s cargo=%d secured=%d message=%s" % [
+	var summary := "phase=%s cargo=%d secured=%d repairs=%d message=%s" % [
 		str(NetworkRuntime.run_state.get("phase", "running")),
 		int(NetworkRuntime.run_state.get("cargo_count", 0)),
 		int(NetworkRuntime.run_state.get("cargo_secured", 0)),
+		int(NetworkRuntime.run_state.get("repair_actions", 0)),
 		str(NetworkRuntime.run_state.get("result_message", "")),
 	]
 	if summary == last_run_summary:

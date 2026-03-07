@@ -28,6 +28,10 @@ var crew_container: Node3D
 var hazard_container: Node3D
 var station_container: Node3D
 var loot_container: Node3D
+var wreck_root: Node3D
+var wreck_ring_material: StandardMaterial3D
+var wreck_hull_material: StandardMaterial3D
+var wreck_label: Label3D
 var extraction_root: Node3D
 var extraction_ring_material: StandardMaterial3D
 var extraction_buoy_material: StandardMaterial3D
@@ -47,6 +51,7 @@ var station_next_latched := false
 var interact_latched := false
 var brace_request_latched := false
 var grapple_request_latched := false
+var repair_request_latched := false
 var selected_station_index := 0
 var last_known_phase := "running"
 var station_visuals: Dictionary = {}
@@ -79,6 +84,7 @@ func _process(delta: float) -> void:
 	_update_boat_visual(delta)
 	_update_hazard_visuals()
 	_update_loot_visuals()
+	_update_wreck_visual()
 	_update_extraction_visual(delta)
 	_update_camera()
 
@@ -98,6 +104,8 @@ func _physics_process(delta: float) -> void:
 		NetworkRuntime.request_brace()
 	if bool(input_state.get("request_grapple", false)):
 		NetworkRuntime.request_grapple()
+	if bool(input_state.get("request_repair", false)):
+		NetworkRuntime.request_repair()
 
 	if NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) == "helm":
 		NetworkRuntime.send_local_boat_input(
@@ -134,6 +142,10 @@ func _build_world() -> void:
 
 	loot_container = Node3D.new()
 	add_child(loot_container)
+
+	wreck_root = Node3D.new()
+	add_child(wreck_root)
+	_build_wreck_visual()
 
 	extraction_root = Node3D.new()
 	add_child(extraction_root)
@@ -226,6 +238,50 @@ func _build_station_visuals() -> void:
 			"beacon": beacon_mesh,
 			"label": label,
 		}
+
+func _build_wreck_visual() -> void:
+	var ring_mesh_instance := MeshInstance3D.new()
+	ring_mesh_instance.name = "WreckRing"
+	var ring_mesh := CylinderMesh.new()
+	ring_mesh.height = 0.06
+	ring_mesh.top_radius = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	ring_mesh.bottom_radius = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	ring_mesh_instance.mesh = ring_mesh
+	ring_mesh_instance.position = Vector3(0.0, 0.03, 0.0)
+	wreck_ring_material = StandardMaterial3D.new()
+	wreck_ring_material.albedo_color = Color(0.87, 0.56, 0.19)
+	wreck_ring_material.roughness = 0.22
+	ring_mesh_instance.material_override = wreck_ring_material
+	wreck_root.add_child(ring_mesh_instance)
+
+	var wreck_hull := MeshInstance3D.new()
+	wreck_hull.name = "WreckHull"
+	var hull_mesh := BoxMesh.new()
+	hull_mesh.size = Vector3(4.4, 0.7, 2.2)
+	wreck_hull.mesh = hull_mesh
+	wreck_hull.rotation_degrees = Vector3(0.0, 18.0, 14.0)
+	wreck_hull.position = Vector3(-0.35, 0.55, -0.25)
+	wreck_hull_material = StandardMaterial3D.new()
+	wreck_hull_material.albedo_color = Color(0.38, 0.24, 0.18)
+	wreck_hull.material_override = wreck_hull_material
+	wreck_root.add_child(wreck_hull)
+
+	var mast_stub := MeshInstance3D.new()
+	var mast_mesh := CylinderMesh.new()
+	mast_mesh.height = 1.8
+	mast_mesh.top_radius = 0.08
+	mast_mesh.bottom_radius = 0.1
+	mast_stub.mesh = mast_mesh
+	mast_stub.position = Vector3(0.55, 1.15, 0.35)
+	mast_stub.rotation_degrees = Vector3(0.0, 0.0, 34.0)
+	mast_stub.material_override = wreck_hull_material
+	wreck_root.add_child(mast_stub)
+
+	wreck_label = Label3D.new()
+	wreck_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	wreck_label.font_size = 24
+	wreck_label.position = Vector3(0.0, 2.4, 0.0)
+	wreck_root.add_child(wreck_label)
 
 func _build_extraction_visual() -> void:
 	var ring_mesh_instance := MeshInstance3D.new()
@@ -324,7 +380,7 @@ func _build_hud() -> void:
 	layout.add_child(roster_label)
 
 	var footer := Label.new()
-	footer.text = "Controls: Q/E cycle station | F claim/release | W/S throttle | A/D steer | Space brace | G grapple."
+	footer.text = "Controls: Q/E cycle station | F claim/release | W/S throttle | A/D steer | Space brace | G grapple | R repair."
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	layout.add_child(footer)
 
@@ -371,6 +427,7 @@ func _refresh_world() -> void:
 	_refresh_crew_visuals()
 	_refresh_hazard_visuals()
 	_refresh_loot_visuals()
+	_refresh_wreck_visual()
 	_refresh_extraction_visual()
 	_refresh_result_overlay()
 	_update_boat_material()
@@ -384,13 +441,18 @@ func _refresh_hud() -> void:
 	var extraction_progress: float = float(NetworkRuntime.run_state.get("extraction_progress", 0.0))
 	var extraction_duration: float = float(NetworkRuntime.run_state.get("extraction_duration", 1.0))
 	var hull_integrity: float = float(NetworkRuntime.boat_state.get("hull_integrity", 100.0))
+	var breach_stacks := int(NetworkRuntime.boat_state.get("breach_stacks", 0))
+	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
 	var extraction_distance := boat_position.distance_to(extraction_position)
+	var wreck_distance := boat_position.distance_to(wreck_position)
 
-	run_label.text = "Phase: %s | Seed: %d | Cargo: %d | Loot Remaining: %d | Extract: %.1f/%.1fs | Dist: %.1f" % [
+	run_label.text = "Phase: %s | Seed: %d | Cargo: %d | Loot Remaining: %d | Breaches: %d | Wreck Dist: %.1f | Extract: %.1f/%.1fs | Dist: %.1f" % [
 		str(NetworkRuntime.run_state.get("phase", "running")),
 		NetworkRuntime.run_seed,
 		int(NetworkRuntime.run_state.get("cargo_count", 0)),
 		int(NetworkRuntime.run_state.get("loot_remaining", 0)),
+		breach_stacks,
+		wreck_distance,
 		extraction_progress,
 		extraction_duration,
 		extraction_distance,
@@ -408,13 +470,16 @@ func _refresh_hud() -> void:
 	station_label.text = "Stations:\n%s" % ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")
 
 	interaction_label.text = _build_interaction_text(selected_station_id, local_station_id)
-	boat_label.text = "Boat: hp=%.1f speed=%.2f pos=(%.2f, %.2f, %.2f) heading=%.2f collisions=%d lastImpact=%.1f braced=%s" % [
+	boat_label.text = "Boat: hp=%.1f speed=%.2f/%.2f pos=(%.2f, %.2f, %.2f) heading=%.2f breaches=%d repairCd=%.2f collisions=%d lastImpact=%.1f braced=%s" % [
 		hull_integrity,
 		float(NetworkRuntime.boat_state.get("speed", 0.0)),
+		float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED)),
 		boat_position.x,
 		boat_position.y,
 		boat_position.z,
 		float(NetworkRuntime.boat_state.get("rotation_y", 0.0)),
+		breach_stacks,
+		float(NetworkRuntime.boat_state.get("repair_cooldown", 0.0)),
 		int(NetworkRuntime.boat_state.get("collision_count", 0)),
 		float(NetworkRuntime.boat_state.get("last_impact_damage", 0.0)),
 		"yes" if bool(NetworkRuntime.boat_state.get("last_impact_braced", false)) else "no",
@@ -451,13 +516,17 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 		lines.append("%s is using this station." % occupant_name)
 
 	if local_station_id == "helm":
-		lines.append("Drive with W/S for throttle and A/D for steering.")
+		lines.append("Hold the boat steady over wrecks and line up safe extraction approaches.")
 	elif local_station_id == "brace":
-		lines.append("Press Space to brace for the next impact window.")
+		lines.append("Press Space to cover collisions or salvage surges for the crew.")
 	elif local_station_id == "grapple":
-		lines.append("Press G to reel nearby loot into cargo.")
+		lines.append("Press G to recover nearby wreck salvage once the helm has slowed the boat.")
+	elif local_station_id == "repair":
+		lines.append("Press R to patch breaches and recover some hull integrity.")
 	else:
 		lines.append("Cycle stations with Q and E.")
+
+	lines.append("Unbraced wreck grapples add hull breaches that slow the boat until repaired.")
 
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		lines.append("Run complete. The result panel shows the final outcome.")
@@ -597,6 +666,34 @@ func _refresh_loot_visuals() -> void:
 		label.position = Vector3(0.0, 0.75, 0.0)
 		loot_node.add_child(label)
 
+func _refresh_wreck_visual() -> void:
+	if wreck_root == null:
+		return
+
+	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
+	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	wreck_root.position = wreck_position
+
+	var ring_mesh_instance := wreck_root.get_node_or_null("WreckRing") as MeshInstance3D
+	if ring_mesh_instance != null:
+		var ring_mesh := ring_mesh_instance.mesh as CylinderMesh
+		if ring_mesh != null:
+			ring_mesh.top_radius = wreck_radius
+			ring_mesh.bottom_radius = wreck_radius
+
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
+	var boat_in_wreck := boat_position.distance_to(wreck_position) <= wreck_radius
+	var ready_color := Color(0.23, 0.79, 0.57) if boat_in_wreck and boat_speed <= float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)) else Color(0.87, 0.56, 0.19)
+	wreck_ring_material.albedo_color = ready_color
+	wreck_hull_material.albedo_color = Color(0.38, 0.24, 0.18).lerp(Color(0.58, 0.32, 0.18), 0.18 if boat_in_wreck else 0.0)
+	wreck_label.text = "Wreck Salvage\nLoot %d/%d | Max Speed %.1f" % [
+		int(NetworkRuntime.run_state.get("loot_remaining", 0)),
+		int(NetworkRuntime.run_state.get("loot_total", 0)),
+		float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)),
+	]
+	wreck_label.modulate = ready_color.lightened(0.18)
+
 func _refresh_extraction_visual() -> void:
 	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
 	extraction_root.position = extraction_position
@@ -648,6 +745,7 @@ func _collect_input_state(delta: float) -> Dictionary:
 		"claim_station": "",
 		"request_brace": false,
 		"request_grapple": false,
+		"request_repair": false,
 		"throttle": 0.0,
 		"steer": 0.0,
 	}
@@ -657,7 +755,10 @@ func _collect_input_state(delta: float) -> Dictionary:
 	_collect_action_input(input_state)
 	_collect_drive_input(input_state)
 
-	if bool(launch_overrides.get("autorun_demo", false)):
+	var autorun_role := str(launch_overrides.get("autorun_role", ""))
+	if not autorun_role.is_empty():
+		_apply_autorun_role(delta, autorun_role, input_state)
+	elif bool(launch_overrides.get("autorun_demo", false)):
 		_apply_autorun_demo(delta, input_state)
 	else:
 		_apply_scripted_station_input(delta, input_state)
@@ -700,6 +801,11 @@ func _collect_action_input(input_state: Dictionary) -> void:
 		input_state["request_grapple"] = true
 	grapple_request_latched = grapple_pressed
 
+	var repair_pressed := Input.is_key_pressed(KEY_R)
+	if repair_pressed and not repair_request_latched and local_station_id == "repair":
+		input_state["request_repair"] = true
+	repair_request_latched = repair_pressed
+
 func _collect_drive_input(input_state: Dictionary) -> void:
 	if NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) != "helm":
 		return
@@ -738,27 +844,73 @@ func _apply_scripted_station_input(delta: float, input_state: Dictionary) -> voi
 	elif desired_station_id == "brace" and bool(launch_overrides.get("autobrace", false)) and NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) == "brace" and action_request_cooldown <= 0.0 and _should_autobrace():
 		input_state["request_brace"] = true
 		action_request_cooldown = 0.35
+	elif desired_station_id == "repair" and NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id()) == "repair" and action_request_cooldown <= 0.0 and int(NetworkRuntime.boat_state.get("breach_stacks", 0)) > 0:
+		input_state["request_repair"] = true
+		action_request_cooldown = 0.45
+
+func _apply_autorun_role(delta: float, autorun_role: String, input_state: Dictionary) -> void:
+	match autorun_role:
+		"driver":
+			_apply_driver_role(input_state)
+		"grapple":
+			_apply_grapple_role(input_state)
+		"brace":
+			_apply_brace_role(input_state)
+		"repair":
+			_apply_repair_role(input_state)
+		_:
+			_apply_scripted_station_input(delta, input_state)
 
 func _apply_autorun_demo(_delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
 
 	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
-	var cargo_count := int(NetworkRuntime.run_state.get("cargo_count", 0))
 	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var boat_speed: float = float(NetworkRuntime.boat_state.get("speed", 0.0))
+	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
+	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	var breach_stacks := int(NetworkRuntime.boat_state.get("breach_stacks", 0))
+	var brace_timer: float = float(NetworkRuntime.boat_state.get("brace_timer", 0.0))
+	var brace_cooldown: float = float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0))
 
-	if cargo_count == 0 and loot_remaining > 0:
-		if boat_position.distance_to(Vector3(0.0, 0.0, 3.1)) > 1.0:
+	if loot_remaining > 0:
+		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
 			_request_station_if_needed("helm", input_state)
 			if local_station_id == "helm":
-				_apply_drive_to_target(Vector3(0.0, 0.0, 3.1), input_state)
+				_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
+			return
+
+		if boat_speed > float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
+			_request_station_if_needed("helm", input_state)
+			if local_station_id == "helm":
+				_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
+			return
+
+		if brace_timer <= 0.0 and brace_cooldown <= 0.0:
+			_request_station_if_needed("brace", input_state)
+			if local_station_id == "brace" and action_request_cooldown <= 0.0:
+				input_state["request_brace"] = true
+				action_request_cooldown = 0.2
+			return
+
+		if brace_timer <= 0.0:
+			_request_station_if_needed("helm", input_state)
+			if local_station_id == "helm":
+				_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
 			return
 
 		_request_station_if_needed("grapple", input_state)
 		if local_station_id == "grapple" and action_request_cooldown <= 0.0:
 			input_state["request_grapple"] = true
+			action_request_cooldown = 0.45
+		return
+
+	if breach_stacks > 0:
+		_request_station_if_needed("repair", input_state)
+		if local_station_id == "repair" and action_request_cooldown <= 0.0:
+			input_state["request_repair"] = true
 			action_request_cooldown = 0.45
 		return
 
@@ -770,11 +922,101 @@ func _apply_autorun_demo(_delta: float, input_state: Dictionary) -> void:
 	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
 	var target := Vector3(-4.2, 0.0, 20.0) if boat_position.z < 18.0 else Vector3(-2.0, 0.0, extraction_position.z)
 	if boat_position.distance_to(extraction_position) <= extraction_radius + 0.6:
-		input_state["steer"] = clampf(-boat_position.x * 0.14, -0.6, 0.6)
-		input_state["throttle"] = -0.35 if boat_speed > NetworkRuntime.EXTRACTION_MAX_SPEED else 0.0
+		_hold_position_over_target(extraction_position, NetworkRuntime.EXTRACTION_MAX_SPEED, input_state)
 		return
 
 	_apply_drive_to_target(target, input_state)
+
+func _apply_driver_role(input_state: Dictionary) -> void:
+	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
+		return
+
+	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	_request_station_if_needed("helm", input_state)
+	if local_station_id != "helm":
+		return
+
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
+	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
+	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	if loot_remaining > 0:
+		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
+			_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
+		else:
+			_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
+		return
+
+	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
+	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
+	var target := Vector3(-4.2, 0.0, 20.0) if boat_position.z < 18.0 else Vector3(-2.0, 0.0, extraction_position.z)
+	if boat_position.distance_to(extraction_position) <= extraction_radius + 0.6:
+		_hold_position_over_target(extraction_position, NetworkRuntime.EXTRACTION_MAX_SPEED, input_state)
+		return
+
+	_apply_drive_to_target(target, input_state)
+
+func _apply_grapple_role(input_state: Dictionary) -> void:
+	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
+		return
+	if int(NetworkRuntime.run_state.get("loot_remaining", 0)) <= 0:
+		return
+
+	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	_request_station_if_needed("grapple", input_state)
+	if local_station_id != "grapple":
+		return
+
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
+	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	if boat_position.distance_to(wreck_position) > wreck_radius:
+		return
+	if float(NetworkRuntime.boat_state.get("brace_timer", 0.0)) <= 0.0:
+		return
+	if absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) > float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
+		return
+	if action_request_cooldown > 0.0:
+		return
+
+	input_state["request_grapple"] = true
+	action_request_cooldown = 0.45
+
+func _apply_brace_role(input_state: Dictionary) -> void:
+	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
+		return
+	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	_request_station_if_needed("brace", input_state)
+	if local_station_id != "brace":
+		return
+	if float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0)) > 0.0 or action_request_cooldown > 0.0:
+		return
+
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
+	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	var salvage_ready := int(NetworkRuntime.run_state.get("loot_remaining", 0)) > 0 and boat_position.distance_to(wreck_position) <= wreck_radius + 0.55 and absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) <= float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)) + 0.45
+	if not salvage_ready and not _should_autobrace():
+		return
+
+	input_state["request_brace"] = true
+	action_request_cooldown = 0.35
+
+func _apply_repair_role(input_state: Dictionary) -> void:
+	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
+		return
+	if int(NetworkRuntime.boat_state.get("breach_stacks", 0)) <= 0:
+		return
+
+	var local_station_id := NetworkRuntime.get_peer_station_id(multiplayer.get_unique_id())
+	_request_station_if_needed("repair", input_state)
+	if local_station_id != "repair":
+		return
+	if float(NetworkRuntime.boat_state.get("repair_cooldown", 0.0)) > 0.0 or action_request_cooldown > 0.0:
+		return
+
+	input_state["request_repair"] = true
+	action_request_cooldown = 0.45
 
 func _apply_drive_to_target(target: Vector3, input_state: Dictionary) -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
@@ -795,6 +1037,24 @@ func _apply_drive_to_target(target: Vector3, input_state: Dictionary) -> void:
 		throttle = minf(throttle, 0.2)
 
 	input_state["steer"] = steer
+	input_state["throttle"] = throttle
+
+func _hold_position_over_target(target: Vector3, max_speed: float, input_state: Dictionary) -> void:
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var rotation_y: float = float(NetworkRuntime.boat_state.get("rotation_y", 0.0))
+	var current_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
+	var to_target := target - boat_position
+	var distance := to_target.length()
+	var local_offset := to_target.rotated(Vector3.UP, -rotation_y)
+	input_state["steer"] = clampf(local_offset.x * 0.18, -0.7, 0.7)
+
+	var throttle := 0.0
+	if current_speed > max_speed:
+		throttle = -0.35
+	elif distance > 1.5 and current_speed < max_speed * 0.6:
+		throttle = 0.22
+	elif distance > 0.8 and current_speed < max_speed * 0.35:
+		throttle = 0.12
 	input_state["throttle"] = throttle
 
 func _request_station_if_needed(station_id: String, input_state: Dictionary) -> void:
@@ -865,6 +1125,13 @@ func _update_loot_visuals() -> void:
 		var bob_height := sin(connect_time_seconds * 1.8 + float(loot_id)) * 0.16
 		loot_node.position = base_position + Vector3(0.0, 0.55 + bob_height, 0.0)
 
+func _update_wreck_visual() -> void:
+	if wreck_root == null:
+		return
+
+	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
+	wreck_root.position = wreck_position + Vector3(0.0, sin(connect_time_seconds * 0.72) * 0.06, 0.0)
+
 func _update_extraction_visual(_delta: float) -> void:
 	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
 	extraction_root.position = extraction_position + Vector3(0.0, sin(connect_time_seconds * 0.95) * 0.08, 0.0)
@@ -916,7 +1183,10 @@ func _quit_after_connect_timer() -> void:
 
 func _initialize_autopilot() -> void:
 	autopilot_remaining_seconds = float(int(launch_overrides.get("autodrive_ms", 0))) / 1000.0
-	if bool(launch_overrides.get("autorun_demo", false)):
+	var autorun_role := str(launch_overrides.get("autorun_role", ""))
+	if not autorun_role.is_empty():
+		_select_station(autorun_role if autorun_role != "driver" else "helm")
+	elif bool(launch_overrides.get("autorun_demo", false)):
 		_select_station("helm")
 	elif not str(launch_overrides.get("autoclaim_station", "")).is_empty():
 		_select_station(str(launch_overrides.get("autoclaim_station", "")))
@@ -969,6 +1239,7 @@ func _on_helm_changed(_driver_peer_id: int) -> void:
 
 func _on_boat_state_changed(_state: Dictionary) -> void:
 	_update_boat_material()
+	_refresh_wreck_visual()
 	_refresh_extraction_visual()
 	_refresh_hud()
 
@@ -983,6 +1254,7 @@ func _on_station_state_changed(_stations: Dictionary) -> void:
 
 func _on_loot_state_changed(_loot_targets: Array) -> void:
 	_refresh_loot_visuals()
+	_refresh_wreck_visual()
 	_refresh_extraction_visual()
 	_refresh_hud()
 
@@ -991,6 +1263,7 @@ func _on_run_state_changed(_state: Dictionary) -> void:
 	if phase != last_known_phase:
 		print("Run phase changed: %s" % phase)
 		last_known_phase = phase
+	_refresh_wreck_visual()
 	_refresh_extraction_visual()
 	_refresh_result_overlay()
 	_refresh_hud()

@@ -20,7 +20,7 @@ enum Mode {
 	SERVER,
 }
 
-const STATION_ORDER := ["helm", "brace", "grapple"]
+const STATION_ORDER := ["helm", "brace", "grapple", "repair"]
 const STATION_LAYOUT := {
 	"helm": {
 		"label": "Helm",
@@ -33,6 +33,10 @@ const STATION_LAYOUT := {
 	"grapple": {
 		"label": "Grapple Crane",
 		"position": Vector3(0.95, 0.92, 0.45),
+	},
+	"repair": {
+		"label": "Repair Bench",
+		"position": Vector3(-0.95, 0.92, 1.05),
 	},
 }
 
@@ -48,6 +52,14 @@ const BRACE_COOLDOWN_SECONDS := 2.25
 const COLLISION_DAMAGE_UNBRACED := 18.0
 const COLLISION_DAMAGE_BRACED := 7.0
 const GRAPPLE_RANGE := 7.8
+const SALVAGE_MAX_SPEED := 1.55
+const SALVAGE_BACKLASH_DAMAGE := 6.0
+const SALVAGE_BACKLASH_BREACHES := 1
+const BREACH_SPEED_PENALTY := 0.16
+const MAX_BREACH_STACKS := 4
+const HULL_LEAK_DAMAGE_PER_BREACH := 0.55
+const REPAIR_COOLDOWN_SECONDS := 1.35
+const REPAIR_HULL_RECOVERY := 12.0
 const EXTRACTION_DURATION := 1.6
 const EXTRACTION_RADIUS := 3.7
 const EXTRACTION_MAX_SPEED := 2.25
@@ -216,6 +228,13 @@ func request_grapple() -> void:
 
 	server_request_grapple.rpc_id(1)
 
+func request_repair() -> void:
+	if multiplayer.is_server():
+		_process_repair(multiplayer.get_unique_id())
+		return
+
+	server_request_repair.rpc_id(1)
+
 func send_local_boat_input(throttle: float, steer: float) -> void:
 	var clamped_throttle := clampf(throttle, -1.0, 1.0)
 	var clamped_steer := clampf(steer, -1.0, 1.0)
@@ -234,8 +253,14 @@ func server_step_shared_boat(delta: float) -> void:
 
 	var brace_timer: float = maxf(0.0, float(boat_state.get("brace_timer", 0.0)) - delta)
 	var brace_cooldown: float = maxf(0.0, float(boat_state.get("brace_cooldown", 0.0)) - delta)
+	var repair_cooldown: float = maxf(0.0, float(boat_state.get("repair_cooldown", 0.0)) - delta)
 	boat_state["brace_timer"] = brace_timer
 	boat_state["brace_cooldown"] = brace_cooldown
+	boat_state["repair_cooldown"] = repair_cooldown
+
+	var breach_stacks := int(boat_state.get("breach_stacks", 0))
+	var top_speed_limit := BOAT_TOP_SPEED * maxf(0.45, 1.0 - float(breach_stacks) * BREACH_SPEED_PENALTY)
+	boat_state["top_speed_limit"] = top_speed_limit
 
 	var input_state: Dictionary = _peer_inputs.get(driver_peer_id, {
 		"throttle": 0.0,
@@ -244,7 +269,7 @@ func server_step_shared_boat(delta: float) -> void:
 	var throttle: float = float(input_state.get("throttle", 0.0))
 	var steer: float = float(input_state.get("steer", 0.0))
 	var current_speed: float = float(boat_state.get("speed", 0.0))
-	var target_speed: float = throttle * BOAT_TOP_SPEED
+	var target_speed: float = throttle * top_speed_limit
 	var acceleration: float = BOAT_ACCELERATION if absf(target_speed) > absf(current_speed) else BOAT_DECELERATION
 	current_speed = move_toward(current_speed, target_speed, acceleration * delta)
 
@@ -266,6 +291,14 @@ func server_step_shared_boat(delta: float) -> void:
 	boat_state["steer"] = steer
 	boat_state["tick"] = int(boat_state.get("tick", 0)) + 1
 	boat_state["driver_peer_id"] = driver_peer_id
+
+	if breach_stacks > 0:
+		var leak_damage := HULL_LEAK_DAMAGE_PER_BREACH * float(breach_stacks) * delta
+		boat_state["hull_integrity"] = maxf(0.0, float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) - leak_damage)
+		if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
+			_broadcast_boat_state()
+			_resolve_run_failure("The hull flooded before the crew could repair it.")
+			return
 
 	_process_hazard_collisions()
 	_process_extraction(delta)
@@ -369,6 +402,9 @@ func _reset_run_runtime() -> void:
 		"hull_integrity": BOAT_MAX_INTEGRITY,
 		"brace_timer": 0.0,
 		"brace_cooldown": 0.0,
+		"repair_cooldown": 0.0,
+		"top_speed_limit": BOAT_TOP_SPEED,
+		"breach_stacks": 0,
 		"last_impact_damage": 0.0,
 		"last_impact_braced": false,
 		"collision_count": 0,
@@ -396,7 +432,8 @@ func _initialize_hazards() -> void:
 
 func _initialize_loot() -> void:
 	loot_state = [
-		_make_loot(Vector3(0.0, 0.0, 10.0), 1, "Drifting Cache"),
+		_make_loot(Vector3(-1.05, 0.0, 10.25), 1, "Barnacled Locker"),
+		_make_loot(Vector3(1.05, 0.0, 11.15), 1, "Sunken Supply Crate"),
 	]
 
 func _initialize_run_state() -> void:
@@ -405,7 +442,12 @@ func _initialize_run_state() -> void:
 		"cargo_count": 0,
 		"cargo_secured": 0,
 		"loot_collected": 0,
+		"loot_total": loot_state.size(),
 		"loot_remaining": loot_state.size(),
+		"wreck_position": Vector3(0.0, 0.0, 10.6),
+		"wreck_radius": 4.1,
+		"salvage_max_speed": SALVAGE_MAX_SPEED,
+		"repair_actions": 0,
 		"extraction_position": Vector3(0.0, 0.0, 34.0),
 		"extraction_radius": EXTRACTION_RADIUS,
 		"extraction_progress": 0.0,
@@ -425,7 +467,7 @@ func _make_hazard(position: Vector3, radius: float, label: String) -> Dictionary
 		"label": label,
 	}
 
-func _make_loot(position: Vector3, value: int, label: String) -> Dictionary:
+func _make_loot(position: Vector3, value: int, label: String, requires_brace: bool = true) -> Dictionary:
 	var loot_id: int = _next_loot_id
 	_next_loot_id += 1
 	return {
@@ -433,6 +475,7 @@ func _make_loot(position: Vector3, value: int, label: String) -> Dictionary:
 		"position": position,
 		"value": value,
 		"label": label,
+		"requires_brace": requires_brace,
 	}
 
 func _set_driver(peer_id: int, broadcast: bool = true) -> void:
@@ -517,12 +560,43 @@ func _begin_brace(peer_id: int) -> void:
 	_broadcast_boat_state()
 	_set_status("Brace station activated.")
 
+func _process_repair(peer_id: int) -> void:
+	if str(run_state.get("phase", "running")) != "running":
+		return
+	if get_peer_station_id(peer_id) != "repair":
+		return
+	if float(boat_state.get("repair_cooldown", 0.0)) > 0.0:
+		return
+
+	var breach_stacks := int(boat_state.get("breach_stacks", 0))
+	var hull_integrity: float = float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY))
+	if breach_stacks <= 0 and hull_integrity >= BOAT_MAX_INTEGRITY - 0.1:
+		return
+
+	boat_state["breach_stacks"] = maxi(0, breach_stacks - 1)
+	boat_state["hull_integrity"] = minf(BOAT_MAX_INTEGRITY, hull_integrity + REPAIR_HULL_RECOVERY)
+	boat_state["repair_cooldown"] = REPAIR_COOLDOWN_SECONDS
+	run_state["repair_actions"] = int(run_state.get("repair_actions", 0)) + 1
+	_broadcast_boat_state()
+	_broadcast_run_state()
+	_set_status("Repair bench patched the hull.")
+
 func _process_grapple(peer_id: int) -> void:
 	if str(run_state.get("phase", "running")) != "running":
 		return
 	if get_peer_station_id(peer_id) != "grapple":
 		return
 	if loot_state.is_empty():
+		return
+
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var wreck_position: Vector3 = run_state.get("wreck_position", Vector3.ZERO)
+	var wreck_radius: float = float(run_state.get("wreck_radius", 4.1))
+	if boat_position.distance_to(wreck_position) > wreck_radius:
+		_set_status("Bring the boat into the wreck ring before grappling salvage.")
+		return
+	if absf(float(boat_state.get("speed", 0.0))) > SALVAGE_MAX_SPEED:
+		_set_status("Slow the boat down before attempting wreck salvage.")
 		return
 
 	var grapple_position := _get_station_world_position("grapple")
@@ -541,13 +615,37 @@ func _process_grapple(peer_id: int) -> void:
 
 	var loot_target: Dictionary = loot_state[closest_index]
 	var cargo_value := int(loot_target.get("value", 1))
+	var requires_brace := bool(loot_target.get("requires_brace", true))
+	var was_braced := float(boat_state.get("brace_timer", 0.0)) > 0.0
 	run_state["cargo_count"] = int(run_state.get("cargo_count", 0)) + cargo_value
 	run_state["loot_collected"] = int(run_state.get("loot_collected", 0)) + 1
 	loot_state.remove_at(closest_index)
 	run_state["loot_remaining"] = loot_state.size()
+
+	if requires_brace:
+		boat_state["brace_timer"] = 0.0
+		if was_braced:
+			boat_state["last_impact_damage"] = 0.0
+			boat_state["last_impact_braced"] = true
+		else:
+			boat_state["hull_integrity"] = maxf(0.0, float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) - SALVAGE_BACKLASH_DAMAGE)
+			boat_state["last_impact_damage"] = SALVAGE_BACKLASH_DAMAGE
+			boat_state["last_impact_braced"] = false
+			boat_state["breach_stacks"] = mini(MAX_BREACH_STACKS, int(boat_state.get("breach_stacks", 0)) + SALVAGE_BACKLASH_BREACHES)
+			if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
+				_broadcast_loot_state()
+				_broadcast_run_state()
+				_broadcast_boat_state()
+				_resolve_run_failure("The salvage surge tore the hull apart.")
+				return
+
 	_broadcast_loot_state()
 	_broadcast_run_state()
-	_set_status("Grappled %s." % str(loot_target.get("label", "Loot")))
+	_broadcast_boat_state()
+	if requires_brace and not was_braced:
+		_set_status("Recovered %s, but the unbraced salvage surge damaged the hull." % str(loot_target.get("label", "Loot")))
+	else:
+		_set_status("Grappled %s." % str(loot_target.get("label", "Loot")))
 
 func _process_hazard_collisions() -> void:
 	if str(run_state.get("phase", "running")) != "running":
@@ -563,8 +661,10 @@ func _process_hazard_collisions() -> void:
 
 		var was_braced := float(boat_state.get("brace_timer", 0.0)) > 0.0
 		var damage := COLLISION_DAMAGE_BRACED if was_braced else COLLISION_DAMAGE_UNBRACED
+		var breach_delta := 1 if was_braced else 2
 		boat_state["hull_integrity"] = maxf(0.0, float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) - damage)
 		boat_state["speed"] = float(boat_state.get("speed", 0.0)) * (0.72 if was_braced else 0.38)
+		boat_state["breach_stacks"] = mini(MAX_BREACH_STACKS, int(boat_state.get("breach_stacks", 0)) + breach_delta)
 		boat_state["last_impact_damage"] = damage
 		boat_state["last_impact_braced"] = was_braced
 		boat_state["collision_count"] = int(boat_state.get("collision_count", 0)) + 1
@@ -740,6 +840,14 @@ func server_request_grapple() -> void:
 
 	var peer_id := multiplayer.get_remote_sender_id()
 	_process_grapple(peer_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_repair() -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_process_repair(peer_id)
 
 @rpc("any_peer", "call_remote", "unreliable")
 func server_receive_boat_input(throttle: float, steer: float) -> void:
