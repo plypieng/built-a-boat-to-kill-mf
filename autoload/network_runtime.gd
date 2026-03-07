@@ -44,8 +44,11 @@ const STATION_LAYOUT := {
 		"position": Vector3(-0.95, 0.92, 1.05),
 	},
 }
+const BUILDER_CELL_SIZE := 1.25
+const BUILDER_WORLD_ORIGIN := Vector3(0.0, 0.1, 0.0)
 const BUILDER_BOUNDS_MIN := Vector3i(-5, 0, -6)
 const BUILDER_BOUNDS_MAX := Vector3i(5, 4, 6)
+const HANGAR_BUILD_RANGE := 5.25
 const HANGAR_SPAWN_POINTS := [
 	Vector3(-3.6, 0.55, 6.8),
 	Vector3(-1.2, 0.55, 6.4),
@@ -284,6 +287,15 @@ func get_builder_bounds_min() -> Vector3i:
 
 func get_builder_bounds_max() -> Vector3i:
 	return BUILDER_BOUNDS_MAX
+
+func get_builder_cell_size() -> float:
+	return BUILDER_CELL_SIZE
+
+func get_builder_world_origin() -> Vector3:
+	return BUILDER_WORLD_ORIGIN
+
+func get_hangar_build_range() -> float:
+	return HANGAR_BUILD_RANGE
 
 func get_builder_block_ids() -> Array:
 	return BUILDER_BLOCK_ORDER.duplicate()
@@ -1279,6 +1291,8 @@ func _place_blueprint_block(peer_id: int, cell: Array, block_type: String, rotat
 		return
 	if not _cell_within_builder_bounds(cell):
 		return
+	if not _peer_within_builder_range(peer_id, cell):
+		return
 	if not BUILDER_BLOCK_LIBRARY.has(block_type):
 		return
 
@@ -1310,6 +1324,8 @@ func _remove_blueprint_block(peer_id: int, cell: Array) -> void:
 	if not multiplayer.is_server():
 		return
 	if session_phase != SESSION_PHASE_HANGAR:
+		return
+	if not _peer_within_builder_range(peer_id, cell):
 		return
 
 	var persisted := _extract_persisted_blueprint(boat_blueprint)
@@ -1544,6 +1560,19 @@ func _normalize_blueprint_cell(cell_value: Variant) -> Array:
 func _cell_within_builder_bounds(cell: Array) -> bool:
 	var cell_vec := _cell_to_vector3i(cell)
 	return cell_vec.x >= BUILDER_BOUNDS_MIN.x and cell_vec.x <= BUILDER_BOUNDS_MAX.x and cell_vec.y >= BUILDER_BOUNDS_MIN.y and cell_vec.y <= BUILDER_BOUNDS_MAX.y and cell_vec.z >= BUILDER_BOUNDS_MIN.z and cell_vec.z <= BUILDER_BOUNDS_MAX.z
+
+func _builder_cell_to_world_position(cell_value: Variant) -> Vector3:
+	var cell_vec := _cell_to_vector3i(cell_value)
+	return BUILDER_WORLD_ORIGIN + Vector3(cell_vec) * BUILDER_CELL_SIZE
+
+func _peer_within_builder_range(peer_id: int, cell: Array) -> bool:
+	if peer_id <= 0:
+		return false
+	var avatar_state: Dictionary = hangar_avatar_state.get(peer_id, {})
+	if avatar_state.is_empty():
+		return false
+	var avatar_position: Vector3 = avatar_state.get("position", Vector3.ZERO)
+	return avatar_position.distance_to(_builder_cell_to_world_position(cell)) <= (HANGAR_BUILD_RANGE + 0.35)
 
 func _cell_to_key(cell_value: Variant) -> String:
 	var cell := _normalize_blueprint_cell(cell_value)

@@ -69,7 +69,8 @@ Milestone C social builder avatars adds:
 - a local follow camera so the hangar starts feeling like a shared build space instead of a static editor view
 - solid collision on placed boat blocks so the hangar boat is becoming a walkable shared object
 - replicated hangar avatar state for connected builders
-- the existing cursor-based block placement path remains active while the forward build-tool milestone is still in progress
+- a short-range camera-crosshair build ghost that snaps against the boat and dock in front of the crew
+- authoritative hangar build-range validation so edits now depend on where the builder avatar is standing
 
 ## Local Run
 
@@ -85,7 +86,7 @@ Start a client:
 ./tools/run_client.sh
 ```
 
-The client now lands in the shared hangar builder after connecting. Build the crew boat there, then press `Launch Run`.
+The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `Q / E` to cycle blocks, `R` to rotate, `F` to place, `X` to remove, then press `Launch Run`.
 
 Optional client overrides:
 
@@ -127,14 +128,14 @@ godot --headless --path . --quit-after 450 -- --host=127.0.0.1 --port=7000 --nam
 Headless shared-builder smoke test:
 
 ```bash
-godot --headless --path . --quit-after 260 -- --host=127.0.0.1 --port=7000 --name=BuilderA --autoconnect --autobuild-role=builder_a --quit-after-connect-ms=2600
+godot --headless --path . --quit-after 420 -- --host=127.0.0.1 --port=7000 --name=BuilderA --autoconnect --autobuild-role=builder_a --quit-after-connect-ms=4200
 ```
 
 Two-client live co-build smoke test:
 
 ```bash
-godot --headless --path . --quit-after 260 -- --host=127.0.0.1 --port=7000 --name=BuilderA --autoconnect --autobuild-role=builder_a --quit-after-connect-ms=2600
-godot --headless --path . --quit-after 260 -- --host=127.0.0.1 --port=7000 --name=BuilderB --autoconnect --autobuild-role=builder_b --quit-after-connect-ms=2600
+godot --headless --path . --quit-after 420 -- --host=127.0.0.1 --port=7000 --name=BuilderA --autoconnect --autobuild-role=builder_a --quit-after-connect-ms=4200
+godot --headless --path . --quit-after 420 -- --host=127.0.0.1 --port=7000 --name=BuilderB --autoconnect --autobuild-role=builder_b --quit-after-connect-ms=4200
 ```
 
 Headless hangar-to-run handoff smoke test:
@@ -210,7 +211,8 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 - The current run result now banks local gold and salvage into the dock scene after extraction or failure.
 - Repairs are limited by shared patch kits, and the resupply cache can top the team back up once per run while adding bonus rewards.
 - The current connect flow now lands in a shared 3D hangar builder where the crew can edit one live blueprint together before launching.
-- The current hangar now has a first-pass third-person builder avatar with walk and jump, but the actual Roblox-style forward build tool is still the next step.
+- The current hangar now uses a short-range camera-crosshair build ghost tied to the third-person builder avatar, so moving around the boat matters while building.
+- The current shared-builder autobuild helpers now reposition the hangar avatar before placing or removing blocks so automated smoke tests obey the same range rule as manual builders.
 - The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.
 - The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.
 - The current networking model now sends boat motion separately from structural runtime state so large block boats do not overflow the unreliable ENet packet budget during launch.

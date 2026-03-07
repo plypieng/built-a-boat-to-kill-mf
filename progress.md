@@ -404,12 +404,39 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Next implementation target is unchanged:
   - replace the detached cursor with the short-range forward build tool tied to avatar position
 
+## 2026-03-08 Crosshair Build Tool Prototype
+
+- Continued Milestone C by replacing the hangar's detached cursor movement with a Roblox-style short-range build tool.
+- Added camera-crosshair targeting in `scenes/hangar/hangar.gd`:
+  - the build ghost now raycasts from screen center
+  - placement snaps against the dock or an existing block face
+  - removal now targets the aimed block directly instead of the old free cursor cell
+  - a small centered `+` crosshair now marks the build aim point
+- Added authoritative range checks in `autoload/network_runtime.gd`:
+  - hangar edits now validate against the builder avatar position on the server
+  - block placement and removal silently reject out-of-range requests
+- Updated the headless builder helpers so automation still obeys the new rule:
+  - autobuild roles now reposition the local hangar avatar near the requested cell
+  - the builder waits briefly before placing so the avatar state reaches the server first
+- Verified on port `7133`:
+  - a headless hangar client connected cleanly after the first pass
+  - an initial smoke run caught GDScript Variant inference warnings in the new targeting helpers
+  - fixed those warnings before continuing with gameplay checks
+- Verified on port `7134`:
+  - `BuilderA` and `BuilderB` still co-built successfully under the new range validation
+  - server advanced the shared blueprint from version `1` to `7`
+  - individual placements still landed at the expected target cells
+- Re-verified hangar-to-run handoff on port `7134`:
+  - `LaunchBot` still changed the session from `phase=hangar` to `phase=run`
+  - the launched boat used the updated blueprint version `7`
+  - derived run stats reflected the larger built boat (`top_speed=11.3`, `cargo_capacity=5`, `brace_multiplier=1.44`)
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
-  - short-range forward build tool
-  - walkable shared boat collision
   - simple reaction system instead of ragdolls
+  - clearer build-ghost feedback when aiming at blocked or out-of-range cells
+  - better local co-op readability once multiple avatars build on the same section
 - Finish multiplayer visual verification for the new hangar avatars with a clearer shared-frame or hands-on local co-op pass.
 - Return to narrower readability polish after the new social builder baseline exists.
 - Re-verify the full `hangar -> successful run -> dock/hangar` handoff after the hangar builder changes land.

@@ -27,6 +27,7 @@ var profile_label: Label
 var controls_label: Label
 var last_run_label: Label
 var launch_button: Button
+var dock_body: StaticBody3D
 var boat_root: Node3D
 var block_container: Node3D
 var avatar_container: Node3D
@@ -42,7 +43,13 @@ var avatar_sync_timer := 0.0
 var selected_block_index := 0
 var selected_rotation_steps := 0
 var cursor_cell := Vector3i.ZERO
+var remove_cursor_cell := Vector3i.ZERO
+var cursor_has_target := false
+var cursor_can_place := false
+var cursor_can_remove := false
+var cursor_target_label := "Aim at the boat or dock"
 var autobuild_actions: Array = []
+var autobuild_pending_action: Dictionary = {}
 var autobuild_index := 0
 var autobuild_timer := 0.0
 
@@ -75,6 +82,7 @@ func _process(delta: float) -> void:
 	_update_boat_bob()
 	_update_camera(delta)
 	_update_remote_avatar_visuals(delta)
+	_update_build_target_from_camera()
 	_process_autobuild(delta)
 
 func _physics_process(delta: float) -> void:
@@ -96,18 +104,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cycle_block(-1)
 		KEY_E:
 			_cycle_block(1)
-		KEY_LEFT:
-			_move_cursor(Vector3i(-1, 0, 0))
-		KEY_RIGHT:
-			_move_cursor(Vector3i(1, 0, 0))
-		KEY_UP:
-			_move_cursor(Vector3i(0, 0, -1))
-		KEY_DOWN:
-			_move_cursor(Vector3i(0, 0, 1))
-		KEY_PAGEUP:
-			_move_cursor(Vector3i(0, 1, 0))
-		KEY_PAGEDOWN:
-			_move_cursor(Vector3i(0, -1, 0))
 		KEY_R:
 			_rotate_selected_block()
 		KEY_F:
@@ -144,8 +140,9 @@ func _build_world() -> void:
 	dock.material_override = dock_material
 	add_child(dock)
 
-	var dock_body := StaticBody3D.new()
+	dock_body = StaticBody3D.new()
 	dock_body.position = dock.position
+	dock_body.set_meta("builder_surface", "dock")
 	var dock_collider := CollisionShape3D.new()
 	var dock_shape := BoxShape3D.new()
 	dock_shape.size = dock_mesh.size
@@ -395,9 +392,22 @@ func _build_hud() -> void:
 	controls_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	right_layout.add_child(controls_label)
 
+	var crosshair := Label.new()
+	crosshair.text = "+"
+	crosshair.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	crosshair.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	crosshair.add_theme_font_size_override("font_size", 28)
+	crosshair.modulate = Color(0.98, 0.97, 0.92, 0.92)
+	crosshair.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	crosshair.offset_left = -12.0
+	crosshair.offset_top = -18.0
+	crosshair.offset_right = 12.0
+	crosshair.offset_bottom = 18.0
+	layer.add_child(crosshair)
+
 func _refresh_all() -> void:
 	_refresh_blueprint_visuals()
-	_refresh_cursor_visual()
+	_update_build_target_from_camera()
 	_refresh_hangar_avatar_visuals()
 	_refresh_hud()
 
@@ -443,6 +453,8 @@ func _refresh_blueprint_visuals() -> void:
 		block_node.add_child(facing_marker)
 
 		var static_body := StaticBody3D.new()
+		static_body.set_meta("builder_surface", "block")
+		static_body.set_meta("builder_cell", _normalize_cell(block.get("cell", [0, 0, 0])))
 		var collision_shape := CollisionShape3D.new()
 		var box_shape := BoxShape3D.new()
 		box_shape.size = mesh.size
@@ -457,14 +469,14 @@ func _refresh_cursor_visual() -> void:
 	var block_def := NetworkRuntime.get_builder_block_definition(block_id)
 	cursor_root.position = _cell_to_local_position([cursor_cell.x, cursor_cell.y, cursor_cell.z])
 	cursor_root.rotation_degrees.y = float(selected_rotation_steps * 90)
+	cursor_root.visible = cursor_has_target
 	cursor_label.text = "%s\n%s" % [
 		str(block_def.get("label", block_id.capitalize())),
-		"Cell %s" % str(cursor_cell),
+		cursor_target_label,
 	]
 
 	var material := StandardMaterial3D.new()
-	var occupied := _find_block_at_cell(cursor_cell).size() > 0
-	material.albedo_color = CURSOR_BLOCKED_COLOR if occupied else CURSOR_OK_COLOR
+	material.albedo_color = CURSOR_OK_COLOR if cursor_can_place else CURSOR_BLOCKED_COLOR
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	cursor_mesh.material_override = material
 
@@ -482,7 +494,7 @@ func _refresh_hud() -> void:
 		int(NetworkRuntime.boat_blueprint.get("version", 1)),
 		str(block_def.get("label", block_id.capitalize())),
 		selected_rotation_steps * 90,
-		str(cursor_cell),
+		str(cursor_cell) if cursor_has_target else "no target",
 		int(stats.get("block_count", 0)),
 		int(stats.get("main_chunk_blocks", 0)),
 		int(stats.get("loose_blocks", 0)),
@@ -540,16 +552,129 @@ func _refresh_hud() -> void:
 			str(last_run.get("timestamp", "")),
 		]
 
-	controls_label.text = "Controls\nW A S D move | Space jump\nArrow keys move cursor on X/Z\nPageUp / PageDown move cursor vertically\nQ / E cycle blocks | R rotate\nF place block | X remove block\nEnter launches the run | Esc returns to connect"
+	controls_label.text = "Controls\nW A S D move | Space jump\nAim the center crosshair at the boat or dock\nQ / E cycle blocks | R rotate\nF place block | X remove block\nEnter launches the run | Esc returns to connect"
 
-func _move_cursor(delta_cell: Vector3i) -> void:
-	var bounds_min := NetworkRuntime.get_builder_bounds_min()
-	var bounds_max := NetworkRuntime.get_builder_bounds_max()
-	cursor_cell.x = clampi(cursor_cell.x + delta_cell.x, bounds_min.x, bounds_max.x)
-	cursor_cell.y = clampi(cursor_cell.y + delta_cell.y, bounds_min.y, bounds_max.y)
-	cursor_cell.z = clampi(cursor_cell.z + delta_cell.z, bounds_min.z, bounds_max.z)
+func _update_build_target_from_camera() -> void:
+	if camera == null or local_avatar_body == null:
+		return
+	var next_state := _query_build_target_from_camera()
+	var next_cursor_has_target := bool(next_state.get("has_target", false))
+	var next_cursor_cell: Vector3i = _variant_to_cell_vector(next_state.get("place_cell", cursor_cell))
+	var next_remove_cell: Vector3i = _variant_to_cell_vector(next_state.get("remove_cell", remove_cursor_cell))
+	var next_cursor_can_place := bool(next_state.get("can_place", false))
+	var next_cursor_can_remove := bool(next_state.get("can_remove", false))
+	var next_cursor_target_label := str(next_state.get("label", "Aim at the boat or dock"))
+	if next_cursor_has_target == cursor_has_target and next_cursor_cell == cursor_cell and next_remove_cell == remove_cursor_cell and next_cursor_can_place == cursor_can_place and next_cursor_can_remove == cursor_can_remove and next_cursor_target_label == cursor_target_label:
+		return
+	cursor_has_target = next_cursor_has_target
+	cursor_cell = next_cursor_cell
+	remove_cursor_cell = next_remove_cell
+	cursor_can_place = next_cursor_can_place
+	cursor_can_remove = next_cursor_can_remove
+	cursor_target_label = next_cursor_target_label
 	_refresh_cursor_visual()
 	_refresh_hud()
+
+func _query_build_target_from_camera() -> Dictionary:
+	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
+		return {
+			"has_target": false,
+			"label": "Run in progress",
+		}
+	var viewport_rect := get_viewport().get_visible_rect()
+	var screen_center := viewport_rect.size * 0.5
+	var ray_origin := camera.project_ray_origin(screen_center)
+	var ray_direction := camera.project_ray_normal(screen_center)
+	var ray_length := NetworkRuntime.get_hangar_build_range() + HANGAR_CAMERA_DISTANCE + 10.0
+	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_origin + ray_direction * ray_length)
+	query.exclude = [local_avatar_body.get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty():
+		return {
+			"has_target": false,
+			"label": "Aim at the boat or dock",
+		}
+
+	var collider: Variant = hit.get("collider", null)
+	var hit_position: Vector3 = hit.get("position", Vector3.ZERO)
+	var hit_normal: Vector3 = hit.get("normal", Vector3.UP)
+	var place_cell := Vector3i.ZERO
+	var remove_cell := Vector3i.ZERO
+	var can_remove := false
+	var surface_label := "Dock"
+	if collider != null and collider.has_meta("builder_cell"):
+		remove_cell = _variant_to_cell_vector(collider.get_meta("builder_cell"))
+		place_cell = remove_cell + _normal_to_cell_step(hit_normal)
+		can_remove = _find_block_at_cell(remove_cell).size() > 0 and _cell_in_local_build_range(remove_cell)
+		var hit_block := _find_block_at_cell(remove_cell)
+		surface_label = str(NetworkRuntime.get_builder_block_definition(str(hit_block.get("type", "structure"))).get("label", "Block"))
+	elif collider == dock_body or (collider != null and str(collider.get_meta("builder_surface", "")) == "dock"):
+		place_cell = _world_to_cell(hit_position + hit_normal * (BLOCK_CELL_SIZE * 0.45))
+		remove_cell = place_cell
+	else:
+		return {
+			"has_target": false,
+			"label": "Aim at the boat or dock",
+		}
+
+	var within_bounds := _cell_within_builder_bounds(place_cell)
+	var occupied := _find_block_at_cell(place_cell).size() > 0
+	var in_range := _cell_in_local_build_range(place_cell)
+	var can_place := within_bounds and in_range and not occupied
+	var label := "Place %s\nCell %s" % [surface_label, str(place_cell)]
+	if not within_bounds:
+		label += "\nOutside build volume"
+	elif not in_range:
+		label += "\nMove closer"
+	elif occupied:
+		label += "\nCell occupied"
+	else:
+		label += "\nF place"
+	if can_remove:
+		label += " | X remove"
+	return {
+		"has_target": true,
+		"place_cell": place_cell,
+		"remove_cell": remove_cell,
+		"can_place": can_place,
+		"can_remove": can_remove,
+		"label": label,
+	}
+
+func _variant_to_cell_vector(cell_value: Variant) -> Vector3i:
+	var cell := _normalize_cell(cell_value)
+	return Vector3i(cell[0], cell[1], cell[2])
+
+func _world_to_cell(world_position: Vector3) -> Vector3i:
+	var local_position := boat_root.to_local(world_position)
+	return Vector3i(
+		roundi(local_position.x / BLOCK_CELL_SIZE),
+		roundi(local_position.y / BLOCK_CELL_SIZE),
+		roundi(local_position.z / BLOCK_CELL_SIZE)
+	)
+
+func _normal_to_cell_step(normal: Vector3) -> Vector3i:
+	var axis := Vector3.ZERO
+	if absf(normal.x) >= absf(normal.y) and absf(normal.x) >= absf(normal.z):
+		axis.x = signf(normal.x)
+	elif absf(normal.y) >= absf(normal.z):
+		axis.y = signf(normal.y)
+	else:
+		axis.z = signf(normal.z)
+	return Vector3i(int(axis.x), int(axis.y), int(axis.z))
+
+func _cell_within_builder_bounds(cell: Vector3i) -> bool:
+	var bounds_min := NetworkRuntime.get_builder_bounds_min()
+	var bounds_max := NetworkRuntime.get_builder_bounds_max()
+	return cell.x >= bounds_min.x and cell.x <= bounds_max.x and cell.y >= bounds_min.y and cell.y <= bounds_max.y and cell.z >= bounds_min.z and cell.z <= bounds_max.z
+
+func _cell_to_world_position(cell: Vector3i) -> Vector3:
+	return boat_root.to_global(_cell_to_local_position(cell))
+
+func _cell_in_local_build_range(cell: Vector3i) -> bool:
+	if local_avatar_body == null:
+		return false
+	return local_avatar_body.global_position.distance_to(_cell_to_world_position(cell)) <= (NetworkRuntime.get_hangar_build_range() + 0.2)
 
 func _cycle_block(direction: int) -> void:
 	var block_ids := NetworkRuntime.get_builder_block_ids()
@@ -567,16 +692,16 @@ func _rotate_selected_block() -> void:
 func _place_selected_block() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
-	if _find_block_at_cell(cursor_cell).size() > 0:
+	if not cursor_can_place:
 		return
 	NetworkRuntime.request_place_blueprint_block([cursor_cell.x, cursor_cell.y, cursor_cell.z], _get_selected_block_id(), selected_rotation_steps)
 
 func _remove_selected_block() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
-	if _find_block_at_cell(cursor_cell).is_empty():
+	if not cursor_can_remove:
 		return
-	NetworkRuntime.request_remove_blueprint_block([cursor_cell.x, cursor_cell.y, cursor_cell.z])
+	NetworkRuntime.request_remove_blueprint_block([remove_cursor_cell.x, remove_cursor_cell.y, remove_cursor_cell.z])
 
 func _launch_run() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
@@ -792,6 +917,7 @@ func _quit_after_timer() -> void:
 
 func _initialize_autobuild() -> void:
 	autobuild_actions.clear()
+	autobuild_pending_action.clear()
 	autobuild_index = 0
 	autobuild_timer = 0.0
 	var autobuild_role := str(launch_overrides.get("autobuild_role", ""))
@@ -838,31 +964,63 @@ func _initialize_autobuild() -> void:
 			]
 
 func _process_autobuild(delta: float) -> void:
-	if autobuild_index >= autobuild_actions.size():
-		return
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
 
 	autobuild_timer -= delta
 	if autobuild_timer > 0.0:
 		return
+	if not autobuild_pending_action.is_empty():
+		var pending_action := autobuild_pending_action.duplicate(true)
+		autobuild_pending_action.clear()
+		_execute_autobuild_action(pending_action)
+		autobuild_timer = 0.3
+		return
+	if autobuild_index >= autobuild_actions.size():
+		return
 
 	var action: Dictionary = autobuild_actions[autobuild_index]
 	autobuild_index += 1
+	var action_type := str(action.get("type", ""))
+	if action_type == "place" or action_type == "remove":
+		var cell := _normalize_cell(action.get("cell", [0, 0, 0]))
+		_position_local_avatar_for_autobuild_cell(cell)
+		cursor_cell = Vector3i(cell[0], cell[1], cell[2])
+		cursor_has_target = true
+		cursor_target_label = "Autobuild targeting %s" % str(cursor_cell)
+		_refresh_cursor_visual()
+		autobuild_pending_action = action.duplicate(true)
+		autobuild_timer = 0.2
+		return
+	_execute_autobuild_action(action)
 	autobuild_timer = 0.35
+
+func _execute_autobuild_action(action: Dictionary) -> void:
 	match str(action.get("type", "")):
 		"place":
 			var cell := _normalize_cell(action.get("cell", [0, 0, 0]))
-			cursor_cell = Vector3i(cell[0], cell[1], cell[2])
-			_refresh_cursor_visual()
 			NetworkRuntime.request_place_blueprint_block(cell, str(action.get("block", "structure")), int(action.get("rotation_steps", 0)))
 		"remove":
 			var cell := _normalize_cell(action.get("cell", [0, 0, 0]))
-			cursor_cell = Vector3i(cell[0], cell[1], cell[2])
-			_refresh_cursor_visual()
 			NetworkRuntime.request_remove_blueprint_block(cell)
 		"launch":
 			NetworkRuntime.request_launch_run()
+
+func _position_local_avatar_for_autobuild_cell(cell: Array) -> void:
+	if local_avatar_body == null:
+		return
+	var cell_world := _cell_to_world_position(Vector3i(cell[0], cell[1], cell[2]))
+	var target_position := cell_world + Vector3(0.0, 0.55, 2.15)
+	local_avatar_body.global_position = target_position
+	local_avatar_body.velocity = Vector3.ZERO
+	local_avatar_facing_y = atan2(target_position.x - cell_world.x, target_position.z - cell_world.z)
+	local_avatar_body.rotation.y = local_avatar_facing_y
+	NetworkRuntime.send_local_hangar_avatar_state(
+		local_avatar_body.global_position,
+		Vector3.ZERO,
+		local_avatar_facing_y,
+		true
+	)
 
 func _on_status_changed(_message: String) -> void:
 	_refresh_hud()
