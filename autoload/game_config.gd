@@ -27,6 +27,7 @@ func parse_cmdline_overrides() -> Dictionary:
 		"autorun_demo": false,
 		"autorun_role": "",
 		"autoclaim_station": "",
+		"autocontinue_to_dock": false,
 	}
 
 	for arg in OS.get_cmdline_user_args():
@@ -58,5 +59,7 @@ func parse_cmdline_overrides() -> Dictionary:
 			overrides["autorun_role"] = arg.trim_prefix("--autorun-role=").strip_edges().to_lower()
 		elif arg.begins_with("--autoclaim-station="):
 			overrides["autoclaim_station"] = arg.trim_prefix("--autoclaim-station=").strip_edges().to_lower()
+		elif arg == "--autocontinue-to-dock":
+			overrides["autocontinue_to_dock"] = true
 
 	return overrides

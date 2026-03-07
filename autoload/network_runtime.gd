@@ -60,9 +60,18 @@ const MAX_BREACH_STACKS := 4
 const HULL_LEAK_DAMAGE_PER_BREACH := 0.55
 const REPAIR_COOLDOWN_SECONDS := 1.35
 const REPAIR_HULL_RECOVERY := 12.0
+const REPAIR_SUPPLIES_START := 3
+const REPAIR_SUPPLIES_MAX := 4
 const EXTRACTION_DURATION := 1.6
 const EXTRACTION_RADIUS := 3.7
 const EXTRACTION_MAX_SPEED := 2.25
+const RESUPPLY_CACHE_RADIUS := 4.4
+const RESUPPLY_CACHE_MAX_SPEED := 8.0
+const RESUPPLY_CACHE_SUPPLY_GRANT := 1
+const RESUPPLY_CACHE_GOLD_BONUS := 18
+const RESUPPLY_CACHE_SALVAGE_BONUS := 1
+const REWARD_GOLD_PER_CARGO := 35
+const REWARD_SALVAGE_PER_CARGO := 2
 
 var mode: int = Mode.OFFLINE
 var current_host: String = GameConfig.DEFAULT_HOST
@@ -457,10 +466,22 @@ func _initialize_run_state() -> void:
 		"wreck_radius": 4.1,
 		"salvage_max_speed": SALVAGE_MAX_SPEED,
 		"repair_actions": 0,
+		"repair_supplies": REPAIR_SUPPLIES_START,
+		"repair_supplies_max": REPAIR_SUPPLIES_MAX,
+		"cache_position": Vector3(-5.8, 0.0, 24.8),
+		"cache_radius": RESUPPLY_CACHE_RADIUS,
+		"cache_max_speed": RESUPPLY_CACHE_MAX_SPEED,
+		"cache_available": true,
+		"cache_label": "Resupply Cache",
+		"cache_recovered": false,
+		"bonus_gold_bank": 0,
+		"bonus_salvage_bank": 0,
 		"extraction_position": Vector3(0.0, 0.0, 34.0),
 		"extraction_radius": EXTRACTION_RADIUS,
 		"extraction_progress": 0.0,
 		"extraction_duration": EXTRACTION_DURATION,
+		"reward_gold": 0,
+		"reward_salvage": 0,
 		"result_title": "",
 		"result_message": "",
 		"failure_reason": "",
@@ -576,6 +597,9 @@ func _process_repair(peer_id: int) -> void:
 		return
 	if float(boat_state.get("repair_cooldown", 0.0)) > 0.0:
 		return
+	if int(run_state.get("repair_supplies", 0)) <= 0:
+		_set_status("Repair bench is out of patch kits.")
+		return
 
 	var breach_stacks := int(boat_state.get("breach_stacks", 0))
 	var hull_integrity: float = float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY))
@@ -586,14 +610,17 @@ func _process_repair(peer_id: int) -> void:
 	boat_state["hull_integrity"] = minf(BOAT_MAX_INTEGRITY, hull_integrity + REPAIR_HULL_RECOVERY)
 	boat_state["repair_cooldown"] = REPAIR_COOLDOWN_SECONDS
 	run_state["repair_actions"] = int(run_state.get("repair_actions", 0)) + 1
+	run_state["repair_supplies"] = maxi(0, int(run_state.get("repair_supplies", 0)) - 1)
 	_broadcast_boat_state()
 	_broadcast_run_state()
-	_set_status("Repair bench patched the hull.")
+	_set_status("Repair bench patched the hull. %d patch kit(s) left." % int(run_state.get("repair_supplies", 0)))
 
 func _process_grapple(peer_id: int) -> void:
 	if str(run_state.get("phase", "running")) != "running":
 		return
 	if get_peer_station_id(peer_id) != "grapple":
+		return
+	if _process_resupply_cache_grapple():
 		return
 	if loot_state.is_empty():
 		return
@@ -656,6 +683,40 @@ func _process_grapple(peer_id: int) -> void:
 	else:
 		_set_status("Grappled %s." % str(loot_target.get("label", "Loot")))
 
+func _process_resupply_cache_grapple() -> bool:
+	if not bool(run_state.get("cache_available", false)):
+		return false
+
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var cache_position: Vector3 = run_state.get("cache_position", Vector3.ZERO)
+	var cache_radius: float = float(run_state.get("cache_radius", RESUPPLY_CACHE_RADIUS))
+	var cache_max_speed: float = float(run_state.get("cache_max_speed", RESUPPLY_CACHE_MAX_SPEED))
+	if boat_position.distance_to(cache_position) > cache_radius:
+		return false
+	if absf(float(boat_state.get("speed", 0.0))) > cache_max_speed:
+		_set_status("Slow the boat down before attempting cache recovery.")
+		return true
+
+	var grapple_position := _get_station_world_position("grapple")
+	if grapple_position.distance_to(cache_position) > GRAPPLE_RANGE:
+		return false
+
+	run_state["cache_available"] = false
+	run_state["cache_recovered"] = true
+	run_state["repair_supplies"] = mini(
+		int(run_state.get("repair_supplies_max", REPAIR_SUPPLIES_MAX)),
+		int(run_state.get("repair_supplies", 0)) + RESUPPLY_CACHE_SUPPLY_GRANT
+	)
+	run_state["bonus_gold_bank"] = int(run_state.get("bonus_gold_bank", 0)) + RESUPPLY_CACHE_GOLD_BONUS
+	run_state["bonus_salvage_bank"] = int(run_state.get("bonus_salvage_bank", 0)) + RESUPPLY_CACHE_SALVAGE_BONUS
+	_broadcast_run_state()
+	_set_status("Recovered the resupply cache: +%d gold, +%d salvage, +%d patch kit." % [
+		RESUPPLY_CACHE_GOLD_BONUS,
+		RESUPPLY_CACHE_SALVAGE_BONUS,
+		RESUPPLY_CACHE_SUPPLY_GRANT,
+	])
+	return true
+
 func _process_hazard_collisions() -> void:
 	if str(run_state.get("phase", "running")) != "running":
 		return
@@ -717,10 +778,19 @@ func _resolve_run_success() -> void:
 		return
 
 	_freeze_boat()
+	var cargo_secured := int(run_state.get("cargo_count", 0))
+	var reward_gold := cargo_secured * REWARD_GOLD_PER_CARGO + int(run_state.get("bonus_gold_bank", 0))
+	var reward_salvage := cargo_secured * REWARD_SALVAGE_PER_CARGO + int(run_state.get("bonus_salvage_bank", 0))
 	run_state["phase"] = "success"
-	run_state["cargo_secured"] = int(run_state.get("cargo_count", 0))
+	run_state["cargo_secured"] = cargo_secured
+	run_state["reward_gold"] = reward_gold
+	run_state["reward_salvage"] = reward_salvage
 	run_state["result_title"] = "Extraction Successful"
-	run_state["result_message"] = "Secured %d cargo item(s) at the outpost." % int(run_state.get("cargo_secured", 0))
+	run_state["result_message"] = "Secured %d cargo item(s) at the outpost for %d gold and %d salvage." % [
+		cargo_secured,
+		reward_gold,
+		reward_salvage,
+	]
 	_broadcast_boat_state()
 	_broadcast_run_state()
 	_set_status(str(run_state.get("result_message", "")))
@@ -732,6 +802,8 @@ func _resolve_run_failure(reason: String) -> void:
 	_freeze_boat()
 	run_state["phase"] = "failed"
 	run_state["cargo_secured"] = 0
+	run_state["reward_gold"] = 0
+	run_state["reward_salvage"] = 0
 	run_state["failure_reason"] = reason
 	run_state["result_title"] = "Run Failed"
 	run_state["result_message"] = "%s Lost %d cargo item(s)." % [reason, int(run_state.get("cargo_count", 0))]
@@ -778,11 +850,16 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	_peer_inputs.erase(peer_id)
 	_release_station(peer_id, false)
 	peer_snapshot.erase(peer_id)
+	call_deferred("_broadcast_disconnect_updates")
+	if multiplayer.is_server():
+		_set_status("Peer %d disconnected." % peer_id)
+
+func _broadcast_disconnect_updates() -> void:
+	if not multiplayer.is_server():
+		return
 	_broadcast_station_state()
 	_broadcast_boat_state()
 	_broadcast_peer_snapshot()
-	if multiplayer.is_server():
-		_set_status("Peer %d disconnected." % peer_id)
 
 func _on_connected_to_server() -> void:
 	_set_status("Connected to %s:%d as %s." % [current_host, current_port, local_player_name])

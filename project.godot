@@ -11,6 +11,7 @@ boot_splash/show_image=false
 
 [autoload]
 GameConfig="*res://autoload/game_config.gd"
+DockState="*res://autoload/dock_state.gd"
 NetworkRuntime="*res://autoload/network_runtime.gd"
 
 [display]
@@ -21,4 +22,3 @@ window/stretch/aspect="expand"
 
 [rendering]
 renderer/rendering_method="forward_plus"
-

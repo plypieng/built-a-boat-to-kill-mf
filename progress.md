@@ -166,6 +166,46 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - final boat state: `collision_count=0`, `repairs=0`, `hull_integrity=100.0`
   - no ENet send errors appeared during disconnect cleanup
 
+## 2026-03-07 Dock, Repair Economy, And Cache Pass
+
+- Added more human-readable run presentation:
+  - objective-focused HUD copy
+  - dock resource readout during the run
+  - smoother chase camera for helm readability
+- Added a local dock profile autoload plus a post-run hangar scene:
+  - extracted runs now bank `gold` and `salvage`
+  - the dock scene shows total runs, successful extractions, and the last run summary
+  - the run scene can auto-continue into the dock scene for verification
+- Added run reward fields on the authoritative server state:
+  - `reward_gold`
+  - `reward_salvage`
+  - bonus reward banking from optional encounters
+- Converted the repair bench into a limited patch-kit economy:
+  - each repair action now consumes one shared patch kit
+  - runs start with `3` patch kits
+  - the patch-kit limit is now visible in both HUD and result state
+- Added a resupply cache encounter:
+  - one optional cache positioned on the extraction lane
+  - grants `+18 gold`, `+1 salvage`, and `+1 patch kit`
+  - recovered via grapple when the crew passes through its zone
+- Fixed two behavior regressions uncovered during verification:
+  - deferred disconnect broadcasts now avoid the old ENet send error during multi-client teardown
+  - helm autopilot now pivots correctly when a target falls behind the boat instead of driving farther away
+- Verified a clean four-client co-op run on port `7057`:
+  - result: `phase=success`, `cargo_secured=2`, `loot_remaining=0`
+  - cache result: `cache_recovered=true`, `bonus_gold_bank=18`, `bonus_salvage_bank=1`
+  - payout result: `reward_gold=88`, `reward_salvage=5`
+  - boat result: `collision_count=0`, `repair_actions=0`, `hull_integrity=100.0`
+  - disconnect cleanup completed without ENet send errors
+- Verified dock handoff on port `7059`:
+  - headless autorun completed
+  - client log reached `Hangar ready: gold=352 salvage=20 runs=4`
+- Verified repair-economy pressure on port `7060`:
+  - crash test ended `phase=failed`
+  - `repair_actions=3`
+  - `repair_supplies=0`
+  - confirms the patch-kit limit is now a real run constraint rather than unlimited sustain
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.
@@ -179,6 +219,7 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Start Milestone 1 with a replicated shared boat movement prototype once the client connect flow is confirmed.
 - Decide whether solo autorun support should remain a dev convenience or become a supported single-player fallback.
 - Add at least one manual desktop play pass for station readability, camera feel, and result-screen presentation.
+- Decide whether the dock scene should eventually become the default post-connect lobby instead of a post-run handoff only.
 
 ## Suggestions For Next Agent
 

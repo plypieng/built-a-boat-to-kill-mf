@@ -39,6 +39,14 @@ Milestone 3 prototype adds:
 - role-based autorun helpers for `driver`, `grapple`, `brace`, and `repair`
 - a tuned return route plus hazard layout that support a clean four-role extraction pass
 
+Milestone 4 prototype adds:
+
+- improved manual-play readability with a clearer objective HUD, dock resource readout, and a more forgiving chase camera
+- a local dock/hangar scene that receives players after a run and banks extracted rewards
+- reward payout fields on the authoritative run state, including gold and salvage totals
+- a limited patch-kit repair economy instead of infinite free repairs
+- an optional resupply cache encounter that grants a bonus reward package and one extra patch kit
+
 ## Local Run
 
 Start the local dedicated server:
@@ -120,11 +128,19 @@ godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --na
 godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=RepairBot --autoconnect --autorun-role=repair --quit-after-connect-ms=20000
 ```
 
+Headless dock handoff check:
+
+```bash
+godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --name=DockVerifier --autoconnect --autorun-demo --autocontinue-to-dock
+```
+
 ## Notes
 
 - The current client scene renders a simple ocean and replicated shared-boat placeholder.
 - The current client scene now renders deck stations, placeholder crew, wreck salvage, loot, extraction markers, and a result overlay.
 - The current run model includes breach-driven speed loss and hull leakage that can be countered at the repair bench.
 - The current autorun route and hazard layout now support a clean four-role extraction pass with no damage when the crew coordinates correctly.
+- The current run result now banks local gold and salvage into the dock scene after extraction or failure.
+- Repairs are limited by shared patch kits, and the resupply cache can top the team back up once per run while adding bonus rewards.
 - The current server scene logs heartbeat, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
 - Manual desktop testing still matters for feel and control tuning even though the headless handshake and movement loop are now scriptable.
