@@ -23,6 +23,14 @@ Milestone 1 prototype adds:
 - on-deck crew placeholder visuals with helm highlighting
 - replicated hazard props and a server-authoritative brace/collision loop
 
+Milestone 2 prototype adds:
+
+- explicit on-deck helm, brace, and grapple stations with ownership and station cycling
+- a grapple loot target that feeds shared cargo
+- an extraction buoy with authoritative progress and completion rules
+- a success/failure result overlay in the client scene
+- a scripted autorun demo for end-to-end success-path smoke tests
+
 ## Local Run
 
 Start the local dedicated server:
@@ -68,9 +76,21 @@ godot --headless --path . --quit-after 450 -- --host=127.0.0.1 --port=7000 --nam
 godot --headless --path . --quit-after 450 -- --host=127.0.0.1 --port=7000 --name=Deckhand --autoconnect --quit-after-connect-ms=2600
 ```
 
+Headless first-run-loop success demo:
+
+```bash
+godot --headless --path . --quit-after 1600 -- --host=127.0.0.1 --port=7000 --name=DemoCaptain --autoconnect --autorun-demo --quit-after-connect-ms=12000
+```
+
+Headless failure-path crash test:
+
+```bash
+godot --headless --path . --quit-after 3000 -- --host=127.0.0.1 --port=7000 --name=CrashBot --autoconnect --autoclaim-station=helm --autodrive-ms=22000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=23000
+```
+
 ## Notes
 
 - The current client scene renders a simple ocean and replicated shared-boat placeholder.
-- The current client scene also renders placeholder crew members and floating hazard markers.
-- The current server scene logs heartbeat, roster, helm ownership, hull state, brace windows, and hazard count.
+- The current client scene now renders deck stations, placeholder crew, loot, extraction markers, and a result overlay.
+- The current server scene logs heartbeat, roster, station ownership, cargo, extraction progress, and run outcomes.
 - Manual desktop testing still matters for feel and control tuning even though the headless handshake and movement loop are now scriptable.

@@ -99,6 +99,30 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - both clients ended with matching replicated boat state
   - server handled both disconnects without network send errors
 
+## 2026-03-07 First Run Loop Slice
+
+- Replaced the old hotkey-only placeholder client flow with station-based interaction:
+  - `helm`
+  - `brace`
+  - `grapple`
+- Added in-world station markers, station selection/cycling, ownership prompts, and station-aware crew placement.
+- Added shared loot targets plus a server-authoritative grapple action that moves loot into run cargo.
+- Added an extraction buoy with server-side extraction rules based on:
+  - cargo present
+  - boat position within radius
+  - low enough boat speed
+- Added success/failure result handling to the client, including a result overlay and final run summary.
+- Added `--autorun-demo` plus `--autoclaim-station=<id>` CLI support so the first complete loop can be smoke-tested headlessly.
+- Expanded server heartbeat logging to include run phase, cargo, extraction progress, and station occupancy.
+- Verified success-path run on port `7033`:
+  - client command: `godot --headless --path . --quit-after 1600 -- --host=127.0.0.1 --port=7033 --name=DemoCaptain --autoconnect --autorun-demo --quit-after-connect-ms=12000`
+  - result: `phase=success`, `cargo_secured=1`, `loot_remaining=0`, extraction progress reached `1.6/1.6`
+  - final boat state remained intact with `hull_integrity=100.0`
+- Verified failure-path run on port `7034`:
+  - client command: `godot --headless --path . --quit-after 3000 -- --host=127.0.0.1 --port=7034 --name=CrashBot --autoconnect --autoclaim-station=helm --autodrive-ms=22000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=23000`
+  - result: `phase=failed`, `hull_integrity=0.0`, `collision_count=6`
+  - failure reason: `Hull destroyed in open water.`
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.
@@ -110,6 +134,8 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Start Milestone 0 by scaffolding the Godot project, local client/server boot flow, and authoritative shared boat prototype.
 - Run an interactive local client/server test in the Godot app and fix any UI or networking issues found there.
 - Start Milestone 1 with a replicated shared boat movement prototype once the client connect flow is confirmed.
+- Add a dedicated brace-station co-op smoke test now that helm and brace are separate stations.
+- Add at least one manual desktop play pass for station readability, camera feel, and result-screen presentation.
 
 ## Suggestions For Next Agent
 

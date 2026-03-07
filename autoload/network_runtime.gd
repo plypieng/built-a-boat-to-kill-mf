@@ -10,6 +10,9 @@ signal run_seed_changed(seed: int)
 signal helm_changed(driver_peer_id: int)
 signal boat_state_changed(state: Dictionary)
 signal hazard_state_changed(hazards: Array)
+signal station_state_changed(stations: Dictionary)
+signal loot_state_changed(loot_targets: Array)
+signal run_state_changed(state: Dictionary)
 
 enum Mode {
 	OFFLINE,
@@ -17,20 +20,21 @@ enum Mode {
 	SERVER,
 }
 
-var mode: int = Mode.OFFLINE
-var current_host: String = GameConfig.DEFAULT_HOST
-var current_port: int = GameConfig.DEFAULT_PORT
-var local_player_name: String = GameConfig.DEFAULT_PLAYER_NAME
-var run_seed: int = GameConfig.DEFAULT_RUN_SEED
-var peer_snapshot: Dictionary = {}
-var status_message := "Offline"
-var driver_peer_id := 0
-var boat_state: Dictionary = {}
-var hazard_state: Array = []
-
-var _peer_inputs: Dictionary = {}
-var _boat_broadcast_accumulator := 0.0
-var _next_hazard_id: int = 1
+const STATION_ORDER := ["helm", "brace", "grapple"]
+const STATION_LAYOUT := {
+	"helm": {
+		"label": "Helm",
+		"position": Vector3(0.0, 0.92, -1.4),
+	},
+	"brace": {
+		"label": "Brace Station",
+		"position": Vector3(-0.95, 0.92, 0.1),
+	},
+	"grapple": {
+		"label": "Grapple Crane",
+		"position": Vector3(0.95, 0.92, 0.45),
+	},
+}
 
 const BOAT_ACCELERATION := 8.0
 const BOAT_DECELERATION := 10.0
@@ -43,6 +47,29 @@ const BRACE_ACTIVE_SECONDS := 0.9
 const BRACE_COOLDOWN_SECONDS := 2.25
 const COLLISION_DAMAGE_UNBRACED := 18.0
 const COLLISION_DAMAGE_BRACED := 7.0
+const GRAPPLE_RANGE := 7.8
+const EXTRACTION_DURATION := 1.6
+const EXTRACTION_RADIUS := 3.7
+const EXTRACTION_MAX_SPEED := 2.25
+
+var mode: int = Mode.OFFLINE
+var current_host: String = GameConfig.DEFAULT_HOST
+var current_port: int = GameConfig.DEFAULT_PORT
+var local_player_name: String = GameConfig.DEFAULT_PLAYER_NAME
+var run_seed: int = GameConfig.DEFAULT_RUN_SEED
+var peer_snapshot: Dictionary = {}
+var status_message := "Offline"
+var driver_peer_id := 0
+var boat_state: Dictionary = {}
+var hazard_state: Array = []
+var station_state: Dictionary = {}
+var loot_state: Array = []
+var run_state: Dictionary = {}
+
+var _peer_inputs: Dictionary = {}
+var _boat_broadcast_accumulator := 0.0
+var _next_hazard_id: int = 1
+var _next_loot_id: int = 1
 
 func _ready() -> void:
 	multiplayer.peer_connected.connect(_on_peer_connected)
@@ -55,7 +82,7 @@ func start_server(listen_port: int = GameConfig.DEFAULT_PORT, seed: int = GameCo
 	shutdown()
 
 	var peer := ENetMultiplayerPeer.new()
-	var error := peer.create_server(listen_port, GameConfig.MAX_PLAYERS)
+	var error: int = peer.create_server(listen_port, GameConfig.MAX_PLAYERS)
 	if error != OK:
 		_set_status("Server failed to start (code %s)." % str(error))
 		return error
@@ -71,14 +98,11 @@ func start_server(listen_port: int = GameConfig.DEFAULT_PORT, seed: int = GameCo
 			"status": "hosting",
 		},
 	}
-	_reset_boat_runtime()
+	_reset_run_runtime()
 
 	emit_signal("mode_changed", _mode_name())
 	emit_signal("run_seed_changed", run_seed)
-	_emit_peer_snapshot()
-	_emit_helm_changed()
-	_emit_boat_state()
-	_emit_hazard_state()
+	_emit_all_runtime_state()
 	_set_status("Server listening on port %d." % current_port)
 	return OK
 
@@ -86,7 +110,7 @@ func start_client(host: String, connect_port: int, player_name: String) -> int:
 	shutdown()
 
 	var peer := ENetMultiplayerPeer.new()
-	var error := peer.create_client(host, connect_port)
+	var error: int = peer.create_client(host, connect_port)
 	if error != OK:
 		_set_status("Client failed to connect (code %s)." % str(error))
 		emit_signal("client_connect_failed")
@@ -109,124 +133,13 @@ func shutdown() -> void:
 	mode = Mode.OFFLINE
 	peer_snapshot = {}
 	status_message = "Offline"
-	_reset_boat_runtime()
+	_reset_run_runtime()
 	emit_signal("mode_changed", _mode_name())
-	_emit_peer_snapshot()
 	emit_signal("run_seed_changed", run_seed)
-	_emit_helm_changed()
-	_emit_boat_state()
-	_emit_hazard_state()
+	_emit_all_runtime_state()
 
-func _mode_name() -> String:
-	match mode:
-		Mode.CLIENT:
-			return "client"
-		Mode.SERVER:
-			return "server"
-		_:
-			return "offline"
-
-func _set_status(message: String) -> void:
-	status_message = message
-	emit_signal("status_changed", message)
-	print(message)
-
-func _emit_peer_snapshot() -> void:
-	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
-
-func _emit_helm_changed() -> void:
-	emit_signal("helm_changed", driver_peer_id)
-
-func _emit_boat_state() -> void:
-	emit_signal("boat_state_changed", boat_state.duplicate(true))
-
-func _emit_hazard_state() -> void:
-	emit_signal("hazard_state_changed", hazard_state.duplicate(true))
-
-func _broadcast_peer_snapshot() -> void:
-	_emit_peer_snapshot()
-	if multiplayer.is_server():
-		var snapshot := peer_snapshot.duplicate(true)
-		for peer_id in get_player_peer_ids():
-			client_receive_peer_snapshot.rpc_id(int(peer_id), snapshot)
-
-func _broadcast_boat_state() -> void:
-	_emit_boat_state()
-	if multiplayer.is_server():
-		var state := boat_state.duplicate(true)
-		for peer_id in get_player_peer_ids():
-			client_receive_boat_state.rpc_id(int(peer_id), state, driver_peer_id)
-
-func _broadcast_hazard_state() -> void:
-	_emit_hazard_state()
-	if multiplayer.is_server():
-		var hazards := hazard_state.duplicate(true)
-		for peer_id in get_player_peer_ids():
-			client_receive_hazard_state.rpc_id(int(peer_id), hazards)
-
-func _send_bootstrap(peer_id: int) -> void:
-	if not multiplayer.is_server():
-		return
-	client_receive_bootstrap.rpc_id(peer_id, run_seed, current_port, GameConfig.MAX_PLAYERS)
-	client_receive_hazard_state.rpc_id(peer_id, hazard_state.duplicate(true))
-	client_receive_boat_state.rpc_id(peer_id, boat_state.duplicate(true), driver_peer_id)
-
-func _reset_boat_runtime() -> void:
-	driver_peer_id = 0
-	_peer_inputs = {}
-	_boat_broadcast_accumulator = 0.0
-	_next_hazard_id = 1
-	boat_state = {
-		"position": Vector3.ZERO,
-		"rotation_y": 0.0,
-		"speed": 0.0,
-		"throttle": 0.0,
-		"steer": 0.0,
-		"tick": 0,
-		"driver_peer_id": 0,
-		"hull_integrity": BOAT_MAX_INTEGRITY,
-		"brace_timer": 0.0,
-		"brace_cooldown": 0.0,
-		"last_impact_damage": 0.0,
-		"last_impact_braced": false,
-		"collision_count": 0,
-	}
-	_initialize_hazards()
-
-func _initialize_hazards() -> void:
-	hazard_state = [
-		_make_hazard(Vector3(0.0, 0.0, 13.5), 1.35, "Debris Cluster"),
-		_make_hazard(Vector3(-4.5, 0.0, 27.0), 1.2, "Broken Spar"),
-		_make_hazard(Vector3(5.0, 0.0, 42.0), 1.4, "Cargo Crate"),
-	]
-
-func _make_hazard(position: Vector3, radius: float, label: String) -> Dictionary:
-	var hazard_id: int = _next_hazard_id
-	_next_hazard_id += 1
-	return {
-		"id": hazard_id,
-		"position": position,
-		"radius": radius,
-		"label": label,
-	}
-
-func _assign_driver(peer_id: int) -> void:
-	if driver_peer_id == peer_id:
-		return
-
-	driver_peer_id = peer_id
-	boat_state["driver_peer_id"] = driver_peer_id
-	_emit_helm_changed()
-	_set_status("Peer %d took the helm." % driver_peer_id)
-	_broadcast_boat_state()
-
-func _clear_driver() -> void:
-	driver_peer_id = 0
-	boat_state["driver_peer_id"] = 0
-	boat_state["throttle"] = 0.0
-	boat_state["steer"] = 0.0
-	_emit_helm_changed()
-	_broadcast_boat_state()
+func get_mode_name() -> String:
+	return _mode_name()
 
 func get_driver_name() -> String:
 	if driver_peer_id <= 0:
@@ -245,12 +158,49 @@ func get_player_peer_ids() -> Array:
 	peer_ids.sort()
 	return peer_ids
 
+func get_station_ids() -> Array:
+	return STATION_ORDER.duplicate()
+
+func get_station_label(station_id: String) -> String:
+	var station_data: Dictionary = station_state.get(station_id, {})
+	return str(station_data.get("label", station_id.capitalize()))
+
+func get_station_position(station_id: String) -> Vector3:
+	var station_data: Dictionary = station_state.get(station_id, {})
+	return station_data.get("position", Vector3.ZERO)
+
+func get_station_occupant_name(station_id: String) -> String:
+	var station_data: Dictionary = station_state.get(station_id, {})
+	var occupant_peer_id := int(station_data.get("occupant_peer_id", 0))
+	if occupant_peer_id <= 0:
+		return "Open"
+
+	var peer_data: Dictionary = peer_snapshot.get(occupant_peer_id, {})
+	return str(peer_data.get("name", "Peer %d" % occupant_peer_id))
+
+func get_peer_station_id(peer_id: int) -> String:
+	for station_id in STATION_ORDER:
+		var station_data: Dictionary = station_state.get(station_id, {})
+		if int(station_data.get("occupant_peer_id", 0)) == peer_id:
+			return station_id
+	return ""
+
 func request_driver_control() -> void:
+	request_station_claim("helm")
+
+func request_station_claim(station_id: String) -> void:
 	if multiplayer.is_server():
-		_assign_driver(multiplayer.get_unique_id())
+		_claim_station(multiplayer.get_unique_id(), station_id)
 		return
 
-	server_request_driver_control.rpc_id(1)
+	server_request_station_claim.rpc_id(1, station_id)
+
+func request_station_release() -> void:
+	if multiplayer.is_server():
+		_release_station(multiplayer.get_unique_id())
+		return
+
+	server_request_station_release.rpc_id(1)
 
 func request_brace() -> void:
 	if multiplayer.is_server():
@@ -258,6 +208,13 @@ func request_brace() -> void:
 		return
 
 	server_request_brace.rpc_id(1)
+
+func request_grapple() -> void:
+	if multiplayer.is_server():
+		_process_grapple(multiplayer.get_unique_id())
+		return
+
+	server_request_grapple.rpc_id(1)
 
 func send_local_boat_input(throttle: float, steer: float) -> void:
 	var clamped_throttle := clampf(throttle, -1.0, 1.0)
@@ -270,6 +227,9 @@ func send_local_boat_input(throttle: float, steer: float) -> void:
 
 func server_step_shared_boat(delta: float) -> void:
 	if not multiplayer.is_server():
+		return
+
+	if str(run_state.get("phase", "running")) != "running":
 		return
 
 	var brace_timer: float = maxf(0.0, float(boat_state.get("brace_timer", 0.0)) - delta)
@@ -285,17 +245,17 @@ func server_step_shared_boat(delta: float) -> void:
 	var steer: float = float(input_state.get("steer", 0.0))
 	var current_speed: float = float(boat_state.get("speed", 0.0))
 	var target_speed: float = throttle * BOAT_TOP_SPEED
-	var acceleration := BOAT_ACCELERATION if absf(target_speed) > absf(current_speed) else BOAT_DECELERATION
+	var acceleration: float = BOAT_ACCELERATION if absf(target_speed) > absf(current_speed) else BOAT_DECELERATION
 	current_speed = move_toward(current_speed, target_speed, acceleration * delta)
 
 	if is_zero_approx(throttle):
 		current_speed = move_toward(current_speed, 0.0, BOAT_DECELERATION * 0.6 * delta)
 
-	var turn_factor := clampf(absf(current_speed) / BOAT_TOP_SPEED, 0.25, 1.0)
+	var turn_factor: float = clampf(absf(current_speed) / BOAT_TOP_SPEED, 0.25, 1.0)
 	var rotation_y: float = float(boat_state.get("rotation_y", 0.0))
 	rotation_y += steer * BOAT_TURN_SPEED * turn_factor * delta
 
-	var forward := -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
+	var forward: Vector3 = -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
 	var position: Vector3 = boat_state.get("position", Vector3.ZERO)
 	position += forward * current_speed * delta
 
@@ -306,18 +266,237 @@ func server_step_shared_boat(delta: float) -> void:
 	boat_state["steer"] = steer
 	boat_state["tick"] = int(boat_state.get("tick", 0)) + 1
 	boat_state["driver_peer_id"] = driver_peer_id
+
 	_process_hazard_collisions()
+	_process_extraction(delta)
 
 	_boat_broadcast_accumulator += delta
 	if _boat_broadcast_accumulator >= BOAT_BROADCAST_INTERVAL:
 		_boat_broadcast_accumulator = 0.0
 		_broadcast_boat_state()
 
-func _receive_boat_input(peer_id: int, throttle: float, steer: float) -> void:
-	if driver_peer_id == 0:
-		_assign_driver(peer_id)
+func _mode_name() -> String:
+	match mode:
+		Mode.CLIENT:
+			return "client"
+		Mode.SERVER:
+			return "server"
+		_:
+			return "offline"
 
+func _set_status(message: String) -> void:
+	status_message = message
+	emit_signal("status_changed", message)
+	print(message)
+
+func _emit_all_runtime_state() -> void:
+	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
+	emit_signal("helm_changed", driver_peer_id)
+	emit_signal("boat_state_changed", boat_state.duplicate(true))
+	emit_signal("hazard_state_changed", hazard_state.duplicate(true))
+	emit_signal("station_state_changed", station_state.duplicate(true))
+	emit_signal("loot_state_changed", loot_state.duplicate(true))
+	emit_signal("run_state_changed", run_state.duplicate(true))
+
+func _broadcast_peer_snapshot() -> void:
+	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
+	if multiplayer.is_server():
+		var snapshot := peer_snapshot.duplicate(true)
+		for peer_id in get_player_peer_ids():
+			client_receive_peer_snapshot.rpc_id(int(peer_id), snapshot)
+
+func _broadcast_boat_state() -> void:
+	emit_signal("boat_state_changed", boat_state.duplicate(true))
+	if multiplayer.is_server():
+		var state := boat_state.duplicate(true)
+		for peer_id in get_player_peer_ids():
+			client_receive_boat_state.rpc_id(int(peer_id), state, driver_peer_id)
+
+func _broadcast_hazard_state() -> void:
+	emit_signal("hazard_state_changed", hazard_state.duplicate(true))
+	if multiplayer.is_server():
+		var hazards := hazard_state.duplicate(true)
+		for peer_id in get_player_peer_ids():
+			client_receive_hazard_state.rpc_id(int(peer_id), hazards)
+
+func _broadcast_station_state() -> void:
+	emit_signal("station_state_changed", station_state.duplicate(true))
+	if multiplayer.is_server():
+		var stations := station_state.duplicate(true)
+		for peer_id in get_player_peer_ids():
+			client_receive_station_state.rpc_id(int(peer_id), stations)
+
+func _broadcast_loot_state() -> void:
+	emit_signal("loot_state_changed", loot_state.duplicate(true))
+	if multiplayer.is_server():
+		var targets := loot_state.duplicate(true)
+		for peer_id in get_player_peer_ids():
+			client_receive_loot_state.rpc_id(int(peer_id), targets)
+
+func _broadcast_run_state() -> void:
+	emit_signal("run_state_changed", run_state.duplicate(true))
+	if multiplayer.is_server():
+		var state := run_state.duplicate(true)
+		for peer_id in get_player_peer_ids():
+			client_receive_run_state.rpc_id(int(peer_id), state)
+
+func _send_bootstrap(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+
+	client_receive_bootstrap.rpc_id(peer_id, run_seed, current_port, GameConfig.MAX_PLAYERS)
+	client_receive_boat_state.rpc_id(peer_id, boat_state.duplicate(true), driver_peer_id)
+	client_receive_hazard_state.rpc_id(peer_id, hazard_state.duplicate(true))
+	client_receive_station_state.rpc_id(peer_id, station_state.duplicate(true))
+	client_receive_loot_state.rpc_id(peer_id, loot_state.duplicate(true))
+	client_receive_run_state.rpc_id(peer_id, run_state.duplicate(true))
+
+func _reset_run_runtime() -> void:
+	driver_peer_id = 0
+	_peer_inputs = {}
+	_boat_broadcast_accumulator = 0.0
+	_next_hazard_id = 1
+	_next_loot_id = 1
+
+	boat_state = {
+		"position": Vector3.ZERO,
+		"rotation_y": 0.0,
+		"speed": 0.0,
+		"throttle": 0.0,
+		"steer": 0.0,
+		"tick": 0,
+		"driver_peer_id": 0,
+		"hull_integrity": BOAT_MAX_INTEGRITY,
+		"brace_timer": 0.0,
+		"brace_cooldown": 0.0,
+		"last_impact_damage": 0.0,
+		"last_impact_braced": false,
+		"collision_count": 0,
+	}
+
+	station_state = {}
+	for station_id in STATION_ORDER:
+		var layout: Dictionary = STATION_LAYOUT[station_id]
+		station_state[station_id] = {
+			"label": str(layout["label"]),
+			"position": layout["position"],
+			"occupant_peer_id": 0,
+		}
+
+	_initialize_hazards()
+	_initialize_loot()
+	_initialize_run_state()
+
+func _initialize_hazards() -> void:
+	hazard_state = [
+		_make_hazard(Vector3(0.0, 0.0, 18.0), 1.35, "Debris Cluster"),
+		_make_hazard(Vector3(-5.5, 0.0, 33.0), 1.25, "Broken Spar"),
+		_make_hazard(Vector3(5.5, 0.0, 47.0), 1.4, "Cargo Crate"),
+	]
+
+func _initialize_loot() -> void:
+	loot_state = [
+		_make_loot(Vector3(0.0, 0.0, 10.0), 1, "Drifting Cache"),
+	]
+
+func _initialize_run_state() -> void:
+	run_state = {
+		"phase": "running",
+		"cargo_count": 0,
+		"cargo_secured": 0,
+		"loot_collected": 0,
+		"loot_remaining": loot_state.size(),
+		"extraction_position": Vector3(0.0, 0.0, 34.0),
+		"extraction_radius": EXTRACTION_RADIUS,
+		"extraction_progress": 0.0,
+		"extraction_duration": EXTRACTION_DURATION,
+		"result_title": "",
+		"result_message": "",
+		"failure_reason": "",
+	}
+
+func _make_hazard(position: Vector3, radius: float, label: String) -> Dictionary:
+	var hazard_id: int = _next_hazard_id
+	_next_hazard_id += 1
+	return {
+		"id": hazard_id,
+		"position": position,
+		"radius": radius,
+		"label": label,
+	}
+
+func _make_loot(position: Vector3, value: int, label: String) -> Dictionary:
+	var loot_id: int = _next_loot_id
+	_next_loot_id += 1
+	return {
+		"id": loot_id,
+		"position": position,
+		"value": value,
+		"label": label,
+	}
+
+func _set_driver(peer_id: int, broadcast: bool = true) -> void:
+	if driver_peer_id == peer_id:
+		return
+
+	driver_peer_id = peer_id
+	boat_state["driver_peer_id"] = driver_peer_id
+	if driver_peer_id == 0:
+		boat_state["throttle"] = 0.0
+		boat_state["steer"] = 0.0
+		boat_state["speed"] = 0.0
+	emit_signal("helm_changed", driver_peer_id)
+	if broadcast:
+		_broadcast_boat_state()
+
+func _claim_station(peer_id: int, station_id: String) -> void:
+	if not station_state.has(station_id):
+		return
+	if str(run_state.get("phase", "running")) != "running":
+		return
+
+	var station: Dictionary = station_state.get(station_id, {})
+	var occupant_peer_id := int(station.get("occupant_peer_id", 0))
+	if occupant_peer_id != 0 and occupant_peer_id != peer_id:
+		return
+
+	var current_station_id := get_peer_station_id(peer_id)
+	if current_station_id == station_id:
+		return
+
+	if not current_station_id.is_empty():
+		_release_station(peer_id, false)
+
+	station["occupant_peer_id"] = peer_id
+	station_state[station_id] = station
+	if station_id == "helm":
+		_set_driver(peer_id, false)
+
+	_broadcast_station_state()
+	_broadcast_boat_state()
+	_set_status("%s claimed by %s." % [get_station_label(station_id), get_station_occupant_name(station_id)])
+
+func _release_station(peer_id: int, broadcast: bool = true) -> void:
+	var current_station_id := get_peer_station_id(peer_id)
+	if current_station_id.is_empty():
+		return
+
+	var station: Dictionary = station_state.get(current_station_id, {})
+	station["occupant_peer_id"] = 0
+	station_state[current_station_id] = station
+	if current_station_id == "helm" and driver_peer_id == peer_id:
+		_set_driver(0, false)
+
+	if broadcast:
+		_broadcast_station_state()
+		_broadcast_boat_state()
+
+func _receive_boat_input(peer_id: int, throttle: float, steer: float) -> void:
+	if str(run_state.get("phase", "running")) != "running":
+		return
 	if peer_id != driver_peer_id:
+		return
+	if get_peer_station_id(peer_id) != "helm":
 		return
 
 	_peer_inputs[peer_id] = {
@@ -326,17 +505,54 @@ func _receive_boat_input(peer_id: int, throttle: float, steer: float) -> void:
 	}
 
 func _begin_brace(peer_id: int) -> void:
-	if driver_peer_id == 0:
-		_assign_driver(peer_id)
-
+	if str(run_state.get("phase", "running")) != "running":
+		return
+	if get_peer_station_id(peer_id) != "brace":
+		return
 	if float(boat_state.get("brace_cooldown", 0.0)) > 0.0:
 		return
 
 	boat_state["brace_timer"] = BRACE_ACTIVE_SECONDS
 	boat_state["brace_cooldown"] = BRACE_COOLDOWN_SECONDS
 	_broadcast_boat_state()
+	_set_status("Brace station activated.")
+
+func _process_grapple(peer_id: int) -> void:
+	if str(run_state.get("phase", "running")) != "running":
+		return
+	if get_peer_station_id(peer_id) != "grapple":
+		return
+	if loot_state.is_empty():
+		return
+
+	var grapple_position := _get_station_world_position("grapple")
+	var closest_index := -1
+	var closest_distance := GRAPPLE_RANGE
+	for index in range(loot_state.size()):
+		var loot_target: Dictionary = loot_state[index]
+		var loot_position: Vector3 = loot_target.get("position", Vector3.ZERO)
+		var distance := grapple_position.distance_to(loot_position)
+		if distance <= closest_distance:
+			closest_distance = distance
+			closest_index = index
+
+	if closest_index == -1:
+		return
+
+	var loot_target: Dictionary = loot_state[closest_index]
+	var cargo_value := int(loot_target.get("value", 1))
+	run_state["cargo_count"] = int(run_state.get("cargo_count", 0)) + cargo_value
+	run_state["loot_collected"] = int(run_state.get("loot_collected", 0)) + 1
+	loot_state.remove_at(closest_index)
+	run_state["loot_remaining"] = loot_state.size()
+	_broadcast_loot_state()
+	_broadcast_run_state()
+	_set_status("Grappled %s." % str(loot_target.get("label", "Loot")))
 
 func _process_hazard_collisions() -> void:
+	if str(run_state.get("phase", "running")) != "running":
+		return
+
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
 	for index in range(hazard_state.size()):
 		var hazard: Dictionary = hazard_state[index]
@@ -358,16 +574,85 @@ func _process_hazard_collisions() -> void:
 		_broadcast_hazard_state()
 		_broadcast_boat_state()
 		_set_status("%s impact for %.1f damage." % ["Braced" if was_braced else "Unbraced", damage])
+		if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
+			_resolve_run_failure("Hull destroyed in open water.")
 		return
+
+func _process_extraction(delta: float) -> void:
+	if str(run_state.get("phase", "running")) != "running":
+		return
+
+	var previous_progress: float = float(run_state.get("extraction_progress", 0.0))
+	var extraction_progress := previous_progress
+	var cargo_count := int(run_state.get("cargo_count", 0))
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var extraction_position: Vector3 = run_state.get("extraction_position", Vector3.ZERO)
+	var extraction_radius: float = float(run_state.get("extraction_radius", EXTRACTION_RADIUS))
+	var boat_speed: float = float(boat_state.get("speed", 0.0))
+	var can_extract := cargo_count > 0 and boat_position.distance_to(extraction_position) <= extraction_radius and boat_speed <= EXTRACTION_MAX_SPEED
+
+	if can_extract:
+		extraction_progress = minf(float(run_state.get("extraction_duration", EXTRACTION_DURATION)), previous_progress + delta)
+	else:
+		extraction_progress = maxf(0.0, previous_progress - delta * 1.5)
+
+	run_state["extraction_progress"] = extraction_progress
+	if not is_equal_approx(previous_progress, extraction_progress):
+		_broadcast_run_state()
+
+	if extraction_progress >= float(run_state.get("extraction_duration", EXTRACTION_DURATION)):
+		_resolve_run_success()
+
+func _resolve_run_success() -> void:
+	if str(run_state.get("phase", "running")) != "running":
+		return
+
+	_freeze_boat()
+	run_state["phase"] = "success"
+	run_state["cargo_secured"] = int(run_state.get("cargo_count", 0))
+	run_state["result_title"] = "Extraction Successful"
+	run_state["result_message"] = "Secured %d cargo item(s) at the outpost." % int(run_state.get("cargo_secured", 0))
+	_broadcast_boat_state()
+	_broadcast_run_state()
+	_set_status(str(run_state.get("result_message", "")))
+
+func _resolve_run_failure(reason: String) -> void:
+	if str(run_state.get("phase", "running")) != "running":
+		return
+
+	_freeze_boat()
+	run_state["phase"] = "failed"
+	run_state["cargo_secured"] = 0
+	run_state["failure_reason"] = reason
+	run_state["result_title"] = "Run Failed"
+	run_state["result_message"] = "%s Lost %d cargo item(s)." % [reason, int(run_state.get("cargo_count", 0))]
+	_broadcast_boat_state()
+	_broadcast_run_state()
+	_set_status(str(run_state.get("result_message", "")))
+
+func _freeze_boat() -> void:
+	boat_state["speed"] = 0.0
+	boat_state["throttle"] = 0.0
+	boat_state["steer"] = 0.0
+	_peer_inputs = {}
 
 func _respawn_hazard(index: int) -> void:
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
 	var hazard: Dictionary = hazard_state[index]
-	var lateral_options := [-5.5, 0.0, 5.5]
-	var lane_index: int = int(hazard.get("id", 0)) % lateral_options.size()
-	var next_position := boat_position + Vector3(lateral_options[lane_index], 0.0, 28.0 + float(index * 9))
+	var lane_offset := 0.0
+	if index == 1:
+		lane_offset = -5.5
+	elif index == 2:
+		lane_offset = 5.5
+	var next_position := boat_position + Vector3(lane_offset, 0.0, 28.0 + float(index * 7))
 	hazard["position"] = next_position
 	hazard_state[index] = hazard
+
+func _get_station_world_position(station_id: String) -> Vector3:
+	var local_position := get_station_position(station_id)
+	var rotation_y: float = float(boat_state.get("rotation_y", 0.0))
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	return boat_position + local_position.rotated(Vector3.UP, rotation_y)
 
 func _on_peer_connected(peer_id: int) -> void:
 	if not multiplayer.is_server():
@@ -382,10 +667,11 @@ func _on_peer_connected(peer_id: int) -> void:
 
 func _on_peer_disconnected(peer_id: int) -> void:
 	_peer_inputs.erase(peer_id)
+	_release_station(peer_id, false)
 	peer_snapshot.erase(peer_id)
+	_broadcast_station_state()
+	_broadcast_boat_state()
 	_broadcast_peer_snapshot()
-	if peer_id == driver_peer_id:
-		_clear_driver()
 	if multiplayer.is_server():
 		_set_status("Peer %d disconnected." % peer_id)
 
@@ -401,9 +687,6 @@ func _on_connection_failed() -> void:
 func _on_server_disconnected() -> void:
 	_set_status("Server disconnected.")
 	emit_signal("client_disconnected")
-
-func get_mode_name() -> String:
-	return _mode_name()
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_register_player(player_name: String) -> void:
@@ -424,7 +707,23 @@ func server_request_driver_control() -> void:
 		return
 
 	var peer_id := multiplayer.get_remote_sender_id()
-	_assign_driver(peer_id)
+	_claim_station(peer_id, "helm")
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_station_claim(station_id: String) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_claim_station(peer_id, station_id.to_lower())
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_station_release() -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_release_station(peer_id)
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_request_brace() -> void:
@@ -433,6 +732,14 @@ func server_request_brace() -> void:
 
 	var peer_id := multiplayer.get_remote_sender_id()
 	_begin_brace(peer_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_grapple() -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_process_grapple(peer_id)
 
 @rpc("any_peer", "call_remote", "unreliable")
 func server_receive_boat_input(throttle: float, steer: float) -> void:
@@ -452,18 +759,38 @@ func client_receive_bootstrap(seed: int, server_port: int, max_players: int) -> 
 @rpc("authority", "call_remote", "reliable")
 func client_receive_peer_snapshot(snapshot: Dictionary) -> void:
 	peer_snapshot = snapshot.duplicate(true)
-	_emit_peer_snapshot()
+	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
 
 @rpc("authority", "call_remote", "unreliable")
-func client_receive_boat_state(state: Dictionary, current_driver_peer_id: int) -> void:
-	var driver_changed := driver_peer_id != current_driver_peer_id
+func client_receive_boat_state(state: Dictionary, current_driver_id: int) -> void:
+	var driver_changed := driver_peer_id != current_driver_id
 	boat_state = state.duplicate(true)
-	driver_peer_id = current_driver_peer_id
-	_emit_boat_state()
+	driver_peer_id = current_driver_id
+	emit_signal("boat_state_changed", boat_state.duplicate(true))
 	if driver_changed:
-		_emit_helm_changed()
+		emit_signal("helm_changed", driver_peer_id)
 
 @rpc("authority", "call_remote", "reliable")
 func client_receive_hazard_state(hazards: Array) -> void:
 	hazard_state = hazards.duplicate(true)
-	_emit_hazard_state()
+	emit_signal("hazard_state_changed", hazard_state.duplicate(true))
+
+@rpc("authority", "call_remote", "reliable")
+func client_receive_station_state(stations: Dictionary) -> void:
+	var previous_driver := driver_peer_id
+	station_state = stations.duplicate(true)
+	var helm_station: Dictionary = station_state.get("helm", {})
+	driver_peer_id = int(helm_station.get("occupant_peer_id", 0))
+	emit_signal("station_state_changed", station_state.duplicate(true))
+	if previous_driver != driver_peer_id:
+		emit_signal("helm_changed", driver_peer_id)
+
+@rpc("authority", "call_remote", "reliable")
+func client_receive_loot_state(targets: Array) -> void:
+	loot_state = targets.duplicate(true)
+	emit_signal("loot_state_changed", loot_state.duplicate(true))
+
+@rpc("authority", "call_remote", "reliable")
+func client_receive_run_state(state: Dictionary) -> void:
+	run_state = state.duplicate(true)
+	emit_signal("run_state_changed", run_state.duplicate(true))
