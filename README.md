@@ -37,6 +37,7 @@ Milestone 3 prototype adds:
 - a wreck salvage POI with multiple pickups instead of a single floating crate
 - hull breaches that reduce top speed and leak integrity over time until repaired
 - role-based autorun helpers for `driver`, `grapple`, `brace`, and `repair`
+- a tuned return route plus hazard layout that support a clean four-role extraction pass
 
 ## Local Run
 
@@ -110,10 +111,20 @@ godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --na
 godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=RepairBot --autoconnect --autorun-role=repair --quit-after-connect-ms=21000
 ```
 
+Four-client coordinated clean extraction smoke test:
+
+```bash
+godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autorun-role=driver --quit-after-connect-ms=20000
+godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=GrapplerBot --autoconnect --autorun-role=grapple --quit-after-connect-ms=20000
+godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autorun-role=brace --quit-after-connect-ms=20000
+godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=RepairBot --autoconnect --autorun-role=repair --quit-after-connect-ms=20000
+```
+
 ## Notes
 
 - The current client scene renders a simple ocean and replicated shared-boat placeholder.
 - The current client scene now renders deck stations, placeholder crew, wreck salvage, loot, extraction markers, and a result overlay.
 - The current run model includes breach-driven speed loss and hull leakage that can be countered at the repair bench.
+- The current autorun route and hazard layout now support a clean four-role extraction pass with no damage when the crew coordinates correctly.
 - The current server scene logs heartbeat, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
 - Manual desktop testing still matters for feel and control tuning even though the headless handshake and movement loop are now scriptable.

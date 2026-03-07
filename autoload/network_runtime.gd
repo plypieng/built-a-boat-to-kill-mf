@@ -162,6 +162,15 @@ func get_driver_name() -> String:
 
 func get_player_peer_ids() -> Array:
 	var peer_ids: Array = []
+	if multiplayer.is_server():
+		for peer_id in multiplayer.get_peers():
+			var peer_data: Dictionary = peer_snapshot.get(peer_id, {})
+			if str(peer_data.get("status", "")) == "hosting":
+				continue
+			peer_ids.append(peer_id)
+		peer_ids.sort()
+		return peer_ids
+
 	for peer_id in peer_snapshot.keys():
 		var peer_data: Dictionary = peer_snapshot[peer_id]
 		if str(peer_data.get("status", "")) == "hosting":
@@ -425,9 +434,9 @@ func _reset_run_runtime() -> void:
 
 func _initialize_hazards() -> void:
 	hazard_state = [
-		_make_hazard(Vector3(0.0, 0.0, 18.0), 1.35, "Debris Cluster"),
-		_make_hazard(Vector3(-5.5, 0.0, 33.0), 1.25, "Broken Spar"),
-		_make_hazard(Vector3(5.5, 0.0, 47.0), 1.4, "Cargo Crate"),
+		_make_hazard(Vector3(2.4, 0.0, 19.5), 1.35, "Debris Cluster"),
+		_make_hazard(Vector3(5.4, 0.0, 31.5), 1.25, "Broken Spar"),
+		_make_hazard(Vector3(-5.5, 0.0, 46.5), 1.4, "Cargo Crate"),
 	]
 
 func _initialize_loot() -> void:

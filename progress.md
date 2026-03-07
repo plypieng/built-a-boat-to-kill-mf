@@ -155,6 +155,17 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - solo station swapping successfully recovered both loot items and used the repair bench
   - extraction autopilot still needs tuning for reliable solo completion, so this path should be treated as experimental rather than a primary smoke test
 
+## 2026-03-07 Co-op Route Tuning
+
+- Tuned the driver autorun return route so the coordinated crew leaves the wreck with a left-lane shift before committing to extraction.
+- Adjusted the hazard layout to preserve pressure around the wreck and extraction path while leaving one safe coordinated lane.
+- Fixed server-side peer enumeration during broadcasts by using `multiplayer.get_peers()` while hosting, which eliminated the disconnect send error seen during multi-client teardown.
+- Verified a final four-client coordinated run on port `7049`:
+  - `DriverBot`, `GrapplerBot`, `BraceBot`, and `RepairBot` all joined successfully
+  - result: `phase=success`, `cargo_secured=2`, `loot_remaining=0`
+  - final boat state: `collision_count=0`, `repairs=0`, `hull_integrity=100.0`
+  - no ENet send errors appeared during disconnect cleanup
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.
@@ -166,7 +177,6 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Start Milestone 0 by scaffolding the Godot project, local client/server boot flow, and authoritative shared boat prototype.
 - Run an interactive local client/server test in the Godot app and fix any UI or networking issues found there.
 - Start Milestone 1 with a replicated shared boat movement prototype once the client connect flow is confirmed.
-- Tune the driver/bracer path so the co-op salvage route can avoid the post-wreck collision consistently.
 - Decide whether solo autorun support should remain a dev convenience or become a supported single-player fallback.
 - Add at least one manual desktop play pass for station readability, camera feel, and result-screen presentation.
 

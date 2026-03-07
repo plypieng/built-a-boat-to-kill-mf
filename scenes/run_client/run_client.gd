@@ -918,14 +918,7 @@ func _apply_autorun_demo(_delta: float, input_state: Dictionary) -> void:
 	if local_station_id != "helm":
 		return
 
-	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
-	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
-	var target := Vector3(-4.2, 0.0, 20.0) if boat_position.z < 18.0 else Vector3(-2.0, 0.0, extraction_position.z)
-	if boat_position.distance_to(extraction_position) <= extraction_radius + 0.6:
-		_hold_position_over_target(extraction_position, NetworkRuntime.EXTRACTION_MAX_SPEED, input_state)
-		return
-
-	_apply_drive_to_target(target, input_state)
+	_apply_coordinated_return_route(input_state)
 
 func _apply_driver_role(input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
@@ -947,14 +940,7 @@ func _apply_driver_role(input_state: Dictionary) -> void:
 			_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
 		return
 
-	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
-	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
-	var target := Vector3(-4.2, 0.0, 20.0) if boat_position.z < 18.0 else Vector3(-2.0, 0.0, extraction_position.z)
-	if boat_position.distance_to(extraction_position) <= extraction_radius + 0.6:
-		_hold_position_over_target(extraction_position, NetworkRuntime.EXTRACTION_MAX_SPEED, input_state)
-		return
-
-	_apply_drive_to_target(target, input_state)
+	_apply_coordinated_return_route(input_state)
 
 func _apply_grapple_role(input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
@@ -1018,7 +1004,31 @@ func _apply_repair_role(input_state: Dictionary) -> void:
 	input_state["request_repair"] = true
 	action_request_cooldown = 0.45
 
-func _apply_drive_to_target(target: Vector3, input_state: Dictionary) -> void:
+func _apply_coordinated_return_route(input_state: Dictionary) -> void:
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
+	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
+
+	if boat_position.x > -4.8 and boat_position.z < 17.0:
+		_apply_lane_shift(-6.2, input_state)
+		return
+	if boat_position.z < 24.0:
+		_apply_drive_to_target(Vector3(-5.1, 0.0, 24.2), input_state, 0.5)
+		return
+	if boat_position.distance_to(extraction_position) <= extraction_radius + 0.6:
+		_hold_position_over_target(extraction_position, NetworkRuntime.EXTRACTION_MAX_SPEED, input_state)
+		return
+
+	var final_target := Vector3(-1.9, 0.0, extraction_position.z - 0.35)
+	var throttle_cap := 0.72 if boat_position.z < extraction_position.z - 4.0 else 0.46
+	_apply_drive_to_target(final_target, input_state, throttle_cap)
+
+func _apply_lane_shift(target_x: float, input_state: Dictionary) -> void:
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var lookahead_z := boat_position.z + 0.45
+	_apply_drive_to_target(Vector3(target_x, 0.0, lookahead_z), input_state, 0.18)
+
+func _apply_drive_to_target(target: Vector3, input_state: Dictionary, throttle_cap: float = 1.0) -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var rotation_y: float = float(NetworkRuntime.boat_state.get("rotation_y", 0.0))
 	var current_speed: float = float(NetworkRuntime.boat_state.get("speed", 0.0))
@@ -1037,7 +1047,7 @@ func _apply_drive_to_target(target: Vector3, input_state: Dictionary) -> void:
 		throttle = minf(throttle, 0.2)
 
 	input_state["steer"] = steer
-	input_state["throttle"] = throttle
+	input_state["throttle"] = clampf(throttle, -0.35, throttle_cap)
 
 func _hold_position_over_target(target: Vector3, max_speed: float, input_state: Dictionary) -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
