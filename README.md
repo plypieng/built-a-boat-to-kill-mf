@@ -188,6 +188,7 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 ## Notes
 
 - For deterministic smoke tests, start the server and all clients with the same temporary `HOME` so the shared boat blueprint starts from a clean save.
+- `--autobuild-role` is now a one-shot per client process, so `--autocontinue-to-dock` returns cleanly to hangar instead of immediately relaunching the run.
 - The current client scene renders a simple ocean and the launched block-built boat instead of a placeholder-only hull.
 - The current client scene now renders deck stations, placeholder crew, wreck salvage, loot, extraction markers, and a result overlay.
 - The current run model includes breach-driven speed loss and hull leakage that can be countered at the repair bench.

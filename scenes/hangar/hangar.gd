@@ -528,7 +528,12 @@ func _initialize_autobuild() -> void:
 	autobuild_actions.clear()
 	autobuild_index = 0
 	autobuild_timer = 0.0
-	match str(launch_overrides.get("autobuild_role", "")):
+	var autobuild_role := str(launch_overrides.get("autobuild_role", ""))
+	if autobuild_role.is_empty():
+		return
+	if not GameConfig.claim_one_shot_flag("autobuild:%s" % autobuild_role):
+		return
+	match autobuild_role:
 		"builder_a":
 			autobuild_actions = [
 				{"type": "place", "cell": [2, 0, 0], "block": "hull"},

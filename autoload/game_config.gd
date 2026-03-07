@@ -6,6 +6,8 @@ const MAX_PLAYERS := 4
 const DEFAULT_PLAYER_NAME := "Captain"
 const DEFAULT_RUN_SEED := 424242
 
+var _one_shot_flags := {}
+
 func is_server_mode() -> bool:
 	if OS.has_feature("dedicated_server"):
 		return true
@@ -66,3 +68,11 @@ func parse_cmdline_overrides() -> Dictionary:
 			overrides["autocontinue_to_dock"] = true
 
 	return overrides
+
+func claim_one_shot_flag(flag_name: String) -> bool:
+	if flag_name.is_empty():
+		return true
+	if bool(_one_shot_flags.get(flag_name, false)):
+		return false
+	_one_shot_flags[flag_name] = true
+	return true

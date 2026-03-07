@@ -330,6 +330,12 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - `DriverBot + GrapplerBot + BraceBot`
   - result: `phase=success`, `cargo_secured=2`, `reward_gold=88`, `reward_salvage=5`
   - final boat state: `destroyed=0`, `detachedChunks=0`, `cargoLost=0`
+- Re-verified the post-run return path after runtime block damage on port `7100`:
+  - `DriverBot + GrapplerBot + BraceBot`
+  - successful extraction returned to `phase=hangar` cleanly
+  - fixed a follow-up bug where `--autobuild-role` would rerun after hangar return and immediately relaunch the run
+  - `autobuild` roles are now one-shot per client process via `GameConfig`
+- Attempted a true visual desktop pass, but macOS Screen Recording permission blocked live screenshot capture in this environment, so the remaining manual-feel gap is still unresolved.
 
 ## TODOs
 
