@@ -355,13 +355,32 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - the in-run deck labels stack on top of each other once several crew members occupy nearby stations
   - the large hazard sphere reads more like a placeholder debug prop than a shippable encounter marker
 
+## 2026-03-08 Roblox-Style Social Builder Hangar Design
+
+- Shifted the next milestone from a narrow readability-only polish pass to a larger builder-identity pass after clarifying the target feel.
+- Approved the new hangar target as `Build a Boat for Treasure`-style social building:
+  - third-person builder avatars
+  - walking and jumping in hangar
+  - short-range avatar-based building
+  - tool/gizmo placement in front of the player
+  - shared physical build space around the boat
+- Locked these decisions:
+  - builder UX comes before further run-presentation polish
+  - no free build camera in the first pass
+  - no true ragdolls yet
+  - use a lightweight reaction system first so future impacts and harpoon moments have a gameplay hook
+- Wrote the approved design doc to `docs/plans/2026-03-08-roblox-style-social-builder-hangar-design.md`.
+- Wrote the fallback implementation plan to `docs/plans/2026-03-08-roblox-style-social-builder-hangar-implementation-plan.md`.
+
 ## TODOs
 
-- Polish the manual desktop presentation:
-  - better hangar boat framing
-  - less crowded in-run crew/station labels
-  - more intentional hazard visuals
-- Re-verify the full `hangar -> successful run -> dock/hangar` handoff in one continuous desktop capture path, not just as separate verified states.
+- Implement the Roblox-style social builder hangar:
+  - third-person builder avatars
+  - short-range forward build tool
+  - walkable shared boat collision
+  - simple reaction system instead of ragdolls
+- Return to narrower readability polish after the new social builder baseline exists.
+- Re-verify the full `hangar -> successful run -> dock/hangar` handoff after the hangar builder changes land.
 - Add stronger client-side feedback for block loss, such as recent-hit flashes, clearer chunk-detach messaging, and better destroyed-block readability.
 - Decide whether repairs should remain aggregate hull patches or start targeting specific damaged block clusters.
 - Decide whether cargo stored in detached cargo blocks should eventually be visualized per block instead of using aggregate overflow rules.
@@ -371,4 +390,4 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 
 - Start from Milestone B’s runtime block model rather than the old aggregate-only boat assumptions.
 - Use a fresh temporary Godot `HOME` for deterministic smoke tests so local saved blueprints do not affect verification.
-- Prioritize a human desktop feel pass and post-run handoff verification before adding more content systems.
+- Treat the next hangar milestone as a social third-person builder, not a static editor polish pass.
