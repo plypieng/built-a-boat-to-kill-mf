@@ -61,6 +61,28 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - server log showed connect, register, heartbeat with 2 peers, disconnect, and return to 1 peer
   - client log showed connect, run bootstrap, run scene load, and auto-quit
 
+## 2026-03-07 Milestone 1 Shared Boat Prototype
+
+- Added a server-authoritative shared boat state to `NetworkRuntime`.
+- Added explicit helm claiming and per-peer input forwarding.
+- Added server-side boat simulation for:
+  - position
+  - heading
+  - speed
+  - throttle and steer state
+- Updated the run client to:
+  - render the replicated boat transform
+  - follow the boat with a third-person camera
+  - show helm/driver/boat HUD state
+  - support local keyboard controls
+  - support headless autodrive via CLI flags for automated tests
+- Updated the run server to simulate and log the authoritative boat state.
+- Verified automated movement path:
+  - server launched with `./tools/run_server.sh --port=7012 --seed=333`
+  - headless client joined and drove with `godot --headless --path . --quit-after 400 -- --host=127.0.0.1 --port=7012 --name=DriverBot --autoconnect --autodrive-ms=1800 --autodrive-throttle=1.0 --autodrive-steer=0.2 --quit-after-connect-ms=2600`
+  - server log showed helm claim, movement, drift-down after input stopped, disconnect, and stable post-disconnect state
+  - client log reported final replicated boat position and heading before auto-quit
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.

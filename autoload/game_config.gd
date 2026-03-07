@@ -19,6 +19,9 @@ func parse_cmdline_overrides() -> Dictionary:
 		"seed": DEFAULT_RUN_SEED,
 		"autoconnect": false,
 		"quit_after_connect_ms": 0,
+		"autodrive_ms": 0,
+		"autodrive_throttle": 1.0,
+		"autodrive_steer": 0.0,
 	}
 
 	for arg in OS.get_cmdline_user_args():
@@ -34,5 +37,11 @@ func parse_cmdline_overrides() -> Dictionary:
 			overrides["autoconnect"] = true
 		elif arg.begins_with("--quit-after-connect-ms="):
 			overrides["quit_after_connect_ms"] = max(0, arg.trim_prefix("--quit-after-connect-ms=").to_int())
+		elif arg.begins_with("--autodrive-ms="):
+			overrides["autodrive_ms"] = max(0, arg.trim_prefix("--autodrive-ms=").to_int())
+		elif arg.begins_with("--autodrive-throttle="):
+			overrides["autodrive_throttle"] = clampf(arg.trim_prefix("--autodrive-throttle=").to_float(), -1.0, 1.0)
+		elif arg.begins_with("--autodrive-steer="):
+			overrides["autodrive_steer"] = clampf(arg.trim_prefix("--autodrive-steer=").to_float(), -1.0, 1.0)
 
 	return overrides
