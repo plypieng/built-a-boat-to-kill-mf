@@ -552,6 +552,19 @@ func _initialize_autobuild() -> void:
 			autobuild_actions = [
 				{"type": "launch"},
 			]
+		"builder_loose_launch":
+			autobuild_actions = [
+				{"type": "place", "cell": [5, 4, 6], "block": "structure"},
+				{"type": "launch"},
+			]
+		"builder_fragile_cargo":
+			autobuild_actions = [
+				{"type": "remove", "cell": [-1, 0, 0]},
+				{"type": "place", "cell": [0, 0, 2], "block": "structure"},
+				{"type": "place", "cell": [0, 0, 3], "block": "cargo"},
+				{"type": "place", "cell": [0, 0, 4], "block": "cargo"},
+				{"type": "launch"},
+			]
 
 func _process_autobuild(delta: float) -> void:
 	if autobuild_index >= autobuild_actions.size():

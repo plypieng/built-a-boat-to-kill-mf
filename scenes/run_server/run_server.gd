@@ -55,6 +55,14 @@ func _on_heartbeat_timeout() -> void:
 		int(NetworkRuntime.boat_state.get("collision_count", 0)),
 		NetworkRuntime.hazard_state.size(),
 	])
+	print("Runtime boat: blocks=%d active=%d destroyed=%d detachedChunks=%d sinking=%d cargoLost=%d" % [
+		Array(NetworkRuntime.boat_state.get("runtime_blocks", [])).size(),
+		int(NetworkRuntime.boat_state.get("active_block_count", 0)),
+		int(NetworkRuntime.boat_state.get("destroyed_block_count", 0)),
+		int(NetworkRuntime.run_state.get("detached_chunk_count", 0)),
+		Array(NetworkRuntime.boat_state.get("sinking_chunks", [])).size(),
+		int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0)),
+	])
 	print("Run: phase=%s cargo=%d secured=%d lootRemaining=%d repairs=%d extract=%.2f/%.2f stations=%s" % [
 		str(NetworkRuntime.run_state.get("phase", "running")),
 		int(NetworkRuntime.run_state.get("cargo_count", 0)),

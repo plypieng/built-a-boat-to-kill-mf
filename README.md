@@ -55,6 +55,14 @@ Milestone A shared builder foundation adds:
 - derived boat stats from the built boat, including hull strength, top speed, cargo capacity, and repair kits
 - hangar-to-run scene routing so the current extraction loop launches from the shared builder instead of a post-run dock stub
 
+Milestone B runtime block damage adds:
+
+- launched boats now render their actual block-built runtime layout in the run scene
+- disconnected launch chunks sink immediately at run start instead of silently inflating stats
+- collisions and unbraced salvage backlash now damage a small local cluster of runtime blocks
+- destroyed blocks can split off attached chunks, which sink and immediately remove their thrust, cargo, repair, and hull contribution
+- runtime boat sync is now split so the fast boat-state packet stays lean while structural damage replicates as its own reliable snapshot
+
 ## Local Run
 
 Start the local dedicated server:
@@ -121,6 +129,12 @@ Headless hangar-to-run handoff smoke test:
 godot --headless --path . --quit-after 360 -- --host=127.0.0.1 --port=7000 --name=LaunchBot --autoconnect --autobuild-role=builder_launch --quit-after-connect-ms=3200
 ```
 
+Launch-time loose chunk sinking smoke test:
+
+```bash
+godot --headless --path . --quit-after 420 -- --host=127.0.0.1 --port=7000 --name=LooseLaunch --autoconnect --autobuild-role=builder_loose_launch --quit-after-connect-ms=4200
+```
+
 Headless first-run-loop success demo:
 
 ```bash
@@ -157,6 +171,14 @@ godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --na
 godot --headless --path . --quit-after 2600 -- --host=127.0.0.1 --port=7000 --name=RepairBot --autoconnect --autorun-role=repair --quit-after-connect-ms=20000
 ```
 
+Runtime chunk-detach and cargo-loss smoke test:
+
+```bash
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=DetachDriver --autoconnect --autobuild-role=builder_fragile_cargo --autorun-role=driver_detach_test --quit-after-connect-ms=18000
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=GrapplerBot --autoconnect --autorun-role=grapple --quit-after-connect-ms=18000
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autorun-role=brace --quit-after-connect-ms=18000
+```
+
 Headless dock handoff check:
 
 ```bash
@@ -165,7 +187,8 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 
 ## Notes
 
-- The current client scene renders a simple ocean and replicated shared-boat placeholder.
+- For deterministic smoke tests, start the server and all clients with the same temporary `HOME` so the shared boat blueprint starts from a clean save.
+- The current client scene renders a simple ocean and the launched block-built boat instead of a placeholder-only hull.
 - The current client scene now renders deck stations, placeholder crew, wreck salvage, loot, extraction markers, and a result overlay.
 - The current run model includes breach-driven speed loss and hull leakage that can be countered at the repair bench.
 - The current autorun route and hazard layout now support a clean four-role extraction pass with no damage when the crew coordinates correctly.
@@ -173,5 +196,7 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 - Repairs are limited by shared patch kits, and the resupply cache can top the team back up once per run while adding bonus rewards.
 - The current connect flow now lands in a shared 3D hangar builder where the crew can edit one live blueprint together before launching.
 - The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.
+- The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.
+- The current networking model now sends boat motion separately from structural runtime state so large block boats do not overflow the unreliable ENet packet budget during launch.
 - The current server scene logs heartbeat, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
 - Manual desktop testing still matters for feel and control tuning even though the headless handshake and movement loop are now scriptable.

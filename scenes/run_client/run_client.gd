@@ -27,6 +27,10 @@ var boat_label: Label
 var boat_root: Node3D
 var hull_mesh_instance: MeshInstance3D
 var hull_material: StandardMaterial3D
+var deck_mesh_instance: MeshInstance3D
+var mast_mesh_instance: MeshInstance3D
+var main_block_container: Node3D
+var sinking_chunk_container: Node3D
 var crew_container: Node3D
 var hazard_container: Node3D
 var station_container: Node3D
@@ -65,6 +69,8 @@ var last_known_phase := "running"
 var station_visuals: Dictionary = {}
 var hazard_visuals: Dictionary = {}
 var loot_visuals: Dictionary = {}
+var main_block_visuals: Dictionary = {}
+var sinking_chunk_visuals: Dictionary = {}
 var run_result_recorded := false
 var auto_continue_queued := false
 
@@ -93,6 +99,8 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	connect_time_seconds += delta
 	_update_boat_visual(delta)
+	_update_runtime_block_visuals()
+	_update_sinking_chunk_visuals(delta)
 	_update_hazard_visuals()
 	_update_loot_visuals()
 	_update_wreck_visual()
@@ -167,8 +175,14 @@ func _build_world() -> void:
 	add_child(extraction_root)
 	_build_extraction_visual()
 
+	sinking_chunk_container = Node3D.new()
+	add_child(sinking_chunk_container)
+
 	boat_root = Node3D.new()
 	add_child(boat_root)
+
+	main_block_container = Node3D.new()
+	boat_root.add_child(main_block_container)
 
 	hull_mesh_instance = MeshInstance3D.new()
 	var hull_mesh := BoxMesh.new()
@@ -181,27 +195,27 @@ func _build_world() -> void:
 	hull_mesh_instance.material_override = hull_material
 	boat_root.add_child(hull_mesh_instance)
 
-	var deck := MeshInstance3D.new()
+	deck_mesh_instance = MeshInstance3D.new()
 	var deck_mesh := BoxMesh.new()
 	deck_mesh.size = Vector3(2.7, 0.14, 4.6)
-	deck.mesh = deck_mesh
-	deck.position = Vector3(0.0, 0.78, 0.0)
+	deck_mesh_instance.mesh = deck_mesh
+	deck_mesh_instance.position = Vector3(0.0, 0.78, 0.0)
 	var deck_material := StandardMaterial3D.new()
 	deck_material.albedo_color = Color(0.70, 0.56, 0.34)
-	deck.material_override = deck_material
-	boat_root.add_child(deck)
+	deck_mesh_instance.material_override = deck_material
+	boat_root.add_child(deck_mesh_instance)
 
-	var mast := MeshInstance3D.new()
+	mast_mesh_instance = MeshInstance3D.new()
 	var mast_mesh := CylinderMesh.new()
 	mast_mesh.height = 3.0
 	mast_mesh.top_radius = 0.12
 	mast_mesh.bottom_radius = 0.12
-	mast.mesh = mast_mesh
-	mast.position = Vector3(0.0, 2.0, -0.2)
+	mast_mesh_instance.mesh = mast_mesh
+	mast_mesh_instance.position = Vector3(0.0, 2.0, -0.2)
 	var mast_material := StandardMaterial3D.new()
 	mast_material.albedo_color = Color(0.82, 0.79, 0.72)
-	mast.material_override = mast_material
-	boat_root.add_child(mast)
+	mast_mesh_instance.material_override = mast_material
+	boat_root.add_child(mast_mesh_instance)
 
 	station_container = Node3D.new()
 	boat_root.add_child(station_container)
@@ -499,6 +513,8 @@ func _build_result_overlay() -> void:
 	result_layer.visible = false
 
 func _refresh_world() -> void:
+	_refresh_runtime_block_visuals()
+	_refresh_sinking_chunk_visuals()
 	_refresh_station_visuals()
 	_refresh_crew_visuals()
 	_refresh_hazard_visuals()
@@ -527,21 +543,29 @@ func _refresh_hud() -> void:
 	var cache_distance := boat_position.distance_to(cache_position)
 	var repair_supplies := int(NetworkRuntime.run_state.get("repair_supplies", 0))
 	var repair_supplies_max := int(NetworkRuntime.run_state.get("repair_supplies_max", 0))
+	var active_block_count := int(NetworkRuntime.boat_state.get("active_block_count", 0))
+	var destroyed_block_count := int(NetworkRuntime.run_state.get("destroyed_block_count", 0))
+	var detached_chunk_count := int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
+	var cargo_lost_to_sea := int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
 
 	objective_label.text = _build_objective_text()
-	resource_label.text = "Resources: Patch Kits %d/%d | Bonus Bank %d gold / %d salvage | Dock %d gold / %d salvage" % [
+	resource_label.text = "Resources: Patch Kits %d/%d | Bonus Bank %d gold / %d salvage | Cargo Lost To Sea %d | Dock %d gold / %d salvage" % [
 		repair_supplies,
 		repair_supplies_max,
 		int(NetworkRuntime.run_state.get("bonus_gold_bank", 0)),
 		int(NetworkRuntime.run_state.get("bonus_salvage_bank", 0)),
+		cargo_lost_to_sea,
 		DockState.get_total_gold(),
 		DockState.get_total_salvage(),
 	]
-	run_label.text = "Phase: %s | Seed: %d | Cargo: %d | Loot Remaining: %d | Breaches: %d | Wreck Dist: %.1f | Extract: %.1f/%.1fs | Dist: %.1f" % [
+	run_label.text = "Phase: %s | Seed: %d | Cargo: %d | Loot Remaining: %d | Blocks: %d active / %d destroyed | Chunks Lost: %d | Breaches: %d | Wreck Dist: %.1f | Extract: %.1f/%.1fs | Dist: %.1f" % [
 		str(NetworkRuntime.run_state.get("phase", "running")),
 		NetworkRuntime.run_seed,
 		int(NetworkRuntime.run_state.get("cargo_count", 0)),
 		int(NetworkRuntime.run_state.get("loot_remaining", 0)),
+		active_block_count,
+		destroyed_block_count,
+		detached_chunk_count,
 		breach_stacks,
 		wreck_distance,
 		extraction_progress,
@@ -563,7 +587,7 @@ func _refresh_hud() -> void:
 	station_label.text = "Stations:\n%s" % ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")
 
 	interaction_label.text = _build_interaction_text(selected_station_id, local_station_id)
-	boat_label.text = "Boat: hp=%.1f/%.1f speed=%.2f/%.2f cargo=%d/%d pos=(%.2f, %.2f, %.2f) heading=%.2f breaches=%d repairCd=%.2f collisions=%d lastImpact=%.1f braced=%s blueprint=v%d" % [
+	boat_label.text = "Boat: hp=%.1f/%.1f speed=%.2f/%.2f cargo=%d/%d pos=(%.2f, %.2f, %.2f) heading=%.2f breaches=%d repairCd=%.2f collisions=%d lastImpact=%.1f braced=%s blueprint=v%d mainChunk=%d" % [
 		hull_integrity,
 		max_hull_integrity,
 		float(NetworkRuntime.boat_state.get("speed", 0.0)),
@@ -580,6 +604,7 @@ func _refresh_hud() -> void:
 		float(NetworkRuntime.boat_state.get("last_impact_damage", 0.0)),
 		"yes" if bool(NetworkRuntime.boat_state.get("last_impact_braced", false)) else "no",
 		int(NetworkRuntime.run_state.get("blueprint_version", 1)),
+		int(NetworkRuntime.boat_state.get("main_chunk_id", 0)),
 	]
 	status_label.text = "Status: %s" % NetworkRuntime.status_message
 
@@ -630,6 +655,242 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 		lines.append("Run complete. The result panel shows the final outcome.")
 
 	return "\n".join(lines)
+
+func _get_blueprint_block_by_id(block_id: int) -> Dictionary:
+	for block_variant in Array(NetworkRuntime.boat_blueprint.get("blocks", [])):
+		var block: Dictionary = block_variant
+		if int(block.get("id", 0)) == block_id:
+			return block
+	return {}
+
+func _normalize_runtime_block_cell(cell_value: Variant) -> Array:
+	if cell_value is Vector3i:
+		var cell_vec := cell_value as Vector3i
+		return [cell_vec.x, cell_vec.y, cell_vec.z]
+	if typeof(cell_value) == TYPE_ARRAY and cell_value.size() >= 3:
+		return [int(cell_value[0]), int(cell_value[1]), int(cell_value[2])]
+	if typeof(cell_value) == TYPE_DICTIONARY:
+		return [
+			int(cell_value.get("x", 0)),
+			int(cell_value.get("y", 0)),
+			int(cell_value.get("z", 0)),
+		]
+	return [0, 0, 0]
+
+func _cell_to_runtime_local_position(cell_value: Variant) -> Vector3:
+	var cell := _normalize_runtime_block_cell(cell_value)
+	return Vector3(float(cell[0]), float(cell[1]), float(cell[2])) * NetworkRuntime.RUNTIME_BLOCK_SPACING
+
+func _build_runtime_block_render_data(block_state: Dictionary) -> Dictionary:
+	var blueprint_block := _get_blueprint_block_by_id(int(block_state.get("id", 0)))
+	if blueprint_block.is_empty():
+		return {}
+
+	var block_type := str(blueprint_block.get("type", "structure"))
+	var block_def := NetworkRuntime.get_builder_block_definition(block_type)
+	var max_hp := float(block_def.get("max_hp", 1.0))
+	return {
+		"id": int(block_state.get("id", 0)),
+		"type": block_type,
+		"rotation_steps": int(blueprint_block.get("rotation_steps", 0)),
+		"local_position": _cell_to_runtime_local_position(blueprint_block.get("cell", [0, 0, 0])),
+		"max_hp": max_hp,
+		"current_hp": float(block_state.get("current_hp", max_hp)),
+		"destroyed": bool(block_state.get("destroyed", false)),
+		"detached": bool(block_state.get("detached", false)),
+	}
+
+func _build_sinking_chunk_center(block_ids: Array) -> Vector3:
+	var center := Vector3.ZERO
+	var counted_blocks := 0
+	for block_id_variant in block_ids:
+		var blueprint_block := _get_blueprint_block_by_id(int(block_id_variant))
+		if blueprint_block.is_empty():
+			continue
+		center += _cell_to_runtime_local_position(blueprint_block.get("cell", [0, 0, 0]))
+		counted_blocks += 1
+	if counted_blocks <= 0:
+		return Vector3.ZERO
+	return center / float(counted_blocks)
+
+func _apply_runtime_block_visual_style(block_node: Node3D, block_def: Dictionary, current_hp: float, max_hp: float, detached_visual: bool) -> void:
+	var health_ratio := clampf(current_hp / maxf(1.0, max_hp), 0.0, 1.0)
+	var damaged_color := Color(0.36, 0.16, 0.14)
+	var base_color: Color = block_def.get("color", Color(0.7, 0.7, 0.7))
+	var block_color := damaged_color.lerp(base_color, health_ratio)
+	if detached_visual:
+		block_color = block_color.darkened(0.18)
+
+	var mesh_instance := block_node.get_node_or_null("Body") as MeshInstance3D
+	if mesh_instance != null:
+		var body_material := mesh_instance.material_override as StandardMaterial3D
+		if body_material == null:
+			body_material = StandardMaterial3D.new()
+			mesh_instance.material_override = body_material
+		body_material.albedo_color = block_color
+		body_material.roughness = 0.45
+
+	var facing_marker := block_node.get_node_or_null("Marker") as MeshInstance3D
+	if facing_marker != null:
+		var marker_material := facing_marker.material_override as StandardMaterial3D
+		if marker_material == null:
+			marker_material = StandardMaterial3D.new()
+			facing_marker.material_override = marker_material
+		marker_material.albedo_color = block_color.lightened(0.22)
+
+func _refresh_runtime_block_visuals() -> void:
+	for child in main_block_container.get_children():
+		child.queue_free()
+	main_block_visuals.clear()
+
+	var runtime_blocks: Array = Array(NetworkRuntime.boat_state.get("runtime_blocks", []))
+	_update_placeholder_boat_visibility(runtime_blocks.is_empty())
+	for block_variant in runtime_blocks:
+		var block_state: Dictionary = block_variant
+		var block := _build_runtime_block_render_data(block_state)
+		if block.is_empty() or bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+			continue
+		var block_node := _make_runtime_block_visual(block, false)
+		main_block_container.add_child(block_node)
+		main_block_visuals[int(block.get("id", 0))] = block_node
+
+func _refresh_sinking_chunk_visuals() -> void:
+	for child in sinking_chunk_container.get_children():
+		child.queue_free()
+	sinking_chunk_visuals.clear()
+
+	var sinking_chunks: Array = Array(NetworkRuntime.boat_state.get("sinking_chunks", []))
+	for chunk_variant in sinking_chunks:
+		var chunk: Dictionary = chunk_variant
+		var chunk_root := Node3D.new()
+		var chunk_world_position: Vector3 = chunk.get("world_position", Vector3.ZERO)
+		chunk_root.position = chunk_world_position
+		chunk_root.rotation.y = float(chunk.get("rotation_y", 0.0))
+		sinking_chunk_container.add_child(chunk_root)
+		sinking_chunk_visuals[int(chunk.get("chunk_id", 0))] = chunk_root
+
+		var block_ids := Array(chunk.get("block_ids", []))
+		var chunk_center := _build_sinking_chunk_center(block_ids)
+		for block_id_variant in block_ids:
+			var block := _build_runtime_block_render_data({
+				"id": int(block_id_variant),
+				"detached": true,
+			})
+			if block.is_empty():
+				continue
+			var block_local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+			block["local_position"] = block_local_position - chunk_center
+			var block_node := _make_runtime_block_visual(block, true)
+			chunk_root.add_child(block_node)
+
+func _make_runtime_block_visual(block: Dictionary, detached_visual: bool) -> Node3D:
+	var block_type := str(block.get("type", "structure"))
+	var block_def := NetworkRuntime.get_builder_block_definition(block_type)
+	var block_node := Node3D.new()
+	var block_local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+	block_node.position = block_local_position
+	block_node.rotation_degrees.y = float(int(block.get("rotation_steps", 0)) * 90)
+
+	var mesh_instance := MeshInstance3D.new()
+	mesh_instance.name = "Body"
+	var mesh := BoxMesh.new()
+	var block_size: Vector3 = block_def.get("size", Vector3.ONE)
+	mesh.size = block_size
+	mesh_instance.mesh = mesh
+	block_node.add_child(mesh_instance)
+
+	var facing_marker := MeshInstance3D.new()
+	facing_marker.name = "Marker"
+	var marker_mesh := BoxMesh.new()
+	marker_mesh.size = Vector3(0.22, 0.14, 0.26)
+	facing_marker.mesh = marker_mesh
+	facing_marker.position = Vector3(0.0, 0.0, -0.36)
+	block_node.add_child(facing_marker)
+	_apply_runtime_block_visual_style(
+		block_node,
+		block_def,
+		float(block.get("current_hp", float(block.get("max_hp", 1.0)))),
+		float(block.get("max_hp", 1.0)),
+		detached_visual
+	)
+
+	return block_node
+
+func _update_runtime_block_visuals() -> void:
+	var runtime_blocks: Array = Array(NetworkRuntime.boat_state.get("runtime_blocks", []))
+	_update_placeholder_boat_visibility(runtime_blocks.is_empty())
+	for block_variant in runtime_blocks:
+		var block_state: Dictionary = block_variant
+		var block := _build_runtime_block_render_data(block_state)
+		if block.is_empty():
+			continue
+		var block_id := int(block.get("id", 0))
+		var block_node := main_block_visuals.get(block_id) as Node3D
+		if bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+			if block_node != null:
+				block_node.visible = false
+			continue
+		if block_node == null:
+			_refresh_runtime_block_visuals()
+			return
+		var block_local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+		block_node.position = block_local_position
+		block_node.rotation_degrees.y = float(int(block.get("rotation_steps", 0)) * 90)
+		block_node.visible = true
+		_apply_runtime_block_visual_style(
+			block_node,
+			NetworkRuntime.get_builder_block_definition(str(block.get("type", "structure"))),
+			float(block.get("current_hp", float(block.get("max_hp", 1.0)))),
+			float(block.get("max_hp", 1.0)),
+			false
+		)
+
+func _update_sinking_chunk_visuals(delta: float) -> void:
+	var sinking_chunks: Array = Array(NetworkRuntime.boat_state.get("sinking_chunks", [])).duplicate(true)
+	var active_chunk_ids := {}
+	var updated_chunks: Array = []
+	for chunk_variant in sinking_chunks:
+		var chunk: Dictionary = chunk_variant
+		var sink_elapsed := float(chunk.get("sink_elapsed", 0.0)) + delta
+		if sink_elapsed >= NetworkRuntime.RUNTIME_SINK_LIFETIME:
+			continue
+		chunk["sink_elapsed"] = sink_elapsed
+		var chunk_world_position: Vector3 = chunk.get("world_position", Vector3.ZERO)
+		var drift_velocity: Vector3 = chunk.get("drift_velocity", Vector3.ZERO)
+		chunk_world_position += drift_velocity * delta
+		chunk["world_position"] = chunk_world_position
+		var chunk_id := int(chunk.get("chunk_id", 0))
+		active_chunk_ids[chunk_id] = true
+		updated_chunks.append(chunk)
+		var chunk_root := sinking_chunk_visuals.get(chunk_id) as Node3D
+		if chunk_root == null:
+			NetworkRuntime.boat_state["sinking_chunks"] = updated_chunks
+			_refresh_sinking_chunk_visuals()
+			return
+		chunk_root.position = chunk_world_position
+		chunk_root.rotation.y = float(chunk.get("rotation_y", 0.0))
+		if chunk_root.get_child_count() != Array(chunk.get("block_ids", [])).size():
+			NetworkRuntime.boat_state["sinking_chunks"] = updated_chunks
+			_refresh_sinking_chunk_visuals()
+			return
+
+	for chunk_id_variant in sinking_chunk_visuals.keys():
+		var chunk_id := int(chunk_id_variant)
+		if active_chunk_ids.has(chunk_id):
+			continue
+		var stale_root := sinking_chunk_visuals.get(chunk_id) as Node3D
+		if stale_root != null:
+			stale_root.queue_free()
+		sinking_chunk_visuals.erase(chunk_id)
+	NetworkRuntime.boat_state["sinking_chunks"] = updated_chunks
+
+func _update_placeholder_boat_visibility(placeholder_visible: bool) -> void:
+	if hull_mesh_instance != null:
+		hull_mesh_instance.visible = placeholder_visible
+	if deck_mesh_instance != null:
+		deck_mesh_instance.visible = placeholder_visible
+	if mast_mesh_instance != null:
+		mast_mesh_instance.visible = placeholder_visible
 
 func _refresh_station_visuals() -> void:
 	_ensure_selected_station_valid()
@@ -865,7 +1126,7 @@ func _refresh_result_overlay() -> void:
 	var cargo_secured := int(NetworkRuntime.run_state.get("cargo_secured", 0))
 	var cargo_lost: int = maxi(0, cargo_count - cargo_secured)
 	result_title_label.text = str(NetworkRuntime.run_state.get("result_title", "Run Complete"))
-	result_body_label.text = "%s\n\nCollected: %d\nSecured: %d\nLost: %d\nGold: %d\nSalvage: %d\nCache Recovered: %s\nPatch Kits Left: %d" % [
+	result_body_label.text = "%s\n\nCollected: %d\nSecured: %d\nLost: %d\nGold: %d\nSalvage: %d\nCache Recovered: %s\nPatch Kits Left: %d\nBlocks Destroyed: %d\nChunks Lost: %d\nCargo Lost To Sea: %d\nBlueprint Version: %d" % [
 		str(NetworkRuntime.run_state.get("result_message", "")),
 		cargo_count,
 		cargo_secured,
@@ -874,6 +1135,10 @@ func _refresh_result_overlay() -> void:
 		int(NetworkRuntime.run_state.get("reward_salvage", 0)),
 		"yes" if bool(NetworkRuntime.run_state.get("cache_recovered", false)) else "no",
 		int(NetworkRuntime.run_state.get("repair_supplies", 0)),
+		int(NetworkRuntime.run_state.get("destroyed_block_count", 0)),
+		int(NetworkRuntime.run_state.get("detached_chunk_count", 0)),
+		int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0)),
+		int(NetworkRuntime.run_state.get("blueprint_version", 1)),
 	]
 	result_panel.modulate = Color(0.98, 1.0, 0.98) if phase == "success" else Color(1.0, 0.94, 0.94)
 	result_continue_button.disabled = false
@@ -990,6 +1255,8 @@ func _apply_autorun_role(delta: float, autorun_role: String, input_state: Dictio
 	match autorun_role:
 		"driver":
 			_apply_driver_role(input_state)
+		"driver_detach_test":
+			_apply_driver_detach_test_role(input_state)
 		"grapple":
 			_apply_grapple_role(input_state)
 		"brace":
@@ -1094,6 +1361,37 @@ func _apply_driver_role(input_state: Dictionary) -> void:
 		return
 
 	_apply_coordinated_return_route(input_state)
+
+func _apply_driver_detach_test_role(input_state: Dictionary) -> void:
+	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
+		return
+
+	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
+	_request_station_if_needed("helm", input_state)
+	if local_station_id != "helm":
+		return
+
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
+	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
+	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	if loot_remaining > 0:
+		if not _station_is_crewed("brace") or not _station_is_crewed("grapple"):
+			input_state["throttle"] = 0.0
+			input_state["steer"] = 0.0
+			return
+		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
+			_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
+		else:
+			_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
+		return
+
+	if int(NetworkRuntime.run_state.get("detached_chunk_count", 0)) > 0 or int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0)) > 0:
+		input_state["throttle"] = 0.0
+		input_state["steer"] = 0.0
+		return
+
+	_apply_drive_to_target(Vector3(0.0, 0.0, 19.2), input_state, 0.84)
 
 func _apply_grapple_role(input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
@@ -1450,6 +1748,8 @@ func _on_helm_changed(_driver_peer_id: int) -> void:
 	_refresh_hud()
 
 func _on_boat_state_changed(_state: Dictionary) -> void:
+	_update_runtime_block_visuals()
+	_update_sinking_chunk_visuals(0.0)
 	_update_boat_material()
 	_refresh_wreck_visual()
 	_refresh_cache_visual()

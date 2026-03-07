@@ -126,6 +126,12 @@ const BUILDER_BLOCK_LIBRARY := {
 		"hull": 0.5,
 	},
 }
+const RUNTIME_BLOCK_SPACING := 0.95
+const RUNTIME_DAMAGE_CLUSTER_RADIUS := 1.9
+const RUNTIME_DAMAGE_CLUSTER_WEIGHTS := [1.0, 0.6, 0.45, 0.3, 0.2]
+const RUNTIME_SINK_SPEED := 0.95
+const RUNTIME_SINK_DRIFT_SPEED := 0.42
+const RUNTIME_SINK_LIFETIME := 8.0
 
 const BOAT_ACCELERATION := 8.0
 const BOAT_DECELERATION := 10.0
@@ -180,6 +186,7 @@ var _peer_inputs: Dictionary = {}
 var _boat_broadcast_accumulator := 0.0
 var _next_hazard_id: int = 1
 var _next_loot_id: int = 1
+var _next_runtime_chunk_id: int = 1
 var _client_bootstrap_complete := false
 
 func _ready() -> void:
@@ -464,6 +471,7 @@ func server_step_shared_boat(delta: float) -> void:
 	boat_state["steer"] = steer
 	boat_state["tick"] = int(boat_state.get("tick", 0)) + 1
 	boat_state["driver_peer_id"] = driver_peer_id
+	_update_sinking_chunks(delta)
 
 	if breach_stacks > 0:
 		var leak_damage := HULL_LEAK_DAMAGE_PER_BREACH * float(breach_stacks) * delta
@@ -529,7 +537,7 @@ func _broadcast_peer_snapshot() -> void:
 func _broadcast_boat_state() -> void:
 	emit_signal("boat_state_changed", boat_state.duplicate(true))
 	if multiplayer.is_server():
-		var state := boat_state.duplicate(true)
+		var state := _build_client_boat_state_snapshot()
 		for peer_id in get_player_peer_ids():
 			client_receive_boat_state.rpc_id(int(peer_id), state, driver_peer_id)
 
@@ -566,11 +574,67 @@ func _send_bootstrap(peer_id: int) -> void:
 		return
 
 	client_receive_bootstrap.rpc_id(peer_id, run_seed, current_port, GameConfig.MAX_PLAYERS, session_phase, boat_blueprint.duplicate(true))
-	client_receive_boat_state.rpc_id(peer_id, boat_state.duplicate(true), driver_peer_id)
+	client_receive_boat_state.rpc_id(peer_id, _build_client_boat_state_snapshot(), driver_peer_id)
 	client_receive_hazard_state.rpc_id(peer_id, hazard_state.duplicate(true))
 	client_receive_station_state.rpc_id(peer_id, station_state.duplicate(true))
 	client_receive_loot_state.rpc_id(peer_id, loot_state.duplicate(true))
 	client_receive_run_state.rpc_id(peer_id, run_state.duplicate(true))
+	if session_phase == SESSION_PHASE_RUN:
+		client_receive_runtime_boat_state.rpc_id(peer_id, _build_client_runtime_boat_snapshot())
+
+func _build_client_boat_state_snapshot() -> Dictionary:
+	var snapshot := boat_state.duplicate(true)
+	snapshot.erase("runtime_blocks")
+	snapshot.erase("sinking_chunks")
+	snapshot.erase("runtime_chunks")
+	snapshot.erase("recent_damage_block_ids")
+	snapshot.erase("recent_detached_chunk_ids")
+	snapshot.erase("cargo_lost_to_sea")
+	return snapshot
+
+func _build_client_runtime_boat_snapshot() -> Dictionary:
+	return {
+		"runtime_blocks": _build_client_runtime_blocks_snapshot(),
+		"sinking_chunks": _build_client_sinking_chunks_snapshot(),
+	}
+
+func _build_client_runtime_blocks_snapshot() -> Array:
+	var runtime_blocks_snapshot: Array = []
+	for block_variant in Array(boat_state.get("runtime_blocks", [])):
+		var block: Dictionary = block_variant
+		runtime_blocks_snapshot.append({
+			"id": int(block.get("id", 0)),
+			"current_hp": float(block.get("current_hp", 0.0)),
+			"destroyed": bool(block.get("destroyed", false)),
+			"detached": bool(block.get("detached", false)),
+		})
+	return runtime_blocks_snapshot
+
+func _build_client_sinking_chunks_snapshot() -> Array:
+	var sinking_chunks_snapshot: Array = []
+	for chunk_variant in Array(boat_state.get("sinking_chunks", [])):
+		var chunk: Dictionary = chunk_variant
+		var block_ids: Array = []
+		for block_variant in Array(chunk.get("blocks", [])):
+			var block: Dictionary = block_variant
+			block_ids.append(int(block.get("id", 0)))
+		sinking_chunks_snapshot.append({
+			"chunk_id": int(chunk.get("chunk_id", 0)),
+			"world_position": chunk.get("world_position", Vector3.ZERO),
+			"rotation_y": float(chunk.get("rotation_y", 0.0)),
+			"sink_elapsed": float(chunk.get("sink_elapsed", 0.0)),
+			"drift_velocity": chunk.get("drift_velocity", Vector3.ZERO),
+			"block_ids": block_ids,
+		})
+	return sinking_chunks_snapshot
+
+func _broadcast_runtime_boat_state() -> void:
+	if not multiplayer.is_server() or session_phase != SESSION_PHASE_RUN:
+		return
+
+	var runtime_snapshot := _build_client_runtime_boat_snapshot()
+	for peer_id in get_player_peer_ids():
+		client_receive_runtime_boat_state.rpc_id(int(peer_id), runtime_snapshot)
 
 func _reset_blueprint_runtime() -> void:
 	boat_blueprint = _decorate_blueprint(DockState.get_boat_blueprint())
@@ -581,6 +645,7 @@ func _reset_run_runtime() -> void:
 	_boat_broadcast_accumulator = 0.0
 	_next_hazard_id = 1
 	_next_loot_id = 1
+	_next_runtime_chunk_id = 1
 	var blueprint_stats := Dictionary(boat_blueprint.get("stats", {}))
 	var max_hull_integrity := float(blueprint_stats.get("max_hull_integrity", BOAT_MAX_INTEGRITY))
 	var top_speed := float(blueprint_stats.get("top_speed", BOAT_TOP_SPEED))
@@ -611,6 +676,15 @@ func _reset_run_runtime() -> void:
 		"cargo_capacity": cargo_capacity,
 		"brace_multiplier": brace_multiplier,
 		"blueprint_version": int(boat_blueprint.get("version", 1)),
+		"runtime_blocks": [],
+		"runtime_chunks": [],
+		"sinking_chunks": [],
+		"main_chunk_id": 0,
+		"destroyed_block_count": 0,
+		"detached_chunk_count": 0,
+		"recent_damage_block_ids": [],
+		"recent_detached_chunk_ids": [],
+		"cargo_lost_to_sea": 0,
 	}
 
 	station_state = {}
@@ -640,6 +714,7 @@ func _initialize_loot() -> void:
 	]
 
 func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_warning_text: String) -> void:
+	var blueprint_stats := Dictionary(boat_blueprint.get("stats", {}))
 	run_state = {
 		"phase": "running",
 		"cargo_count": 0,
@@ -673,7 +748,439 @@ func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_war
 		"failure_reason": "",
 		"launch_warning": launch_warning_text,
 		"blueprint_version": int(boat_blueprint.get("version", 1)),
+		"cargo_lost_to_sea": 0,
+		"detached_chunk_count": 0,
+		"destroyed_block_count": 0,
+		"launch_loose_chunks": int(blueprint_stats.get("loose_blocks", 0)),
 	}
+	_initialize_runtime_boat_from_blueprint()
+
+func _initialize_runtime_boat_from_blueprint() -> void:
+	var runtime_blocks: Array = []
+	for block_variant in Array(boat_blueprint.get("blocks", [])):
+		var block: Dictionary = block_variant
+		var block_type := str(block.get("type", "structure"))
+		var block_def := get_builder_block_definition(block_type)
+		runtime_blocks.append({
+			"id": int(block.get("id", 0)),
+			"type": block_type,
+			"cell": _normalize_blueprint_cell(block.get("cell", [0, 0, 0])),
+			"rotation_steps": wrapi(int(block.get("rotation_steps", 0)), 0, 4),
+			"local_position": _block_cell_to_local_position(block.get("cell", [0, 0, 0])),
+			"max_hp": float(block_def.get("max_hp", 12.0)),
+			"current_hp": float(block_def.get("max_hp", 12.0)),
+			"destroyed": false,
+			"detached": false,
+			"chunk_id": 0,
+		})
+
+	boat_state["runtime_blocks"] = runtime_blocks
+	boat_state["runtime_chunks"] = []
+	boat_state["sinking_chunks"] = []
+	boat_state["recent_damage_block_ids"] = []
+	boat_state["recent_detached_chunk_ids"] = []
+	_recompute_runtime_connectivity(true, "launch_disconnect")
+
+func _block_cell_to_local_position(cell_value: Variant) -> Vector3:
+	var cell := _normalize_blueprint_cell(cell_value)
+	return Vector3(float(cell[0]), float(cell[1]), float(cell[2])) * RUNTIME_BLOCK_SPACING
+
+func _collect_active_runtime_blocks() -> Array:
+	var active_blocks: Array = []
+	for block_variant in Array(boat_state.get("runtime_blocks", [])):
+		var block: Dictionary = block_variant
+		if bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+			continue
+		active_blocks.append(block)
+	return active_blocks
+
+func _recompute_runtime_connectivity(initial_launch: bool = false, detached_reason: String = "detached") -> void:
+	var runtime_blocks: Array = Array(boat_state.get("runtime_blocks", [])).duplicate(true)
+	var active_blocks := _collect_active_runtime_blocks()
+	var components := _compute_runtime_components(active_blocks)
+	var previous_main_chunk_id := int(boat_state.get("main_chunk_id", 0))
+	var main_component_index := -1
+
+	for index in range(components.size()):
+		var component: Dictionary = components[index]
+		if bool(component.get("contains_core", false)):
+			main_component_index = index
+			break
+	if main_component_index == -1:
+		var largest_component_size := -1
+		for index in range(components.size()):
+			var component_size := Array(components[index].get("block_ids", [])).size()
+			if component_size > largest_component_size:
+				largest_component_size = component_size
+				main_component_index = index
+
+	var main_block_ids: Array = []
+	var runtime_chunks: Array = []
+	var detached_chunk_ids: Array = []
+	for index in range(components.size()):
+		var component: Dictionary = components[index]
+		var chunk_id := _next_runtime_chunk_id
+		_next_runtime_chunk_id += 1
+		var is_main := index == main_component_index
+		var block_ids := Array(component.get("block_ids", [])).duplicate(true)
+		var chunk_record := {
+			"chunk_id": chunk_id,
+			"block_ids": block_ids,
+			"contains_core": bool(component.get("contains_core", false)),
+			"is_main": is_main,
+			"detached": not is_main,
+		}
+		runtime_chunks.append(chunk_record)
+		for block_index in range(runtime_blocks.size()):
+			var block: Dictionary = runtime_blocks[block_index]
+			if not block_ids.has(int(block.get("id", 0))):
+				continue
+			block["chunk_id"] = chunk_id
+			runtime_blocks[block_index] = block
+		if is_main:
+			main_block_ids = block_ids
+		else:
+			detached_chunk_ids.append(chunk_id)
+			runtime_blocks = _mark_runtime_blocks_detached(runtime_blocks, block_ids)
+			var detached_blocks := _get_runtime_blocks_by_ids(runtime_blocks, block_ids)
+			var sinking_chunk := _build_sinking_chunk_snapshot(chunk_id, detached_blocks, detached_reason, initial_launch)
+			var sinking_chunks: Array = Array(boat_state.get("sinking_chunks", [])).duplicate(true)
+			sinking_chunks.append(sinking_chunk)
+			boat_state["sinking_chunks"] = sinking_chunks
+
+	if main_component_index == -1 or main_block_ids.is_empty():
+		boat_state["runtime_blocks"] = runtime_blocks
+		boat_state["runtime_chunks"] = runtime_chunks
+		boat_state["main_chunk_id"] = 0
+		boat_state["destroyed_block_count"] = _count_destroyed_runtime_blocks(runtime_blocks)
+		boat_state["detached_chunk_count"] = int(run_state.get("detached_chunk_count", 0)) + detached_chunk_ids.size()
+		boat_state["recent_detached_chunk_ids"] = detached_chunk_ids
+		run_state["detached_chunk_count"] = int(run_state.get("detached_chunk_count", 0)) + detached_chunk_ids.size()
+		run_state["destroyed_block_count"] = _count_destroyed_runtime_blocks(runtime_blocks)
+		_resolve_run_failure("The main hull broke apart in open water.")
+		return
+
+	boat_state["runtime_blocks"] = runtime_blocks
+	boat_state["runtime_chunks"] = runtime_chunks
+	boat_state["main_chunk_id"] = int(runtime_chunks[main_component_index].get("chunk_id", previous_main_chunk_id))
+	boat_state["destroyed_block_count"] = _count_destroyed_runtime_blocks(runtime_blocks)
+	boat_state["recent_detached_chunk_ids"] = detached_chunk_ids
+	boat_state["detached_chunk_count"] = int(run_state.get("detached_chunk_count", 0)) + detached_chunk_ids.size()
+	run_state["detached_chunk_count"] = int(run_state.get("detached_chunk_count", 0)) + detached_chunk_ids.size()
+	run_state["destroyed_block_count"] = _count_destroyed_runtime_blocks(runtime_blocks)
+	_apply_runtime_stats_from_main_blocks(runtime_blocks, main_block_ids)
+	if detached_chunk_ids.size() > 0:
+		_set_status(_build_detachment_status(runtime_blocks, detached_chunk_ids))
+
+func _compute_runtime_components(active_blocks: Array) -> Array:
+	var blocks_by_key := {}
+	for block_variant in active_blocks:
+		var block: Dictionary = block_variant
+		blocks_by_key[_cell_to_key(block.get("cell", [0, 0, 0]))] = block
+
+	var components: Array = []
+	var visited := {}
+	for block_variant in active_blocks:
+		var block: Dictionary = block_variant
+		var cell := _normalize_blueprint_cell(block.get("cell", [0, 0, 0]))
+		var key := _cell_to_key(cell)
+		if visited.has(key):
+			continue
+
+		var queue: Array = [cell]
+		var component_block_ids: Array = []
+		var contains_core := false
+		visited[key] = true
+		while not queue.is_empty():
+			var current_cell: Array = queue.pop_front()
+			var current_key := _cell_to_key(current_cell)
+			var current_block: Dictionary = blocks_by_key.get(current_key, {})
+			if current_block.is_empty():
+				continue
+			component_block_ids.append(int(current_block.get("id", 0)))
+			if str(current_block.get("type", "")) == "core":
+				contains_core = true
+			for neighbor in _get_adjacent_cells(current_cell):
+				var neighbor_key := _cell_to_key(neighbor)
+				if not blocks_by_key.has(neighbor_key) or visited.has(neighbor_key):
+					continue
+				visited[neighbor_key] = true
+				queue.append(neighbor)
+		components.append({
+			"block_ids": component_block_ids,
+			"contains_core": contains_core,
+		})
+	return components
+
+func _mark_runtime_blocks_detached(runtime_blocks: Array, block_ids: Array) -> Array:
+	for index in range(runtime_blocks.size()):
+		var block: Dictionary = runtime_blocks[index]
+		if not block_ids.has(int(block.get("id", 0))):
+			continue
+		block["detached"] = true
+		runtime_blocks[index] = block
+	return runtime_blocks
+
+func _get_runtime_blocks_by_ids(runtime_blocks: Array, block_ids: Array) -> Array:
+	var matched_blocks: Array = []
+	for block_variant in runtime_blocks:
+		var block: Dictionary = block_variant
+		if block_ids.has(int(block.get("id", 0))):
+			matched_blocks.append(block.duplicate(true))
+	return matched_blocks
+
+func _build_sinking_chunk_snapshot(chunk_id: int, detached_blocks: Array, reason: String, launch_chunk: bool) -> Dictionary:
+	var center := Vector3.ZERO
+	if not detached_blocks.is_empty():
+		for block_variant in detached_blocks:
+			var block: Dictionary = block_variant
+			var local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+			center += local_position
+		center /= float(detached_blocks.size())
+
+	var facing_vector := Vector3(
+		sin(float(boat_state.get("rotation_y", 0.0))),
+		0.0,
+		cos(float(boat_state.get("rotation_y", 0.0)))
+	)
+	var drift_sign := -1.0 if chunk_id % 2 == 0 else 1.0
+	var drift_velocity := Vector3(drift_sign * RUNTIME_SINK_DRIFT_SPEED, -RUNTIME_SINK_SPEED, RUNTIME_SINK_DRIFT_SPEED * 0.18).rotated(Vector3.UP, float(boat_state.get("rotation_y", 0.0)))
+	var chunk_blocks: Array = []
+	for block_variant in detached_blocks:
+		var block: Dictionary = block_variant
+		var local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+		chunk_blocks.append({
+			"id": int(block.get("id", 0)),
+			"type": str(block.get("type", "structure")),
+			"rotation_steps": int(block.get("rotation_steps", 0)),
+			"local_offset": local_position - center,
+			"destroyed": bool(block.get("destroyed", false)),
+		})
+
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	return {
+		"chunk_id": chunk_id,
+		"reason": reason,
+		"launch_chunk": launch_chunk,
+		"world_position": boat_position + center.rotated(Vector3.UP, float(boat_state.get("rotation_y", 0.0))),
+		"rotation_y": float(boat_state.get("rotation_y", 0.0)),
+		"sink_elapsed": 0.0,
+		"drift_velocity": drift_velocity + facing_vector * 0.12,
+		"blocks": chunk_blocks,
+	}
+
+func _apply_runtime_stats_from_main_blocks(runtime_blocks: Array, main_block_ids: Array) -> void:
+	var stat_source_blocks: Array = []
+	for block_variant in runtime_blocks:
+		var block: Dictionary = block_variant
+		if block.get("destroyed", false) or block.get("detached", false):
+			continue
+		if main_block_ids.has(int(block.get("id", 0))):
+			stat_source_blocks.append(block)
+
+	var stats := _compute_runtime_stats_for_blocks(stat_source_blocks)
+	var new_cargo_capacity := int(stats.get("cargo_capacity", 1))
+	var overflow := maxi(0, int(run_state.get("cargo_count", 0)) - new_cargo_capacity)
+	if overflow > 0:
+		run_state["cargo_count"] = new_cargo_capacity
+		run_state["cargo_lost_to_sea"] = int(run_state.get("cargo_lost_to_sea", 0)) + overflow
+
+	var new_max_hull := float(stats.get("max_hull_integrity", BOAT_MAX_INTEGRITY))
+	boat_state["max_hull_integrity"] = new_max_hull
+	boat_state["hull_integrity"] = minf(float(boat_state.get("hull_integrity", new_max_hull)), new_max_hull)
+	boat_state["base_top_speed"] = float(stats.get("top_speed", BOAT_TOP_SPEED))
+	boat_state["top_speed_limit"] = float(stats.get("top_speed", BOAT_TOP_SPEED))
+	boat_state["cargo_capacity"] = new_cargo_capacity
+	boat_state["brace_multiplier"] = float(stats.get("brace_multiplier", 1.0))
+	boat_state["active_block_count"] = int(stats.get("main_chunk_blocks", 0))
+	run_state["cargo_capacity"] = new_cargo_capacity
+	run_state["repair_supplies_max"] = int(stats.get("repair_capacity", REPAIR_SUPPLIES_START))
+	run_state["repair_supplies"] = mini(int(run_state.get("repair_supplies", 0)), int(run_state.get("repair_supplies_max", REPAIR_SUPPLIES_START)))
+	run_state["destroyed_block_count"] = _count_destroyed_runtime_blocks(runtime_blocks)
+
+	if overflow > 0:
+		_set_status("Chunk loss dumped %d cargo item(s) into the sea." % overflow)
+
+	if float(stats.get("buoyancy_margin", 0.0)) < -0.75:
+		_resolve_run_failure("The remaining hull lost too much buoyancy and sank.")
+
+func _compute_runtime_stats_for_blocks(blocks: Array) -> Dictionary:
+	var total_weight := 0.0
+	var total_buoyancy := 0.0
+	var total_thrust := 0.0
+	var total_cargo := 0
+	var total_repair := 0
+	var total_brace := 0.0
+	var total_hull := 0.0
+	var engine_count := 0
+	for block_variant in blocks:
+		var block: Dictionary = block_variant
+		var block_def := get_builder_block_definition(str(block.get("type", "structure")))
+		total_weight += float(block_def.get("weight", 1.0))
+		total_buoyancy += float(block_def.get("buoyancy", 1.0))
+		total_thrust += float(block_def.get("thrust", 0.0))
+		total_cargo += int(block_def.get("cargo", 0))
+		total_repair += int(block_def.get("repair", 0))
+		total_brace += float(block_def.get("brace", 0.0))
+		total_hull += float(block_def.get("hull", 0.0))
+		if str(block.get("type", "")) == "engine":
+			engine_count += 1
+
+	var block_count := blocks.size()
+	var buoyancy_margin := total_buoyancy - total_weight
+	var top_speed := 4.5 + total_thrust * 3.4 - maxf(0.0, total_weight - total_buoyancy * 0.78) * 0.22
+	if engine_count <= 0:
+		top_speed = 1.6
+	top_speed = clampf(top_speed, 1.6, 24.0)
+	return {
+		"main_chunk_blocks": block_count,
+		"buoyancy_margin": buoyancy_margin,
+		"top_speed": top_speed,
+		"max_hull_integrity": clampf(38.0 + total_hull * 18.0 + float(block_count) * 1.8, 20.0, 240.0),
+		"cargo_capacity": maxi(1, 1 + total_cargo),
+		"repair_capacity": maxi(1, mini(REPAIR_SUPPLIES_MAX + 3, REPAIR_SUPPLIES_START + total_repair)),
+		"brace_multiplier": clampf(1.0 + total_brace, 1.0, 2.3),
+	}
+
+func _count_destroyed_runtime_blocks(runtime_blocks: Array) -> int:
+	var count := 0
+	for block_variant in runtime_blocks:
+		var block: Dictionary = block_variant
+		if bool(block.get("destroyed", false)):
+			count += 1
+	return count
+
+func _build_detachment_status(runtime_blocks: Array, detached_chunk_ids: Array) -> String:
+	var type_counts := {}
+	for chunk_id in detached_chunk_ids:
+		for block_variant in runtime_blocks:
+			var block: Dictionary = block_variant
+			if int(block.get("chunk_id", 0)) != chunk_id or not bool(block.get("detached", false)):
+				continue
+			var block_type := str(block.get("type", "structure"))
+			type_counts[block_type] = int(type_counts.get(block_type, 0)) + 1
+
+	var fragments := PackedStringArray()
+	for block_type in type_counts.keys():
+		var label := str(get_builder_block_definition(str(block_type)).get("label", str(block_type).capitalize()))
+		fragments.append("%s x%d" % [label, int(type_counts[block_type])])
+	return "Chunk detached: %s." % ", ".join(fragments)
+
+func _update_sinking_chunks(delta: float) -> void:
+	var sinking_chunks: Array = Array(boat_state.get("sinking_chunks", [])).duplicate(true)
+	var updated_chunks: Array = []
+	for chunk_variant in sinking_chunks:
+		var chunk: Dictionary = chunk_variant
+		var sink_elapsed := float(chunk.get("sink_elapsed", 0.0)) + delta
+		if sink_elapsed >= RUNTIME_SINK_LIFETIME:
+			continue
+		chunk["sink_elapsed"] = sink_elapsed
+		var world_position: Vector3 = chunk.get("world_position", Vector3.ZERO)
+		var drift_velocity: Vector3 = chunk.get("drift_velocity", Vector3.ZERO)
+		chunk["world_position"] = world_position + drift_velocity * delta
+		updated_chunks.append(chunk)
+	boat_state["sinking_chunks"] = updated_chunks
+
+func _apply_localized_block_damage(total_damage: float, impact_point_local: Vector3, event_label: String) -> bool:
+	var runtime_blocks: Array = Array(boat_state.get("runtime_blocks", [])).duplicate(true)
+	var candidate_entries: Array = []
+	for block_variant in runtime_blocks:
+		var block: Dictionary = block_variant
+		if bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+			continue
+		var local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+		var distance := local_position.distance_to(impact_point_local)
+		if distance > RUNTIME_DAMAGE_CLUSTER_RADIUS:
+			continue
+		candidate_entries.append({
+			"id": int(block.get("id", 0)),
+			"distance": distance,
+		})
+
+	if candidate_entries.is_empty():
+		var nearest_id := 0
+		var nearest_distance := INF
+		for block_variant in runtime_blocks:
+			var block: Dictionary = block_variant
+			if bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+				continue
+			var local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+			var distance := local_position.distance_to(impact_point_local)
+			if distance < nearest_distance:
+				nearest_distance = distance
+				nearest_id = int(block.get("id", 0))
+		if nearest_id > 0:
+			candidate_entries.append({
+				"id": nearest_id,
+				"distance": nearest_distance,
+			})
+
+	candidate_entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("distance", 0.0)) < float(b.get("distance", 0.0))
+	)
+
+	var hit_block_ids: Array = []
+	var destroyed_now := false
+	var max_hits := mini(candidate_entries.size(), RUNTIME_DAMAGE_CLUSTER_WEIGHTS.size())
+	for hit_index in range(max_hits):
+		var entry: Dictionary = candidate_entries[hit_index]
+		var block_id := int(entry.get("id", 0))
+		var weight := float(RUNTIME_DAMAGE_CLUSTER_WEIGHTS[hit_index])
+		for runtime_index in range(runtime_blocks.size()):
+			var block: Dictionary = runtime_blocks[runtime_index]
+			if int(block.get("id", 0)) != block_id:
+				continue
+			block["current_hp"] = maxf(0.0, float(block.get("current_hp", 0.0)) - total_damage * weight)
+			if float(block.get("current_hp", 0.0)) <= 0.0:
+				block["destroyed"] = true
+				destroyed_now = true
+			runtime_blocks[runtime_index] = block
+			hit_block_ids.append(block_id)
+			break
+
+	boat_state["runtime_blocks"] = runtime_blocks
+	boat_state["recent_damage_block_ids"] = hit_block_ids
+	if destroyed_now:
+		_recompute_runtime_connectivity(false, event_label)
+	else:
+		boat_state["recent_detached_chunk_ids"] = []
+		boat_state["destroyed_block_count"] = _count_destroyed_runtime_blocks(runtime_blocks)
+		run_state["destroyed_block_count"] = int(boat_state.get("destroyed_block_count", 0))
+	return str(run_state.get("phase", "running")) == "running"
+
+func _heal_runtime_blocks(total_heal: float) -> void:
+	var runtime_blocks: Array = Array(boat_state.get("runtime_blocks", [])).duplicate(true)
+	var damaged_blocks: Array = []
+	for block_variant in runtime_blocks:
+		var block: Dictionary = block_variant
+		if bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+			continue
+		if float(block.get("current_hp", 0.0)) >= float(block.get("max_hp", 0.0)):
+			continue
+		damaged_blocks.append(block.duplicate(true))
+
+	damaged_blocks.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("current_hp", 0.0)) < float(b.get("current_hp", 0.0))
+	)
+
+	var remaining_heal := total_heal
+	for damaged_block_variant in damaged_blocks:
+		if remaining_heal <= 0.0:
+			break
+		var damaged_block: Dictionary = damaged_block_variant
+		var block_id := int(damaged_block.get("id", 0))
+		for runtime_index in range(runtime_blocks.size()):
+			var block: Dictionary = runtime_blocks[runtime_index]
+			if int(block.get("id", 0)) != block_id:
+				continue
+			var missing_hp := float(block.get("max_hp", 0.0)) - float(block.get("current_hp", 0.0))
+			var applied_heal := minf(missing_hp, remaining_heal)
+			block["current_hp"] = float(block.get("current_hp", 0.0)) + applied_heal
+			runtime_blocks[runtime_index] = block
+			remaining_heal -= applied_heal
+			break
+
+	boat_state["runtime_blocks"] = runtime_blocks
 
 func _launch_run_session(peer_id: int) -> void:
 	if not multiplayer.is_server():
@@ -688,6 +1195,7 @@ func _launch_run_session(peer_id: int) -> void:
 	_broadcast_station_state()
 	_broadcast_loot_state()
 	_broadcast_run_state()
+	_broadcast_runtime_boat_state()
 	_set_status("Run launched by %s using blueprint v%d." % [
 		_get_peer_name(peer_id),
 		int(boat_blueprint.get("version", 1)),
@@ -1153,6 +1661,8 @@ func _process_repair(peer_id: int) -> void:
 	boat_state["repair_cooldown"] = REPAIR_COOLDOWN_SECONDS
 	run_state["repair_actions"] = int(run_state.get("repair_actions", 0)) + 1
 	run_state["repair_supplies"] = maxi(0, int(run_state.get("repair_supplies", 0)) - 1)
+	_heal_runtime_blocks(REPAIR_HULL_RECOVERY)
+	_broadcast_runtime_boat_state()
 	_broadcast_boat_state()
 	_broadcast_run_state()
 	_set_status("Repair bench patched the hull. %d patch kit(s) left." % int(run_state.get("repair_supplies", 0)))
@@ -1212,6 +1722,14 @@ func _process_grapple(peer_id: int) -> void:
 			boat_state["last_impact_damage"] = 0.0
 			boat_state["last_impact_braced"] = true
 		else:
+			var grapple_impact_local := get_station_position("grapple") + Vector3(0.0, 0.0, 0.55)
+			var run_continues := _apply_localized_block_damage(SALVAGE_BACKLASH_DAMAGE, grapple_impact_local, "salvage_backlash")
+			_broadcast_runtime_boat_state()
+			if not run_continues:
+				_broadcast_loot_state()
+				_broadcast_run_state()
+				_broadcast_boat_state()
+				return
 			boat_state["hull_integrity"] = maxf(0.0, float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) - SALVAGE_BACKLASH_DAMAGE)
 			boat_state["last_impact_damage"] = SALVAGE_BACKLASH_DAMAGE
 			boat_state["last_impact_braced"] = false
@@ -1284,6 +1802,14 @@ func _process_hazard_collisions() -> void:
 		var damage := COLLISION_DAMAGE_BRACED if was_braced else COLLISION_DAMAGE_UNBRACED
 		if was_braced:
 			damage = maxf(2.0, damage / maxf(1.0, brace_multiplier))
+		var impact_local := (hazard_position - boat_position).rotated(Vector3.UP, -float(boat_state.get("rotation_y", 0.0)))
+		var run_continues := _apply_localized_block_damage(damage, impact_local, "collision")
+		_broadcast_runtime_boat_state()
+		if not run_continues:
+			_respawn_hazard(index)
+			_broadcast_hazard_state()
+			_broadcast_boat_state()
+			return
 		var breach_delta := 1 if was_braced else 2
 		boat_state["hull_integrity"] = maxf(0.0, float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) - damage)
 		boat_state["speed"] = float(boat_state.get("speed", 0.0)) * (0.72 if was_braced else 0.38)
@@ -1561,11 +2087,21 @@ func client_receive_peer_snapshot(snapshot: Dictionary) -> void:
 @rpc("authority", "call_remote", "unreliable")
 func client_receive_boat_state(state: Dictionary, current_driver_id: int) -> void:
 	var driver_changed := driver_peer_id != current_driver_id
+	var preserved_runtime_blocks := Array(boat_state.get("runtime_blocks", [])).duplicate(true)
+	var preserved_sinking_chunks := Array(boat_state.get("sinking_chunks", [])).duplicate(true)
 	boat_state = state.duplicate(true)
+	boat_state["runtime_blocks"] = preserved_runtime_blocks
+	boat_state["sinking_chunks"] = preserved_sinking_chunks
 	driver_peer_id = current_driver_id
 	emit_signal("boat_state_changed", boat_state.duplicate(true))
 	if driver_changed:
 		emit_signal("helm_changed", driver_peer_id)
+
+@rpc("authority", "call_remote", "reliable")
+func client_receive_runtime_boat_state(runtime_state: Dictionary) -> void:
+	boat_state["runtime_blocks"] = Array(runtime_state.get("runtime_blocks", [])).duplicate(true)
+	boat_state["sinking_chunks"] = Array(runtime_state.get("sinking_chunks", [])).duplicate(true)
+	emit_signal("boat_state_changed", boat_state.duplicate(true))
 
 @rpc("authority", "call_remote", "reliable")
 func client_receive_hazard_state(hazards: Array) -> void:

@@ -285,23 +285,63 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Wrote the milestone design doc to `docs/plans/2026-03-08-runtime-block-damage-design.md`.
 - Wrote the fallback implementation plan to `docs/plans/2026-03-08-runtime-block-damage-implementation-plan.md`.
 
+## 2026-03-08 Milestone B Runtime Block Damage
+
+- Replaced the run-time placeholder boat assumptions with a real runtime block model derived from the launched blueprint.
+- Added server-owned runtime block state:
+  - per-block HP
+  - destroyed / detached flags
+  - connected-chunk recomputation
+  - sinking detached chunk snapshots
+- Added launch-time loose-chunk handling so disconnected builder chunks now spawn as loose debris and sink immediately instead of silently contributing stats.
+- Added localized block damage for:
+  - hazard collisions
+  - unbraced salvage backlash
+- Added aggregate-stat recomputation from the surviving main chunk so chunk loss now immediately affects:
+  - top speed
+  - hull integrity ceiling
+  - cargo capacity
+  - repair capacity
+  - brace multiplier
+- Added immediate cargo spill handling when detached chunk loss reduces cargo capacity below the amount already collected in-run.
+- Updated the run client to render:
+  - the actual launched block-built boat
+  - health-tinted block visuals
+  - detached sinking chunk visuals
+  - result and HUD fields for blocks destroyed, chunks lost, and cargo lost to sea
+- Split the network sync model so:
+  - fast boat movement/helm state stays in the regular lean unreliable boat packet
+  - runtime block/chunk state replicates separately as a reliable structural snapshot
+  - the old ENet MTU warning is gone on clean launch-path verification
+- Added deterministic headless verification helpers:
+  - `builder_loose_launch`
+  - `builder_fragile_cargo`
+  - `driver_detach_test`
+- Verified launch-time loose sinking with a fresh temporary Godot `HOME` on port `7093`:
+  - `builder_loose_launch` produced `version=2`, `blocks=6`, `loose=1`
+  - launch result: `active=5`, `detachedChunks=1`, `sinking=1`
+  - no oversized unreliable ENet packet warning appeared during bootstrap or launch
+- Verified runtime detachment and cargo spill with a fresh temporary Godot `HOME` on port `7095`:
+  - `DetachDriver + GrapplerBot + BraceBot`
+  - the crew recovered both loot items first
+  - the next unbraced collision destroyed the forward structure and detached both cargo blocks
+  - result during the run: `active=4`, `destroyed=1`, `detachedChunks=1`, `sinking=1`, `cargoLost=1`
+- Re-verified the normal coordinated co-op route with a fresh temporary Godot `HOME` on port `7097`:
+  - `DriverBot + GrapplerBot + BraceBot`
+  - result: `phase=success`, `cargo_secured=2`, `reward_gold=88`, `reward_salvage=5`
+  - final boat state: `destroyed=0`, `detachedChunks=0`, `cargoLost=0`
+
 ## TODOs
 
-- Lock target session size and whether PvP is required for MVP.
-- Choose engine/rendering stack and multiplayer backend.
-- Define a vertical slice with one extraction loop and one progression path.
-- Decide how much of the modular boat fantasy must exist in phase 1 versus later phases.
-- Finish the Godot architecture design sections for progression, persistence, anti-cheat boundaries, and testing.
-- Convert the approved design into a concrete implementation plan and milestone breakdown.
-- Start Milestone 0 by scaffolding the Godot project, local client/server boot flow, and authoritative shared boat prototype.
-- Run an interactive local client/server test in the Godot app and fix any UI or networking issues found there.
-- Start Milestone 1 with a replicated shared boat movement prototype once the client connect flow is confirmed.
-- Decide whether solo autorun support should remain a dev convenience or become a supported single-player fallback.
-- Add at least one manual desktop play pass for station readability, camera feel, and result-screen presentation.
+- Run a manual desktop play pass focused on builder readability, block damage clarity, detached-chunk presentation, and chase-camera feel.
+- Re-verify the full `hangar -> successful run -> dock/hangar` handoff after the runtime block-damage changes, not just the isolated run loop.
+- Add stronger client-side feedback for block loss, such as recent-hit flashes, clearer chunk-detach messaging, and better destroyed-block readability.
+- Decide whether repairs should remain aggregate hull patches or start targeting specific damaged block clusters.
+- Decide whether cargo stored in detached cargo blocks should eventually be visualized per block instead of using aggregate overflow rules.
 - Decide whether the dock scene should eventually become the default post-connect lobby instead of a post-run handoff only.
 
 ## Suggestions For Next Agent
 
-- Start with a feasibility-driven design doc before any implementation scaffold.
-- Favor a WebGL-first rendering path with optional future upgrades instead of depending on the newest browser graphics features.
-- Keep boat building grid-based and mostly cosmetic/stat-driven at first; defer full per-block destruction until the core loop is fun.
+- Start from Milestone B’s runtime block model rather than the old aggregate-only boat assumptions.
+- Use a fresh temporary Godot `HOME` for deterministic smoke tests so local saved blueprints do not affect verification.
+- Prioritize a human desktop feel pass and post-run handoff verification before adding more content systems.
