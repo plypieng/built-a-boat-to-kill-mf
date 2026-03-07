@@ -431,6 +431,18 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - the launched boat used the updated blueprint version `7`
   - derived run stats reflected the larger built boat (`top_speed=11.3`, `cargo_capacity=5`, `brace_multiplier=1.44`)
 
+## 2026-03-08 Reaction System Design
+
+- Approved the first shared reaction-system milestone for both the hangar and the run.
+- Locked these design decisions:
+  - reactions should briefly affect control, not just visuals
+  - hangar player-to-player bumping is part of the fun
+  - bump reactions should trigger only on hard collisions
+  - brace should reduce knockback and interruption during runs
+  - harpoon-style pulls should use a hooked or dragged reaction state first, not true ragdolls
+- Wrote the approved design doc to `docs/plans/2026-03-08-reaction-system-design.md`.
+- Wrote the fallback implementation plan to `docs/plans/2026-03-08-reaction-system-implementation-plan.md`.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
