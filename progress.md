@@ -443,15 +443,52 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Wrote the approved design doc to `docs/plans/2026-03-08-reaction-system-design.md`.
 - Wrote the fallback implementation plan to `docs/plans/2026-03-08-reaction-system-implementation-plan.md`.
 
+## 2026-03-08 Reaction System Prototype
+
+- Implemented a first-pass authoritative reaction system across both the hangar and the run.
+- Added shared reaction state in `autoload/network_runtime.gd`:
+  - hard hangar bumps now trigger paired knockback reactions
+  - run hazard impacts and salvage backlash now trigger impact reactions
+  - reaction state is replicated to all clients and survives hangar/run scene transitions
+  - peers under an active reaction lock cannot claim stations, brace, grapple, repair, or keep driving normally
+- Added hangar-side feedback in `scenes/hangar/hangar.gd`:
+  - clearer build-ghost feedback for `ready`, `occupied`, `out of range`, and blocked cells
+  - local and remote builder avatars now show stumble/tilt reactions instead of needing ragdolls
+  - local hangar movement and jump are briefly interrupted during hard bumps
+  - camera jolt and roster text now reflect active reactions
+- Added run-side feedback in `scenes/run_client/run_client.gd`:
+  - crew placeholders now visually react to impact state with offset and tilt
+  - active reactions add short control interruption and softer recovery handling
+  - station labels and crew nameplates were simplified so reaction callouts remain readable
+  - the chase camera now picks up a small local jolt on new reactions
+- Added `--autohangar-role=<bumper_left|bumper_right>` in `autoload/game_config.gd` for repeatable bump smoke tests.
+- Fixed a real regression during implementation:
+  - the first run-side smoke caught a GDScript parse failure in `scenes/run_client/run_client.gd`
+  - explicit typing on the new reaction-adjusted crew target position fixed the scene load
+- Fixed a second real regression during verification:
+  - a quick two-client hangar teardown reintroduced the old ENet disconnect send error
+  - coalescing disconnect flushes with a short delay and suppressing broadcasts during that window removed the error again
+- Verified a fresh unbraced run reaction path on port `7143`:
+  - `CrashBot` launched from hangar, claimed helm, and collided twice
+  - final boat snapshot showed `hull_integrity=66.9`, `last_impact_damage=18.0`, and `collision_count=2`
+  - server logs confirmed heavy unbraced impacts released helm before the driver reclaimed it
+- Verified a fresh braced comparison on port `7145`:
+  - `DriverBot` plus `BraceBot` launched from hangar and hit the same hazard pattern
+  - final boat snapshot showed `hull_integrity=94.9`, `last_impact_damage=6.14`, and `collision_count=2`
+  - server logs confirmed braced impacts kept helm ownership stable and applied much lower damage
+- Re-verified the hangar bump path on port `7147`:
+  - `BumperLeft` and `BumperRight` collided in hangar and triggered the new bump reaction
+  - both clients disconnected cleanly afterward without the old ENet send error returning
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
-  - simple reaction system instead of ragdolls
   - clearer build-ghost feedback when aiming at blocked or out-of-range cells
   - better local co-op readability once multiple avatars build on the same section
 - Finish multiplayer visual verification for the new hangar avatars with a clearer shared-frame or hands-on local co-op pass.
 - Return to narrower readability polish after the new social builder baseline exists.
 - Re-verify the full `hangar -> successful run -> dock/hangar` handoff after the hangar builder changes land.
+- Add a hooked/dragged reaction state for future harpoon pulls before attempting any true ragdoll work.
 - Add stronger client-side feedback for block loss, such as recent-hit flashes, clearer chunk-detach messaging, and better destroyed-block readability.
 - Decide whether repairs should remain aggregate hull patches or start targeting specific damaged block clusters.
 - Decide whether cargo stored in detached cargo blocks should eventually be visualized per block instead of using aggregate overflow rules.

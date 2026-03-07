@@ -194,6 +194,20 @@ godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --na
 godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autorun-role=brace --quit-after-connect-ms=18000
 ```
 
+Hangar hard-bump reaction smoke test:
+
+```bash
+godot --headless --path . --quit-after 600 -- --host=127.0.0.1 --port=7000 --name=BumperLeft --autoconnect --autohangar-role=bumper_left --quit-after-connect-ms=4200
+godot --headless --path . --quit-after 600 -- --host=127.0.0.1 --port=7000 --name=BumperRight --autoconnect --autohangar-role=bumper_right --quit-after-connect-ms=4200
+```
+
+Run-side braced impact comparison:
+
+```bash
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autobuild-role=builder_launch --autoclaim-station=helm --autodrive-ms=9000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=10000
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autoclaim-station=brace --autobrace --autobrace-distance=8.0 --quit-after-connect-ms=10000
+```
+
 Headless dock handoff check:
 
 ```bash
@@ -213,9 +227,12 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 - The current connect flow now lands in a shared 3D hangar builder where the crew can edit one live blueprint together before launching.
 - The current hangar now uses a short-range camera-crosshair build ghost tied to the third-person builder avatar, so moving around the boat matters while building.
 - The current shared-builder autobuild helpers now reposition the hangar avatar before placing or removing blocks so automated smoke tests obey the same range rule as manual builders.
+- The current hangar now supports hard builder-to-builder bump reactions, and the new `--autohangar-role=bumper_left|bumper_right` helpers give a repeatable smoke path for that behavior.
 - The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.
 - The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.
+- The current reaction system is a lightweight non-ragdoll layer: hard hangar bumps and run impacts briefly interrupt control, add knockback/camera jolt, and let brace reduce the severity of run-side reactions.
 - The current networking model now sends boat motion separately from structural runtime state so large block boats do not overflow the unreliable ENet packet budget during launch.
+- Disconnect cleanup now coalesces network state flushes for a short window so quick multi-client hangar teardowns do not re-trigger the old ENet send error.
 - The current server scene logs heartbeat, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
 - `--capture-frame-path` and `--capture-frame-delay-ms` let the hangar and run client save a viewport PNG for local visual inspections without relying on OS-level window capture.
 - A manual visual pass confirmed the post-run reward handoff, but also showed that the hangar boat reads too small beneath the current UI and the in-run nameplates/station labels are overcrowded once multiple crew stand on deck.

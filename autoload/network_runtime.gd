@@ -9,6 +9,7 @@ signal session_phase_changed(phase: String)
 signal boat_blueprint_changed(snapshot: Dictionary)
 signal peer_snapshot_changed(snapshot: Dictionary)
 signal hangar_avatar_state_changed(snapshot: Dictionary)
+signal reaction_state_changed(snapshot: Dictionary)
 signal run_seed_changed(seed: int)
 signal helm_changed(driver_peer_id: int)
 signal boat_state_changed(state: Dictionary)
@@ -142,6 +143,18 @@ const RUNTIME_DAMAGE_CLUSTER_WEIGHTS := [1.0, 0.6, 0.45, 0.3, 0.2]
 const RUNTIME_SINK_SPEED := 0.95
 const RUNTIME_SINK_DRIFT_SPEED := 0.42
 const RUNTIME_SINK_LIFETIME := 8.0
+const REACTION_BUMP_SPEED_THRESHOLD := 5.4
+const REACTION_BUMP_COLLISION_RADIUS := 0.92
+const REACTION_BUMP_PAIR_COOLDOWN := 0.68
+const REACTION_BUMP_ACTIVE_SECONDS := 0.15
+const REACTION_BUMP_RECOVERY_SECONDS := 0.34
+const REACTION_BUMP_KNOCKBACK := 4.4
+const REACTION_IMPACT_ACTIVE_SECONDS := 0.24
+const REACTION_IMPACT_RECOVERY_SECONDS := 0.46
+const REACTION_IMPACT_KNOCKBACK := 5.8
+const REACTION_HOOK_ACTIVE_SECONDS := 0.42
+const REACTION_HOOK_RECOVERY_SECONDS := 0.38
+const DISCONNECT_BROADCAST_DELAY_SECONDS := 0.12
 
 const BOAT_ACCELERATION := 8.0
 const BOAT_DECELERATION := 10.0
@@ -185,6 +198,7 @@ var session_phase := SESSION_PHASE_HANGAR
 var boat_blueprint: Dictionary = {}
 var peer_snapshot: Dictionary = {}
 var hangar_avatar_state: Dictionary = {}
+var reaction_state: Dictionary = {}
 var status_message := "Offline"
 var driver_peer_id := 0
 var boat_state: Dictionary = {}
@@ -198,6 +212,9 @@ var _boat_broadcast_accumulator := 0.0
 var _next_hazard_id: int = 1
 var _next_loot_id: int = 1
 var _next_runtime_chunk_id: int = 1
+var _next_reaction_id: int = 1
+var _hangar_bump_pair_cooldowns: Dictionary = {}
+var _disconnect_broadcast_scheduled := false
 var _client_bootstrap_complete := false
 
 func _ready() -> void:
@@ -230,6 +247,7 @@ func start_server(listen_port: int = GameConfig.DEFAULT_PORT, seed: int = GameCo
 		},
 	}
 	_reset_hangar_avatar_state()
+	_reset_reaction_runtime()
 	_reset_blueprint_runtime()
 	_reset_run_runtime()
 
@@ -269,8 +287,11 @@ func shutdown() -> void:
 	boat_blueprint = _decorate_blueprint(DockState.get_boat_blueprint())
 	peer_snapshot = {}
 	hangar_avatar_state = {}
+	reaction_state = {}
 	status_message = "Offline"
 	_client_bootstrap_complete = false
+	_disconnect_broadcast_scheduled = false
+	_reset_reaction_runtime()
 	_reset_run_runtime()
 	emit_signal("mode_changed", _mode_name())
 	emit_signal("run_seed_changed", run_seed)
@@ -307,6 +328,12 @@ func get_builder_block_definition(block_type: String) -> Dictionary:
 
 func get_hangar_avatar_state() -> Dictionary:
 	return hangar_avatar_state.duplicate(true)
+
+func get_reaction_state() -> Dictionary:
+	return reaction_state.duplicate(true)
+
+func get_peer_reaction_state(peer_id: int) -> Dictionary:
+	return Dictionary(reaction_state.get(peer_id, {})).duplicate(true)
 
 func get_blueprint_stats() -> Dictionary:
 	return Dictionary(boat_blueprint.get("stats", {})).duplicate(true)
@@ -457,6 +484,10 @@ func send_local_boat_input(throttle: float, steer: float) -> void:
 func server_step_shared_boat(delta: float) -> void:
 	if not multiplayer.is_server():
 		return
+	_tick_reaction_state(delta)
+	if session_phase == SESSION_PHASE_HANGAR:
+		_process_hangar_bump_reactions()
+		return
 	if session_phase != SESSION_PHASE_RUN:
 		return
 
@@ -541,6 +572,7 @@ func _emit_all_runtime_state() -> void:
 	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
 	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
+	emit_signal("reaction_state_changed", reaction_state.duplicate(true))
 	emit_signal("helm_changed", driver_peer_id)
 	emit_signal("boat_state_changed", boat_state.duplicate(true))
 	emit_signal("hazard_state_changed", hazard_state.duplicate(true))
@@ -551,64 +583,78 @@ func _emit_all_runtime_state() -> void:
 func _broadcast_session_phase() -> void:
 	emit_signal("session_phase_changed", session_phase)
 	if multiplayer.is_server():
-		for peer_id in get_player_peer_ids():
+		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_session_phase.rpc_id(int(peer_id), session_phase)
 
 func _broadcast_blueprint_state() -> void:
 	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
 	if multiplayer.is_server():
 		var snapshot := boat_blueprint.duplicate(true)
-		for peer_id in get_player_peer_ids():
+		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_blueprint_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_peer_snapshot() -> void:
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
 	if multiplayer.is_server():
 		var snapshot := peer_snapshot.duplicate(true)
-		for peer_id in get_player_peer_ids():
+		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_peer_snapshot.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_hangar_avatar_state() -> void:
 	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
 	if multiplayer.is_server():
 		var snapshot := hangar_avatar_state.duplicate(true)
-		for peer_id in get_player_peer_ids():
+		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_hangar_avatar_state.rpc_id(int(peer_id), snapshot)
+
+func _broadcast_reaction_state() -> void:
+	emit_signal("reaction_state_changed", reaction_state.duplicate(true))
+	if multiplayer.is_server():
+		var snapshot := reaction_state.duplicate(true)
+		for peer_id in _get_server_broadcast_peer_ids():
+			client_receive_reaction_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_boat_state() -> void:
 	emit_signal("boat_state_changed", boat_state.duplicate(true))
 	if multiplayer.is_server():
 		var state := _build_client_boat_state_snapshot()
-		for peer_id in get_player_peer_ids():
+		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_boat_state.rpc_id(int(peer_id), state, driver_peer_id)
 
 func _broadcast_hazard_state() -> void:
 	emit_signal("hazard_state_changed", hazard_state.duplicate(true))
 	if multiplayer.is_server():
 		var hazards := hazard_state.duplicate(true)
-		for peer_id in get_player_peer_ids():
+		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_hazard_state.rpc_id(int(peer_id), hazards)
 
 func _broadcast_station_state() -> void:
 	emit_signal("station_state_changed", station_state.duplicate(true))
 	if multiplayer.is_server():
 		var stations := station_state.duplicate(true)
-		for peer_id in get_player_peer_ids():
+		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_station_state.rpc_id(int(peer_id), stations)
 
 func _broadcast_loot_state() -> void:
 	emit_signal("loot_state_changed", loot_state.duplicate(true))
 	if multiplayer.is_server():
 		var targets := loot_state.duplicate(true)
-		for peer_id in get_player_peer_ids():
+		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_loot_state.rpc_id(int(peer_id), targets)
 
 func _broadcast_run_state() -> void:
 	emit_signal("run_state_changed", run_state.duplicate(true))
 	if multiplayer.is_server():
 		var state := run_state.duplicate(true)
-		for peer_id in get_player_peer_ids():
+		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_run_state.rpc_id(int(peer_id), state)
+
+func _get_server_broadcast_peer_ids() -> Array:
+	if not multiplayer.is_server():
+		return []
+	if _disconnect_broadcast_scheduled:
+		return []
+	return get_player_peer_ids()
 
 func _send_bootstrap(peer_id: int) -> void:
 	if not multiplayer.is_server():
@@ -621,6 +667,7 @@ func _send_bootstrap(peer_id: int) -> void:
 	client_receive_loot_state.rpc_id(peer_id, loot_state.duplicate(true))
 	client_receive_run_state.rpc_id(peer_id, run_state.duplicate(true))
 	client_receive_hangar_avatar_state.rpc_id(peer_id, hangar_avatar_state.duplicate(true))
+	client_receive_reaction_state.rpc_id(peer_id, reaction_state.duplicate(true))
 	if session_phase == SESSION_PHASE_RUN:
 		client_receive_runtime_boat_state.rpc_id(peer_id, _build_client_runtime_boat_snapshot())
 
@@ -678,11 +725,180 @@ func _broadcast_runtime_boat_state() -> void:
 	for peer_id in get_player_peer_ids():
 		client_receive_runtime_boat_state.rpc_id(int(peer_id), runtime_snapshot)
 
+func _tick_reaction_state(delta: float) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var expired_peers: Array = []
+	for peer_id_variant in reaction_state.keys():
+		var peer_id := int(peer_id_variant)
+		var peer_reaction: Dictionary = reaction_state[peer_id]
+		peer_reaction["active_time"] = maxf(0.0, float(peer_reaction.get("active_time", 0.0)) - delta)
+		peer_reaction["recovery_time"] = maxf(0.0, float(peer_reaction.get("recovery_time", 0.0)) - delta)
+		if float(peer_reaction.get("active_time", 0.0)) <= 0.0 and float(peer_reaction.get("recovery_time", 0.0)) <= 0.0:
+			expired_peers.append(peer_id)
+			continue
+		reaction_state[peer_id] = peer_reaction
+	for peer_id_variant in expired_peers:
+		reaction_state.erase(int(peer_id_variant))
+	if not expired_peers.is_empty():
+		_broadcast_reaction_state()
+
+	var expired_pairs: Array = []
+	for pair_key_variant in _hangar_bump_pair_cooldowns.keys():
+		var pair_key := str(pair_key_variant)
+		var remaining: float = maxf(0.0, float(_hangar_bump_pair_cooldowns[pair_key]) - delta)
+		if remaining <= 0.0:
+			expired_pairs.append(pair_key)
+		else:
+			_hangar_bump_pair_cooldowns[pair_key] = remaining
+	for pair_key_variant in expired_pairs:
+		_hangar_bump_pair_cooldowns.erase(str(pair_key_variant))
+
+func _process_hangar_bump_reactions() -> void:
+	if session_phase != SESSION_PHASE_HANGAR:
+		return
+	var peer_ids := get_player_peer_ids()
+	if peer_ids.size() < 2:
+		return
+
+	for left_index in range(peer_ids.size()):
+		var left_peer := int(peer_ids[left_index])
+		if _peer_has_reaction_lock(left_peer):
+			continue
+		var left_state: Dictionary = hangar_avatar_state.get(left_peer, {})
+		if left_state.is_empty():
+			continue
+		var left_position: Vector3 = left_state.get("position", Vector3.ZERO)
+		var left_velocity: Vector3 = left_state.get("velocity", Vector3.ZERO)
+		for right_index in range(left_index + 1, peer_ids.size()):
+			var right_peer := int(peer_ids[right_index])
+			if _peer_has_reaction_lock(right_peer):
+				continue
+			var pair_key := _build_peer_pair_key(left_peer, right_peer)
+			if float(_hangar_bump_pair_cooldowns.get(pair_key, 0.0)) > 0.0:
+				continue
+			var right_state: Dictionary = hangar_avatar_state.get(right_peer, {})
+			if right_state.is_empty():
+				continue
+			var right_position: Vector3 = right_state.get("position", Vector3.ZERO)
+			var offset := right_position - left_position
+			var distance := offset.length()
+			if distance > REACTION_BUMP_COLLISION_RADIUS or distance <= 0.05:
+				continue
+			var collision_direction := offset / distance
+			var right_velocity: Vector3 = right_state.get("velocity", Vector3.ZERO)
+			var relative_velocity: Vector3 = left_velocity - right_velocity
+			var relative_speed := relative_velocity.length()
+			if relative_speed < REACTION_BUMP_SPEED_THRESHOLD:
+				continue
+			if relative_velocity.dot(collision_direction) <= 0.75:
+				continue
+			var strength := clampf((relative_speed - REACTION_BUMP_SPEED_THRESHOLD) / 3.0 + 0.35, 0.35, 1.0)
+			var knockback_speed := lerpf(REACTION_BUMP_KNOCKBACK * 0.55, REACTION_BUMP_KNOCKBACK, strength)
+			_start_peer_reaction(
+				left_peer,
+				"bump",
+				strength,
+				-collision_direction * knockback_speed + Vector3.UP * (0.3 + strength * 0.18),
+				REACTION_BUMP_ACTIVE_SECONDS + strength * 0.04,
+				REACTION_BUMP_RECOVERY_SECONDS + strength * 0.08,
+				right_peer
+			)
+			_start_peer_reaction(
+				right_peer,
+				"bump",
+				strength,
+				collision_direction * knockback_speed + Vector3.UP * (0.3 + strength * 0.18),
+				REACTION_BUMP_ACTIVE_SECONDS + strength * 0.04,
+				REACTION_BUMP_RECOVERY_SECONDS + strength * 0.08,
+				left_peer
+			)
+			_hangar_bump_pair_cooldowns[pair_key] = REACTION_BUMP_PAIR_COOLDOWN
+			_set_status("%s slammed into %s in the hangar." % [_get_peer_name(left_peer), _get_peer_name(right_peer)])
+			return
+
+func _start_peer_reaction(peer_id: int, reaction_type: String, strength: float, knockback_velocity: Vector3, active_seconds: float, recovery_seconds: float, source_peer_id: int = 0, brace_applied: bool = false, pull_direction: Vector3 = Vector3.ZERO) -> void:
+	if not multiplayer.is_server():
+		return
+	if peer_id <= 0:
+		return
+	if not peer_snapshot.has(peer_id):
+		return
+	var current_reaction: Dictionary = reaction_state.get(peer_id, {})
+	if not current_reaction.is_empty() and float(current_reaction.get("active_time", 0.0)) > 0.0 and float(current_reaction.get("strength", 0.0)) > strength and str(current_reaction.get("type", "")) == "impact":
+		return
+	reaction_state[peer_id] = {
+		"reaction_id": _next_reaction_id,
+		"type": reaction_type,
+		"strength": clampf(strength, 0.0, 1.0),
+		"active_time": maxf(0.0, active_seconds),
+		"active_duration": maxf(0.0, active_seconds),
+		"recovery_time": maxf(0.0, recovery_seconds),
+		"recovery_duration": maxf(0.0, recovery_seconds),
+		"knockback_velocity": knockback_velocity,
+		"pull_direction": pull_direction,
+		"source_peer_id": source_peer_id,
+		"brace_applied": brace_applied,
+		"phase": session_phase,
+	}
+	_next_reaction_id += 1
+	_broadcast_reaction_state()
+
+func _apply_run_impact_reactions(base_direction: Vector3, base_strength: float, brace_applied: bool, release_stations: bool, primary_station_id: String = "") -> void:
+	if not multiplayer.is_server():
+		return
+	var direction := base_direction.normalized()
+	if direction.length() <= 0.01:
+		direction = Vector3.BACK
+	var released_any := false
+	for peer_id_variant in get_player_peer_ids():
+		var peer_id := int(peer_id_variant)
+		var station_id := get_peer_station_id(peer_id)
+		var strength := clampf(base_strength, 0.0, 1.0)
+		if not primary_station_id.is_empty() and station_id == primary_station_id:
+			strength = minf(1.0, strength + 0.14)
+		var knockback_speed := lerpf(REACTION_IMPACT_KNOCKBACK * 0.65, REACTION_IMPACT_KNOCKBACK, strength)
+		var active_seconds := REACTION_IMPACT_ACTIVE_SECONDS + strength * 0.08
+		var recovery_seconds := REACTION_IMPACT_RECOVERY_SECONDS + strength * 0.12
+		_start_peer_reaction(
+			peer_id,
+			"impact",
+			strength,
+			direction * knockback_speed + Vector3.UP * (0.42 + strength * 0.22),
+			active_seconds,
+			recovery_seconds,
+			0,
+			brace_applied
+		)
+		if release_stations and not station_id.is_empty():
+			_release_station(peer_id, false)
+			released_any = true
+	if released_any:
+		_broadcast_station_state()
+		_broadcast_boat_state()
+
+func _peer_has_reaction_lock(peer_id: int) -> bool:
+	var peer_reaction: Dictionary = reaction_state.get(peer_id, {})
+	if peer_reaction.is_empty():
+		return false
+	return float(peer_reaction.get("active_time", 0.0)) > 0.0
+
+func _build_peer_pair_key(left_peer: int, right_peer: int) -> String:
+	var low_peer := mini(left_peer, right_peer)
+	var high_peer := maxi(left_peer, right_peer)
+	return "%d:%d" % [low_peer, high_peer]
+
 func _reset_blueprint_runtime() -> void:
 	boat_blueprint = _decorate_blueprint(DockState.get_boat_blueprint())
 
 func _reset_hangar_avatar_state() -> void:
 	hangar_avatar_state = {}
+
+func _reset_reaction_runtime() -> void:
+	reaction_state = {}
+	_next_reaction_id = 1
+	_hangar_bump_pair_cooldowns = {}
 
 func _reset_connected_hangar_avatars() -> void:
 	if not multiplayer.is_server():
@@ -711,6 +927,7 @@ func _reset_run_runtime() -> void:
 	_next_hazard_id = 1
 	_next_loot_id = 1
 	_next_runtime_chunk_id = 1
+	_reset_reaction_runtime()
 	var blueprint_stats := Dictionary(boat_blueprint.get("stats", {}))
 	var max_hull_integrity := float(blueprint_stats.get("max_hull_integrity", BOAT_MAX_INTEGRITY))
 	var top_speed := float(blueprint_stats.get("top_speed", BOAT_TOP_SPEED))
@@ -1260,6 +1477,7 @@ func _launch_run_session(peer_id: int) -> void:
 	_broadcast_station_state()
 	_broadcast_loot_state()
 	_broadcast_run_state()
+	_broadcast_reaction_state()
 	_broadcast_runtime_boat_state()
 	_set_status("Run launched by %s using blueprint v%d." % [
 		_get_peer_name(peer_id),
@@ -1282,6 +1500,7 @@ func _return_to_hangar_session(peer_id: int) -> void:
 	_broadcast_station_state()
 	_broadcast_loot_state()
 	_broadcast_run_state()
+	_broadcast_reaction_state()
 	_set_status("%s returned the crew to the hangar." % _get_peer_name(peer_id))
 
 func _place_blueprint_block(peer_id: int, cell: Array, block_type: String, rotation_steps: int) -> void:
@@ -1653,6 +1872,8 @@ func _claim_station(peer_id: int, station_id: String) -> void:
 		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
+	if _peer_has_reaction_lock(peer_id):
+		return
 
 	var station: Dictionary = station_state.get(station_id, {})
 	var occupant_peer_id := int(station.get("occupant_peer_id", 0))
@@ -1695,6 +1916,12 @@ func _receive_boat_input(peer_id: int, throttle: float, steer: float) -> void:
 		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
+	if _peer_has_reaction_lock(peer_id):
+		_peer_inputs[peer_id] = {
+			"throttle": 0.0,
+			"steer": 0.0,
+		}
+		return
 	if peer_id != driver_peer_id:
 		return
 	if get_peer_station_id(peer_id) != "helm":
@@ -1710,6 +1937,8 @@ func _begin_brace(peer_id: int) -> void:
 		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
+	if _peer_has_reaction_lock(peer_id):
+		return
 	if get_peer_station_id(peer_id) != "brace":
 		return
 	if float(boat_state.get("brace_cooldown", 0.0)) > 0.0:
@@ -1724,6 +1953,8 @@ func _process_repair(peer_id: int) -> void:
 	if session_phase != SESSION_PHASE_RUN:
 		return
 	if str(run_state.get("phase", "running")) != "running":
+		return
+	if _peer_has_reaction_lock(peer_id):
 		return
 	if get_peer_station_id(peer_id) != "repair":
 		return
@@ -1754,6 +1985,8 @@ func _process_grapple(peer_id: int) -> void:
 	if session_phase != SESSION_PHASE_RUN:
 		return
 	if str(run_state.get("phase", "running")) != "running":
+		return
+	if _peer_has_reaction_lock(peer_id):
 		return
 	if get_peer_station_id(peer_id) != "grapple":
 		return
@@ -1804,6 +2037,13 @@ func _process_grapple(peer_id: int) -> void:
 		if was_braced:
 			boat_state["last_impact_damage"] = 0.0
 			boat_state["last_impact_braced"] = true
+			_apply_run_impact_reactions(
+				Vector3.BACK.rotated(Vector3.UP, float(boat_state.get("rotation_y", 0.0))),
+				0.24,
+				true,
+				false,
+				"grapple"
+			)
 		else:
 			var grapple_impact_local := get_station_position("grapple") + Vector3(0.0, 0.0, 0.55)
 			var run_continues := _apply_localized_block_damage(SALVAGE_BACKLASH_DAMAGE, grapple_impact_local, "salvage_backlash")
@@ -1817,6 +2057,13 @@ func _process_grapple(peer_id: int) -> void:
 			boat_state["last_impact_damage"] = SALVAGE_BACKLASH_DAMAGE
 			boat_state["last_impact_braced"] = false
 			boat_state["breach_stacks"] = mini(MAX_BREACH_STACKS, int(boat_state.get("breach_stacks", 0)) + SALVAGE_BACKLASH_BREACHES)
+			_apply_run_impact_reactions(
+				Vector3.BACK.rotated(Vector3.UP, float(boat_state.get("rotation_y", 0.0))),
+				0.74,
+				false,
+				false,
+				"grapple"
+			)
 			if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
 				_broadcast_loot_state()
 				_broadcast_run_state()
@@ -1901,6 +2148,12 @@ func _process_hazard_collisions() -> void:
 		boat_state["last_impact_braced"] = was_braced
 		boat_state["collision_count"] = int(boat_state.get("collision_count", 0)) + 1
 		boat_state["brace_timer"] = 0.0
+		_apply_run_impact_reactions(
+			(boat_position - hazard_position).normalized(),
+			0.42 if was_braced else 0.92,
+			was_braced,
+			not was_braced
+		)
 
 		_respawn_hazard(index)
 		_broadcast_hazard_state()
@@ -2016,7 +2269,15 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	_release_station(peer_id, false)
 	peer_snapshot.erase(peer_id)
 	hangar_avatar_state.erase(peer_id)
-	call_deferred("_broadcast_disconnect_updates")
+	reaction_state.erase(peer_id)
+	var expired_pair_keys: Array = []
+	for pair_key_variant in _hangar_bump_pair_cooldowns.keys():
+		var pair_key := str(pair_key_variant)
+		if pair_key.begins_with("%d:" % peer_id) or pair_key.ends_with(":%d" % peer_id):
+			expired_pair_keys.append(pair_key)
+	for pair_key_variant in expired_pair_keys:
+		_hangar_bump_pair_cooldowns.erase(str(pair_key_variant))
+	_schedule_disconnect_updates()
 	if multiplayer.is_server():
 		_set_status("Peer %d disconnected." % peer_id)
 
@@ -2027,6 +2288,20 @@ func _broadcast_disconnect_updates() -> void:
 	_broadcast_boat_state()
 	_broadcast_peer_snapshot()
 	_broadcast_hangar_avatar_state()
+	_broadcast_reaction_state()
+
+func _schedule_disconnect_updates() -> void:
+	if not multiplayer.is_server():
+		return
+	if _disconnect_broadcast_scheduled:
+		return
+	_disconnect_broadcast_scheduled = true
+	_finish_disconnect_updates()
+
+func _finish_disconnect_updates() -> void:
+	await get_tree().create_timer(DISCONNECT_BROADCAST_DELAY_SECONDS).timeout
+	_disconnect_broadcast_scheduled = false
+	_broadcast_disconnect_updates()
 
 func _on_connected_to_server() -> void:
 	_set_status("Connected to %s:%d as %s." % [current_host, current_port, local_player_name])
@@ -2158,6 +2433,11 @@ func server_receive_boat_input(throttle: float, steer: float) -> void:
 func client_receive_hangar_avatar_state(snapshot: Dictionary) -> void:
 	hangar_avatar_state = snapshot.duplicate(true)
 	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
+
+@rpc("authority", "call_remote", "reliable")
+func client_receive_reaction_state(snapshot: Dictionary) -> void:
+	reaction_state = snapshot.duplicate(true)
+	emit_signal("reaction_state_changed", reaction_state.duplicate(true))
 
 @rpc("authority", "call_remote", "reliable")
 func client_receive_bootstrap(seed: int, server_port: int, max_players: int, phase: String, blueprint_snapshot: Dictionary) -> void:

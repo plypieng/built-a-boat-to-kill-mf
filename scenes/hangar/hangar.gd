@@ -4,7 +4,9 @@ const CLIENT_BOOT_SCENE := "res://scenes/boot/client_boot.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const BLOCK_CELL_SIZE := 1.25
 const CURSOR_OK_COLOR := Color(0.34, 0.82, 0.58, 0.55)
-const CURSOR_BLOCKED_COLOR := Color(0.88, 0.32, 0.24, 0.55)
+const CURSOR_OCCUPIED_COLOR := Color(0.92, 0.57, 0.22, 0.58)
+const CURSOR_RANGE_COLOR := Color(0.23, 0.63, 0.90, 0.58)
+const CURSOR_BLOCKED_COLOR := Color(0.88, 0.32, 0.24, 0.6)
 const MAIN_CHUNK_TINT := Color(0.08, 0.08, 0.08)
 const LOOSE_CHUNK_TINT := Color(0.25, 0.02, 0.02)
 const HANGAR_MOVE_SPEED := 6.2
@@ -47,11 +49,16 @@ var remove_cursor_cell := Vector3i.ZERO
 var cursor_has_target := false
 var cursor_can_place := false
 var cursor_can_remove := false
+var cursor_feedback_state := "hidden"
 var cursor_target_label := "Aim at the boat or dock"
 var autobuild_actions: Array = []
 var autobuild_pending_action: Dictionary = {}
 var autobuild_index := 0
 var autobuild_timer := 0.0
+var reaction_visual_state: Dictionary = {}
+var local_reaction_impulse := Vector3.ZERO
+var local_camera_jolt := Vector3.ZERO
+var last_local_reaction_id := 0
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -65,9 +72,11 @@ func _ready() -> void:
 	NetworkRuntime.status_changed.connect(_on_status_changed)
 	NetworkRuntime.peer_snapshot_changed.connect(_on_peer_snapshot_changed)
 	NetworkRuntime.hangar_avatar_state_changed.connect(_on_hangar_avatar_state_changed)
+	NetworkRuntime.reaction_state_changed.connect(_on_reaction_state_changed)
 	NetworkRuntime.boat_blueprint_changed.connect(_on_boat_blueprint_changed)
 	NetworkRuntime.session_phase_changed.connect(_on_session_phase_changed)
 	DockState.profile_changed.connect(_on_profile_changed)
+	reaction_visual_state = NetworkRuntime.get_reaction_state()
 	if NetworkRuntime.get_session_phase() == NetworkRuntime.SESSION_PHASE_RUN:
 		get_tree().call_deferred("change_scene_to_file", RUN_CLIENT_SCENE)
 		return
@@ -79,6 +88,7 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	connect_time_seconds += delta
+	_tick_reaction_visuals(delta)
 	_update_boat_bob()
 	_update_camera(delta)
 	_update_remote_avatar_visuals(delta)
@@ -205,10 +215,18 @@ func _build_local_avatar() -> void:
 	else:
 		local_avatar_body.global_position = Vector3(0.0, 0.55, 6.6)
 		local_avatar_facing_y = 0.0
+	_apply_autohangar_spawn_override()
 	local_avatar_body.rotation.y = local_avatar_facing_y
+	NetworkRuntime.send_local_hangar_avatar_state(
+		local_avatar_body.global_position,
+		Vector3.ZERO,
+		local_avatar_facing_y,
+		true
+	)
 
 func _create_avatar_visual(display_name: String, body_color: Color, is_local: bool) -> Node3D:
 	var root := Node3D.new()
+	root.name = "AvatarVisual"
 
 	var body := MeshInstance3D.new()
 	var capsule_mesh := CapsuleMesh.new()
@@ -248,7 +266,7 @@ func _create_avatar_visual(display_name: String, body_color: Color, is_local: bo
 	label.name = "Nameplate"
 	label.text = display_name
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.font_size = 18
+	label.font_size = 15 if not is_local else 16
 	label.position = Vector3(0.0, HANGAR_AVATAR_NAME_HEIGHT + 0.62, 0.0)
 	label.outline_size = 8
 	root.add_child(label)
@@ -476,7 +494,15 @@ func _refresh_cursor_visual() -> void:
 	]
 
 	var material := StandardMaterial3D.new()
-	material.albedo_color = CURSOR_OK_COLOR if cursor_can_place else CURSOR_BLOCKED_COLOR
+	match cursor_feedback_state:
+		"ready":
+			material.albedo_color = CURSOR_OK_COLOR
+		"occupied":
+			material.albedo_color = CURSOR_OCCUPIED_COLOR
+		"range":
+			material.albedo_color = CURSOR_RANGE_COLOR
+		_:
+			material.albedo_color = CURSOR_BLOCKED_COLOR
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	cursor_mesh.material_override = material
 
@@ -528,12 +554,17 @@ func _refresh_hud() -> void:
 		var peer_data: Dictionary = NetworkRuntime.peer_snapshot.get(peer_id, {})
 		var avatar_state: Dictionary = NetworkRuntime.get_hangar_avatar_state().get(peer_id, {})
 		var avatar_position: Vector3 = avatar_state.get("position", Vector3.ZERO)
-		crew_lines.append("%s - %s @ (%.1f, %.1f, %.1f)" % [
+		var peer_reaction := _get_reaction_visual(int(peer_id))
+		var reaction_text := ""
+		if not peer_reaction.is_empty():
+			reaction_text = " | %s" % str(peer_reaction.get("type", "reacting")).capitalize()
+		crew_lines.append("%s - %s @ (%.1f, %.1f, %.1f)%s" % [
 			str(peer_id),
 			str(peer_data.get("name", "Crew")),
 			avatar_position.x,
 			avatar_position.y,
 			avatar_position.z,
+			reaction_text,
 		])
 	if crew_lines.is_empty():
 		crew_lines.append("No crew connected yet.")
@@ -552,7 +583,7 @@ func _refresh_hud() -> void:
 			str(last_run.get("timestamp", "")),
 		]
 
-	controls_label.text = "Controls\nW A S D move | Space jump\nAim the center crosshair at the boat or dock\nQ / E cycle blocks | R rotate\nF place block | X remove block\nEnter launches the run | Esc returns to connect"
+	controls_label.text = "Controls\nW A S D move | Space jump\nAim the center crosshair at the boat or dock\nQ / E cycle blocks | R rotate\nF place block | X remove block\nHard collisions can knock builders around\nEnter launches the run | Esc returns to connect"
 
 func _update_build_target_from_camera() -> void:
 	if camera == null or local_avatar_body == null:
@@ -563,14 +594,16 @@ func _update_build_target_from_camera() -> void:
 	var next_remove_cell: Vector3i = _variant_to_cell_vector(next_state.get("remove_cell", remove_cursor_cell))
 	var next_cursor_can_place := bool(next_state.get("can_place", false))
 	var next_cursor_can_remove := bool(next_state.get("can_remove", false))
+	var next_feedback_state := str(next_state.get("feedback_state", "hidden"))
 	var next_cursor_target_label := str(next_state.get("label", "Aim at the boat or dock"))
-	if next_cursor_has_target == cursor_has_target and next_cursor_cell == cursor_cell and next_remove_cell == remove_cursor_cell and next_cursor_can_place == cursor_can_place and next_cursor_can_remove == cursor_can_remove and next_cursor_target_label == cursor_target_label:
+	if next_cursor_has_target == cursor_has_target and next_cursor_cell == cursor_cell and next_remove_cell == remove_cursor_cell and next_cursor_can_place == cursor_can_place and next_cursor_can_remove == cursor_can_remove and next_feedback_state == cursor_feedback_state and next_cursor_target_label == cursor_target_label:
 		return
 	cursor_has_target = next_cursor_has_target
 	cursor_cell = next_cursor_cell
 	remove_cursor_cell = next_remove_cell
 	cursor_can_place = next_cursor_can_place
 	cursor_can_remove = next_cursor_can_remove
+	cursor_feedback_state = next_feedback_state
 	cursor_target_label = next_cursor_target_label
 	_refresh_cursor_visual()
 	_refresh_hud()
@@ -579,6 +612,7 @@ func _query_build_target_from_camera() -> Dictionary:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return {
 			"has_target": false,
+			"feedback_state": "hidden",
 			"label": "Run in progress",
 		}
 	var viewport_rect := get_viewport().get_visible_rect()
@@ -592,6 +626,7 @@ func _query_build_target_from_camera() -> Dictionary:
 	if hit.is_empty():
 		return {
 			"has_target": false,
+			"feedback_state": "hidden",
 			"label": "Aim at the boat or dock",
 		}
 
@@ -614,6 +649,7 @@ func _query_build_target_from_camera() -> Dictionary:
 	else:
 		return {
 			"has_target": false,
+			"feedback_state": "hidden",
 			"label": "Aim at the boat or dock",
 		}
 
@@ -621,12 +657,16 @@ func _query_build_target_from_camera() -> Dictionary:
 	var occupied := _find_block_at_cell(place_cell).size() > 0
 	var in_range := _cell_in_local_build_range(place_cell)
 	var can_place := within_bounds and in_range and not occupied
+	var feedback_state := "ready"
 	var label := "Place %s\nCell %s" % [surface_label, str(place_cell)]
 	if not within_bounds:
+		feedback_state = "blocked"
 		label += "\nOutside build volume"
 	elif not in_range:
+		feedback_state = "range"
 		label += "\nMove closer"
 	elif occupied:
+		feedback_state = "occupied"
 		label += "\nCell occupied"
 	else:
 		label += "\nF place"
@@ -638,6 +678,7 @@ func _query_build_target_from_camera() -> Dictionary:
 		"remove_cell": remove_cell,
 		"can_place": can_place,
 		"can_remove": can_remove,
+		"feedback_state": feedback_state,
 		"label": label,
 	}
 
@@ -676,6 +717,93 @@ func _cell_in_local_build_range(cell: Vector3i) -> bool:
 		return false
 	return local_avatar_body.global_position.distance_to(_cell_to_world_position(cell)) <= (NetworkRuntime.get_hangar_build_range() + 0.2)
 
+func _apply_autohangar_spawn_override() -> void:
+	var autohangar_role := str(launch_overrides.get("autohangar_role", ""))
+	if autohangar_role.is_empty() or local_avatar_body == null:
+		return
+	match autohangar_role:
+		"bumper_left":
+			local_avatar_body.global_position = Vector3(-1.7, 0.55, 5.8)
+			local_avatar_facing_y = -PI * 0.5
+		"bumper_right":
+			local_avatar_body.global_position = Vector3(1.7, 0.55, 5.8)
+			local_avatar_facing_y = PI * 0.5
+
+func _get_hangar_scripted_move_direction() -> Vector3:
+	var autohangar_role := str(launch_overrides.get("autohangar_role", ""))
+	if autohangar_role.is_empty() or local_avatar_body == null:
+		return Vector3.ZERO
+	var target := Vector3.ZERO
+	match autohangar_role:
+		"bumper_left":
+			target = Vector3(0.85, 0.55, 5.7)
+		"bumper_right":
+			target = Vector3(-0.85, 0.55, 5.7)
+		_:
+			return Vector3.ZERO
+	var offset := target - local_avatar_body.global_position
+	offset.y = 0.0
+	if offset.length() <= 0.12:
+		return Vector3.ZERO
+	return offset.normalized()
+
+func _tick_reaction_visuals(delta: float) -> void:
+	var expired_peer_ids: Array = []
+	for peer_id_variant in reaction_visual_state.keys():
+		var peer_id := int(peer_id_variant)
+		var peer_reaction: Dictionary = reaction_visual_state[peer_id]
+		peer_reaction["active_time"] = maxf(0.0, float(peer_reaction.get("active_time", 0.0)) - delta)
+		peer_reaction["recovery_time"] = maxf(0.0, float(peer_reaction.get("recovery_time", 0.0)) - delta)
+		if float(peer_reaction.get("active_time", 0.0)) <= 0.0 and float(peer_reaction.get("recovery_time", 0.0)) <= 0.0:
+			expired_peer_ids.append(peer_id)
+			continue
+		reaction_visual_state[peer_id] = peer_reaction
+	for peer_id_variant in expired_peer_ids:
+		reaction_visual_state.erase(int(peer_id_variant))
+	local_camera_jolt = local_camera_jolt.lerp(Vector3.ZERO, minf(1.0, delta * 7.5))
+	_apply_avatar_reaction_pose(local_avatar_body, _get_local_peer_id(), delta)
+
+func _get_reaction_visual(peer_id: int) -> Dictionary:
+	return Dictionary(reaction_visual_state.get(peer_id, {}))
+
+func _consume_local_reaction_impulse() -> void:
+	var local_reaction := _get_reaction_visual(_get_local_peer_id())
+	if local_reaction.is_empty():
+		return
+	var reaction_id := int(local_reaction.get("reaction_id", 0))
+	if reaction_id == 0 or reaction_id == last_local_reaction_id:
+		return
+	last_local_reaction_id = reaction_id
+	local_reaction_impulse += local_reaction.get("knockback_velocity", Vector3.ZERO)
+	var knockback: Vector3 = local_reaction.get("knockback_velocity", Vector3.ZERO)
+	if knockback.length() > 0.01:
+		local_camera_jolt += knockback.normalized() * (0.18 + float(local_reaction.get("strength", 0.5)) * 0.16)
+
+func _apply_avatar_reaction_pose(avatar_node: Node3D, peer_id: int, delta: float) -> void:
+	if avatar_node == null:
+		return
+	var visual_root := avatar_node.get_node_or_null("AvatarVisual") as Node3D
+	if visual_root == null and avatar_node.get_child_count() > 0:
+		visual_root = avatar_node.get_child(0) as Node3D
+	if visual_root == null:
+		return
+	var peer_reaction := _get_reaction_visual(peer_id)
+	var target_pitch := 0.0
+	var target_roll := 0.0
+	var target_height := 0.0
+	if not peer_reaction.is_empty():
+		var active_time := float(peer_reaction.get("active_time", 0.0))
+		var recovery_time := float(peer_reaction.get("recovery_time", 0.0))
+		var recovery_duration := maxf(0.01, float(peer_reaction.get("recovery_duration", 0.01)))
+		var intensity := 1.0 if active_time > 0.0 else clampf(recovery_time / recovery_duration, 0.0, 1.0) * 0.55
+		var knockback: Vector3 = peer_reaction.get("knockback_velocity", Vector3.ZERO)
+		target_pitch = clampf(knockback.z * -0.035 * intensity, -0.38, 0.38)
+		target_roll = clampf(knockback.x * 0.04 * intensity, -0.42, 0.42)
+		target_height = sin(connect_time_seconds * 24.0 + float(peer_id)) * 0.04 * intensity
+	visual_root.rotation.x = lerp_angle(visual_root.rotation.x, target_pitch, minf(1.0, delta * 12.0))
+	visual_root.rotation.z = lerp_angle(visual_root.rotation.z, target_roll, minf(1.0, delta * 12.0))
+	visual_root.position.y = lerpf(visual_root.position.y, target_height, minf(1.0, delta * 10.0))
+
 func _cycle_block(direction: int) -> void:
 	var block_ids := NetworkRuntime.get_builder_block_ids()
 	if block_ids.is_empty():
@@ -692,12 +820,16 @@ func _rotate_selected_block() -> void:
 func _place_selected_block() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
+	if float(_get_reaction_visual(_get_local_peer_id()).get("active_time", 0.0)) > 0.0:
+		return
 	if not cursor_can_place:
 		return
 	NetworkRuntime.request_place_blueprint_block([cursor_cell.x, cursor_cell.y, cursor_cell.z], _get_selected_block_id(), selected_rotation_steps)
 
 func _remove_selected_block() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
+		return
+	if float(_get_reaction_visual(_get_local_peer_id()).get("active_time", 0.0)) > 0.0:
 		return
 	if not cursor_can_remove:
 		return
@@ -760,8 +892,9 @@ func _update_camera(delta: float) -> void:
 		return
 	var avatar_position := local_avatar_body.global_position
 	var camera_offset := Vector3(0.0, HANGAR_CAMERA_HEIGHT, HANGAR_CAMERA_DISTANCE).rotated(Vector3.UP, local_avatar_facing_y)
-	var desired_position := avatar_position + camera_offset
+	var desired_position := avatar_position + camera_offset + local_camera_jolt
 	var look_target := avatar_position + Vector3(0.0, 1.45, -2.6).rotated(Vector3.UP, local_avatar_facing_y)
+	look_target += local_camera_jolt * 0.35
 	camera.position = camera.position.lerp(desired_position, minf(1.0, delta * HANGAR_CAMERA_LAG))
 	camera.look_at(look_target, Vector3.UP)
 
@@ -770,6 +903,7 @@ func _process_local_avatar_movement(delta: float) -> void:
 		return
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
+	_consume_local_reaction_impulse()
 
 	var input_vector := Vector2.ZERO
 	if Input.is_physical_key_pressed(KEY_A):
@@ -782,13 +916,27 @@ func _process_local_avatar_movement(delta: float) -> void:
 		input_vector.y += 1.0
 	input_vector = input_vector.limit_length(1.0)
 
-	var camera_forward := -camera.global_transform.basis.z
-	camera_forward.y = 0.0
-	camera_forward = camera_forward.normalized()
-	var camera_right := camera.global_transform.basis.x
-	camera_right.y = 0.0
-	camera_right = camera_right.normalized()
-	var move_direction := (camera_right * input_vector.x) + (camera_forward * input_vector.y)
+	var scripted_direction := _get_hangar_scripted_move_direction()
+	var move_direction := Vector3.ZERO
+	if input_vector.length() > 0.001:
+		var camera_forward := -camera.global_transform.basis.z
+		camera_forward.y = 0.0
+		camera_forward = camera_forward.normalized()
+		var camera_right := camera.global_transform.basis.x
+		camera_right.y = 0.0
+		camera_right = camera_right.normalized()
+		move_direction = (camera_right * input_vector.x) + (camera_forward * input_vector.y)
+	elif scripted_direction.length() > 0.001:
+		move_direction = scripted_direction
+
+	var local_reaction := _get_reaction_visual(_get_local_peer_id())
+	var active_reaction := float(local_reaction.get("active_time", 0.0)) > 0.0
+	var recovering := float(local_reaction.get("recovery_time", 0.0)) > 0.0
+	if active_reaction:
+		move_direction = Vector3.ZERO
+	elif recovering:
+		move_direction *= 0.35
+
 	if move_direction.length() > 0.001:
 		move_direction = move_direction.normalized()
 		local_avatar_facing_y = atan2(-move_direction.x, -move_direction.z)
@@ -803,8 +951,13 @@ func _process_local_avatar_movement(delta: float) -> void:
 
 	if not local_avatar_body.is_on_floor():
 		velocity.y -= ProjectSettings.get_setting("physics/3d/default_gravity") * delta
-	elif Input.is_physical_key_pressed(KEY_SPACE):
+	elif Input.is_physical_key_pressed(KEY_SPACE) and not active_reaction:
 		velocity.y = HANGAR_JUMP_VELOCITY
+
+	velocity.x += local_reaction_impulse.x
+	velocity.z += local_reaction_impulse.z
+	velocity.y += local_reaction_impulse.y
+	local_reaction_impulse = local_reaction_impulse.move_toward(Vector3.ZERO, 18.0 * delta)
 
 	local_avatar_body.velocity = velocity
 	local_avatar_body.move_and_slide()
@@ -880,6 +1033,7 @@ func _update_remote_avatar_visuals(delta: float) -> void:
 			nameplate = avatar_root.find_child("Nameplate", true, false) as Label3D
 		if nameplate != null:
 			nameplate.text = str(peer_data.get("name", "Crew"))
+		_apply_avatar_reaction_pose(avatar_root, peer_id, delta)
 
 func _schedule_optional_quit() -> void:
 	var quit_after_connect_ms := int(launch_overrides.get("quit_after_connect_ms", 0))
@@ -1031,6 +1185,10 @@ func _on_peer_snapshot_changed(_snapshot: Dictionary) -> void:
 
 func _on_hangar_avatar_state_changed(_snapshot: Dictionary) -> void:
 	_refresh_hangar_avatar_visuals()
+	_refresh_hud()
+
+func _on_reaction_state_changed(snapshot: Dictionary) -> void:
+	reaction_visual_state = snapshot.duplicate(true)
 	_refresh_hud()
 
 func _on_boat_blueprint_changed(_snapshot: Dictionary) -> void:

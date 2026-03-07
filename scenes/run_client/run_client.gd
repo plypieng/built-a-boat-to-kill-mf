@@ -71,8 +71,12 @@ var hazard_visuals: Dictionary = {}
 var loot_visuals: Dictionary = {}
 var main_block_visuals: Dictionary = {}
 var sinking_chunk_visuals: Dictionary = {}
+var crew_visuals: Dictionary = {}
 var run_result_recorded := false
 var auto_continue_queued := false
+var reaction_visual_state: Dictionary = {}
+var last_local_reaction_id := 0
+var local_camera_jolt := Vector3.ZERO
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -89,6 +93,7 @@ func _ready() -> void:
 	NetworkRuntime.status_changed.connect(_on_status_changed)
 	NetworkRuntime.session_phase_changed.connect(_on_session_phase_changed)
 	NetworkRuntime.peer_snapshot_changed.connect(_on_peer_snapshot_changed)
+	NetworkRuntime.reaction_state_changed.connect(_on_reaction_state_changed)
 	NetworkRuntime.run_seed_changed.connect(_on_run_seed_changed)
 	NetworkRuntime.helm_changed.connect(_on_helm_changed)
 	NetworkRuntime.boat_state_changed.connect(_on_boat_state_changed)
@@ -96,12 +101,15 @@ func _ready() -> void:
 	NetworkRuntime.station_state_changed.connect(_on_station_state_changed)
 	NetworkRuntime.loot_state_changed.connect(_on_loot_state_changed)
 	NetworkRuntime.run_state_changed.connect(_on_run_state_changed)
+	reaction_visual_state = NetworkRuntime.get_reaction_state()
 
 func _process(delta: float) -> void:
 	connect_time_seconds += delta
+	_tick_reaction_visuals(delta)
 	_update_boat_visual(delta)
 	_update_runtime_block_visuals()
 	_update_sinking_chunk_visuals(delta)
+	_update_crew_visuals(delta)
 	_update_hazard_visuals()
 	_update_loot_visuals()
 	_update_wreck_visual()
@@ -613,10 +621,15 @@ func _refresh_hud() -> void:
 	for peer_id in NetworkRuntime.get_player_peer_ids():
 		var peer_data: Dictionary = NetworkRuntime.peer_snapshot[peer_id]
 		var crew_station := NetworkRuntime.get_peer_station_id(int(peer_id))
-		crew_lines.append("%s - %s [%s]" % [
+		var peer_reaction := _get_reaction_visual(int(peer_id))
+		var reaction_text := ""
+		if not peer_reaction.is_empty():
+			reaction_text = " | %s" % str(peer_reaction.get("type", "reacting")).capitalize()
+		crew_lines.append("%s - %s [%s]%s" % [
 			str(peer_id),
 			str(peer_data.get("name", "Unknown")),
 			NetworkRuntime.get_station_label(crew_station) if not crew_station.is_empty() else "Free Roam",
+			reaction_text,
 		])
 	roster_label.text = "Crew Snapshot:\n%s" % ("\n".join(crew_lines) if not crew_lines.is_empty() else "No crew connected yet.")
 
@@ -651,6 +664,12 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 
 	lines.append("Unbraced wreck grapples add hull breaches that slow the boat until repaired.")
 	lines.append("Repairs now spend shared patch kits, so decide whether to patch now or save them for extraction.")
+	var local_reaction := _get_reaction_visual(_get_local_peer_id())
+	if not local_reaction.is_empty():
+		lines.append("Reaction: %s (recovering in %.2fs)." % [
+			str(local_reaction.get("type", "impact")).capitalize(),
+			float(local_reaction.get("active_time", 0.0)) + float(local_reaction.get("recovery_time", 0.0)),
+		])
 
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		lines.append("Run complete. The result panel shows the final outcome.")
@@ -925,12 +944,15 @@ func _refresh_station_visuals() -> void:
 		beacon_mesh.material_override = beacon_material
 
 		var occupant_name := NetworkRuntime.get_station_occupant_name(station_id)
-		label.text = "%s\n%s" % [NetworkRuntime.get_station_label(station_id), occupant_name]
+		label.text = NetworkRuntime.get_station_label(station_id)
+		if occupant_peer_id != 0:
+			label.text += "\n%s" % occupant_name
 		label.modulate = color.lightened(0.22)
 
 func _refresh_crew_visuals() -> void:
 	for child in crew_container.get_children():
 		child.queue_free()
+	crew_visuals.clear()
 
 	var idle_slot_index := 0
 	for peer_id in NetworkRuntime.get_player_peer_ids():
@@ -961,11 +983,16 @@ func _refresh_crew_visuals() -> void:
 
 		var nameplate := Label3D.new()
 		var role_label := NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"
-		nameplate.text = "%s\n%s" % [str(peer_data.get("name", "Crew")), role_label]
+		nameplate.text = "%s - %s" % [str(peer_data.get("name", "Crew")), role_label]
 		nameplate.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		nameplate.font_size = 24
+		nameplate.font_size = 18
 		nameplate.position = Vector3(0.0, 0.96, 0.0)
 		crew_member.add_child(nameplate)
+		crew_visuals[int(peer_id)] = {
+			"root": crew_member,
+			"nameplate": nameplate,
+			"body": body,
+		}
 
 func _refresh_hazard_visuals() -> void:
 	for child in hazard_container.get_children():
@@ -1144,6 +1171,73 @@ func _refresh_result_overlay() -> void:
 	result_panel.modulate = Color(0.98, 1.0, 0.98) if phase == "success" else Color(1.0, 0.94, 0.94)
 	result_continue_button.disabled = false
 
+func _tick_reaction_visuals(delta: float) -> void:
+	var expired_peer_ids: Array = []
+	for peer_id_variant in reaction_visual_state.keys():
+		var peer_id := int(peer_id_variant)
+		var peer_reaction: Dictionary = reaction_visual_state[peer_id]
+		peer_reaction["active_time"] = maxf(0.0, float(peer_reaction.get("active_time", 0.0)) - delta)
+		peer_reaction["recovery_time"] = maxf(0.0, float(peer_reaction.get("recovery_time", 0.0)) - delta)
+		if float(peer_reaction.get("active_time", 0.0)) <= 0.0 and float(peer_reaction.get("recovery_time", 0.0)) <= 0.0:
+			expired_peer_ids.append(peer_id)
+			continue
+		reaction_visual_state[peer_id] = peer_reaction
+	for peer_id_variant in expired_peer_ids:
+		reaction_visual_state.erase(int(peer_id_variant))
+	local_camera_jolt = local_camera_jolt.lerp(Vector3.ZERO, minf(1.0, delta * 8.4))
+	_consume_local_reaction_impulse()
+
+func _get_reaction_visual(peer_id: int) -> Dictionary:
+	return Dictionary(reaction_visual_state.get(peer_id, {}))
+
+func _consume_local_reaction_impulse() -> void:
+	var local_reaction := _get_reaction_visual(_get_local_peer_id())
+	if local_reaction.is_empty():
+		return
+	var reaction_id := int(local_reaction.get("reaction_id", 0))
+	if reaction_id == 0 or reaction_id == last_local_reaction_id:
+		return
+	last_local_reaction_id = reaction_id
+	var knockback: Vector3 = local_reaction.get("knockback_velocity", Vector3.ZERO)
+	if knockback.length() > 0.01:
+		local_camera_jolt += knockback.normalized() * (0.26 + float(local_reaction.get("strength", 0.5)) * 0.22)
+
+func _update_crew_visuals(delta: float) -> void:
+	var idle_slot_index := 0
+	for peer_id in NetworkRuntime.get_player_peer_ids():
+		var visual: Dictionary = crew_visuals.get(int(peer_id), {})
+		var crew_root := visual.get("root") as Node3D
+		if crew_root == null:
+			continue
+		var station_id := NetworkRuntime.get_peer_station_id(int(peer_id))
+		var target_position: Vector3 = IDLE_CREW_SLOTS[idle_slot_index % IDLE_CREW_SLOTS.size()]
+		if not station_id.is_empty():
+			target_position = NetworkRuntime.get_station_position(station_id) + Vector3(0.0, 0.18, 0.0)
+		else:
+			idle_slot_index += 1
+		var peer_reaction := _get_reaction_visual(int(peer_id))
+		var local_knockback := Vector3.ZERO
+		var intensity := 0.0
+		if not peer_reaction.is_empty():
+			var active_time := float(peer_reaction.get("active_time", 0.0))
+			var recovery_time := float(peer_reaction.get("recovery_time", 0.0))
+			var recovery_duration := maxf(0.01, float(peer_reaction.get("recovery_duration", 0.01)))
+			intensity = 1.0 if active_time > 0.0 else clampf(recovery_time / recovery_duration, 0.0, 1.0) * 0.55
+			var knockback: Vector3 = peer_reaction.get("knockback_velocity", Vector3.ZERO)
+			local_knockback = boat_root.global_transform.basis.inverse() * knockback
+			target_position += local_knockback * 0.08 * intensity
+			target_position.y += sin(connect_time_seconds * 22.0 + float(peer_id)) * 0.06 * intensity
+		crew_root.position = crew_root.position.lerp(target_position, minf(1.0, delta * 8.5))
+		crew_root.rotation.x = lerp_angle(crew_root.rotation.x, clampf(local_knockback.z * -0.05 * intensity, -0.42, 0.42), minf(1.0, delta * 12.0))
+		crew_root.rotation.z = lerp_angle(crew_root.rotation.z, clampf(local_knockback.x * 0.055 * intensity, -0.48, 0.48), minf(1.0, delta * 12.0))
+		var nameplate := visual.get("nameplate") as Label3D
+		if nameplate != null:
+			var peer_data: Dictionary = NetworkRuntime.peer_snapshot.get(int(peer_id), {})
+			var role_label := NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"
+			nameplate.text = "%s - %s" % [str(peer_data.get("name", "Crew")), role_label]
+			if not peer_reaction.is_empty():
+				nameplate.text += " [%s]" % str(peer_reaction.get("type", "reacting")).capitalize()
+
 func _collect_input_state(delta: float) -> Dictionary:
 	var input_state := {
 		"claim_station": "",
@@ -1153,18 +1247,26 @@ func _collect_input_state(delta: float) -> Dictionary:
 		"throttle": 0.0,
 		"steer": 0.0,
 	}
+	var local_reaction := _get_reaction_visual(_get_local_peer_id())
+	var active_reaction := float(local_reaction.get("active_time", 0.0)) > 0.0
+	var recovering := float(local_reaction.get("recovery_time", 0.0)) > 0.0
 
-	_collect_station_selection_input()
-	_collect_station_interaction_input(input_state)
-	_collect_action_input(input_state)
-	_collect_drive_input(input_state)
+	if not active_reaction:
+		_collect_station_selection_input()
+		_collect_station_interaction_input(input_state)
+		if not recovering:
+			_collect_action_input(input_state)
+		_collect_drive_input(input_state)
+		if recovering:
+			input_state["throttle"] = float(input_state.get("throttle", 0.0)) * 0.35
+			input_state["steer"] = float(input_state.get("steer", 0.0)) * 0.35
 
 	var autorun_role := str(launch_overrides.get("autorun_role", ""))
-	if not autorun_role.is_empty():
+	if not active_reaction and not autorun_role.is_empty():
 		_apply_autorun_role(delta, autorun_role, input_state)
-	elif bool(launch_overrides.get("autorun_demo", false)):
+	elif not active_reaction and bool(launch_overrides.get("autorun_demo", false)):
 		_apply_autorun_demo(delta, input_state)
-	else:
+	elif not active_reaction:
 		_apply_scripted_station_input(delta, input_state)
 
 	return input_state
@@ -1632,9 +1734,9 @@ func _update_camera(delta: float) -> void:
 	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / NetworkRuntime.BOAT_TOP_SPEED, 0.0, 1.0)
 	var boat_anchor := boat_root.position + Vector3(0.0, 1.7, 0.0)
 	var forward := -Vector3.FORWARD.rotated(Vector3.UP, boat_root.rotation.y)
-	var look_target := boat_anchor + forward * (1.5 + speed_ratio * 2.2)
+	var look_target := boat_anchor + forward * (1.5 + speed_ratio * 2.2) + local_camera_jolt * 0.42
 	var follow_offset := Vector3(0.0, 4.9 + speed_ratio * 1.2, 9.8 + speed_ratio * 3.0).rotated(Vector3.UP, boat_root.rotation.y)
-	var desired_position := boat_anchor + follow_offset
+	var desired_position := boat_anchor + follow_offset + local_camera_jolt
 	var blend := minf(1.0, delta * 4.0)
 	camera.position = camera.position.lerp(desired_position, blend)
 	camera.fov = lerpf(camera.fov, 70.0 + speed_ratio * 9.0, blend)
@@ -1759,6 +1861,10 @@ func _on_session_phase_changed(phase: String) -> void:
 func _on_peer_snapshot_changed(_snapshot: Dictionary) -> void:
 	_refresh_crew_visuals()
 	_refresh_station_visuals()
+	_refresh_hud()
+
+func _on_reaction_state_changed(snapshot: Dictionary) -> void:
+	reaction_visual_state = snapshot.duplicate(true)
 	_refresh_hud()
 
 func _on_run_seed_changed(_seed: int) -> void:
