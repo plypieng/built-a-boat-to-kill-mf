@@ -206,6 +206,21 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - `repair_supplies=0`
   - confirms the patch-kit limit is now a real run constraint rather than unlimited sustain
 
+## 2026-03-08 Live Co-op 3D Builder Design
+
+- Approved the next major milestone as a live co-op 3D boat builder rather than a hangar-upgrades-only slice.
+- Approved design decisions:
+  - full freeform builder
+  - one shared team boat blueprint
+  - true 3D bounded build volume
+  - 90-degree grid rotation
+  - disconnected blocks allowed in hangar
+  - disconnected chunks warned about but not blocked at launch
+  - disconnected chunks sink immediately at run start
+  - runtime chunk detachment and sinking after damage
+- Wrote the milestone design doc to `docs/plans/2026-03-08-live-coop-3d-boat-builder-design.md`.
+- Wrote a direct implementation-plan fallback to `docs/plans/2026-03-08-live-coop-3d-boat-builder-implementation-plan.md` because the `writing-plans` skill is still not available in this session.
+
 ## TODOs
 
 - Lock target session size and whether PvP is required for MVP.
