@@ -1,6 +1,7 @@
 extends Node3D
 
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
+const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const IDLE_CREW_SLOTS := [
 	Vector3(0.0, 0.92, 1.35),
@@ -58,6 +59,7 @@ var toolbelt_label: Label
 var inventory_label: Label
 var footer_label: Label
 var boat_root: Node3D
+var chunk_container: Node3D
 var hull_mesh_instance: MeshInstance3D
 var hull_material: StandardMaterial3D
 var deck_mesh_instance: MeshInstance3D
@@ -86,6 +88,10 @@ var extraction_root: Node3D
 var extraction_ring_material: StandardMaterial3D
 var extraction_buoy_material: StandardMaterial3D
 var extraction_label: Label3D
+var salvage_site_container: Node3D
+var distress_site_container: Node3D
+var resupply_site_container: Node3D
+var extraction_site_container: Node3D
 var camera: Camera3D
 var result_layer: CanvasLayer
 var result_panel: PanelContainer
@@ -110,8 +116,13 @@ var recover_request_latched := false
 var selected_station_index := 0
 var last_known_phase := "running"
 var station_visuals: Dictionary = {}
+var chunk_visuals: Dictionary = {}
 var hazard_visuals: Dictionary = {}
 var loot_visuals: Dictionary = {}
+var salvage_site_visuals: Dictionary = {}
+var distress_site_visuals: Dictionary = {}
+var resupply_site_visuals: Dictionary = {}
+var extraction_site_visuals: Dictionary = {}
 var main_block_visuals: Dictionary = {}
 var sinking_chunk_visuals: Dictionary = {}
 var crew_visuals: Dictionary = {}
@@ -230,21 +241,14 @@ func _build_world() -> void:
 	if get_node_or_null("Environment/Water") == null:
 		_build_static_world_fallback()
 
+	chunk_container = _ensure_root_node3d("ChunkContainer")
 	hazard_container = _ensure_root_node3d("HazardContainer")
 	squall_container = _ensure_root_node3d("SquallContainer")
 	loot_container = _ensure_root_node3d("LootContainer")
-
-	wreck_root = _ensure_root_node3d("WreckRoot")
-	_build_wreck_visual()
-
-	rescue_root = _ensure_root_node3d("RescueRoot")
-	_build_rescue_visual()
-
-	cache_root = _ensure_root_node3d("CacheRoot")
-	_build_cache_visual()
-
-	extraction_root = _ensure_root_node3d("ExtractionRoot")
-	_build_extraction_visual()
+	salvage_site_container = _ensure_root_node3d("SalvageSiteContainer")
+	distress_site_container = _ensure_root_node3d("DistressSiteContainer")
+	resupply_site_container = _ensure_root_node3d("ResupplySiteContainer")
+	extraction_site_container = _ensure_root_node3d("ExtractionSiteContainer")
 
 	sinking_chunk_container = _ensure_root_node3d("SinkingChunkContainer")
 
@@ -345,13 +349,162 @@ func _build_static_world_fallback() -> void:
 	var water := MeshInstance3D.new()
 	water.name = "Water"
 	var water_mesh := PlaneMesh.new()
-	water_mesh.size = Vector2(220.0, 220.0)
+	water_mesh.size = Vector2(520.0, 520.0)
 	water.mesh = water_mesh
 	var water_material := StandardMaterial3D.new()
 	water_material.albedo_color = Color(0.08, 0.43, 0.65)
 	water_material.roughness = 0.14
 	water.material_override = water_material
 	fallback_root.add_child(water)
+
+func _refresh_chunk_visuals() -> void:
+	if chunk_container == null:
+		return
+	for child in chunk_container.get_children():
+		child.queue_free()
+	chunk_visuals.clear()
+
+	for descriptor_variant in _get_active_chunk_descriptors():
+		var descriptor: Dictionary = descriptor_variant
+		var coord_key := _chunk_coord_key(descriptor.get("coord", [0, 0]))
+		var coord := RunWorldGenerator._coord_from_variant(descriptor.get("coord", [0, 0]))
+		var chunk_root := Node3D.new()
+		chunk_root.name = "Chunk_%d_%d" % [coord.x, coord.y]
+		chunk_root.position = descriptor.get("world_center", Vector3.ZERO)
+		chunk_container.add_child(chunk_root)
+		chunk_visuals[coord_key] = {
+			"root": chunk_root,
+			"descriptor": descriptor.duplicate(true),
+		}
+
+		var tile := MeshInstance3D.new()
+		var tile_mesh := BoxMesh.new()
+		var chunk_size := float(NetworkRuntime.run_state.get("chunk_size_m", RunWorldGenerator.CHUNK_SIZE_M))
+		tile_mesh.size = Vector3(chunk_size * 0.98, 0.12, chunk_size * 0.98)
+		tile.mesh = tile_mesh
+		tile.position = Vector3(0.0, -0.08, 0.0)
+		var tile_material := StandardMaterial3D.new()
+		tile_material.albedo_color = _get_chunk_biome_color(str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN)))
+		tile_material.roughness = 0.24
+		tile.material_override = tile_material
+		chunk_root.add_child(tile)
+
+		var border_ring := MeshInstance3D.new()
+		var ring_mesh := BoxMesh.new()
+		ring_mesh.size = Vector3(chunk_size * 0.96, 0.05, chunk_size * 0.96)
+		border_ring.mesh = ring_mesh
+		border_ring.position = Vector3(0.0, 0.01, 0.0)
+		var ring_material := StandardMaterial3D.new()
+		ring_material.albedo_color = _get_chunk_outline_color(str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN)))
+		ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		border_ring.material_override = ring_material
+		chunk_root.add_child(border_ring)
+
+		_build_chunk_props(chunk_root, descriptor)
+
+	_update_chunk_environment()
+
+func _build_chunk_props(parent: Node3D, descriptor: Dictionary) -> void:
+	var biome_id := str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN))
+	var richness := float(descriptor.get("richness_level", 0.5))
+	var hazard_level := float(descriptor.get("hazard_level", 0.5))
+	var prop_count := 1 + int(round((richness + hazard_level) * 1.5))
+	for prop_index in range(prop_count):
+		var prop := MeshInstance3D.new()
+		var props_seed := int(descriptor.get("props_seed", 0)) + prop_index * 53
+		if biome_id == RunWorldGenerator.BIOME_REEF_WATERS:
+			var reef_mesh := CylinderMesh.new()
+			reef_mesh.height = 0.8 + float((props_seed % 3)) * 0.35
+			reef_mesh.top_radius = 0.22
+			reef_mesh.bottom_radius = 0.36
+			prop.mesh = reef_mesh
+		elif biome_id == RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			var spar_mesh := BoxMesh.new()
+			spar_mesh.size = Vector3(0.28, 1.2, 1.7)
+			prop.mesh = spar_mesh
+		else:
+			var buoy_mesh := SphereMesh.new()
+			buoy_mesh.radius = 0.22 + float((props_seed % 4)) * 0.05
+			buoy_mesh.height = buoy_mesh.radius * 2.0
+			prop.mesh = buoy_mesh
+		prop.position = Vector3(
+			sin(float(props_seed % 360)) * 6.5,
+			0.42,
+			cos(float((props_seed * 3) % 360)) * 6.1
+		)
+		var material := StandardMaterial3D.new()
+		material.albedo_color = _get_chunk_prop_color(biome_id, prop_index)
+		prop.material_override = material
+		parent.add_child(prop)
+
+func _get_chunk_biome_color(biome_id: String) -> Color:
+	match biome_id:
+		RunWorldGenerator.BIOME_REEF_WATERS:
+			return Color(0.11, 0.51, 0.58, 0.92)
+		RunWorldGenerator.BIOME_FOG_BANK:
+			return Color(0.28, 0.38, 0.47, 0.9)
+		RunWorldGenerator.BIOME_STORM_BELT:
+			return Color(0.16, 0.29, 0.42, 0.92)
+		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			return Color(0.24, 0.35, 0.40, 0.92)
+		_:
+			return Color(0.08, 0.43, 0.65, 0.92)
+
+func _get_chunk_outline_color(biome_id: String) -> Color:
+	match biome_id:
+		RunWorldGenerator.BIOME_STORM_BELT:
+			return Color(0.58, 0.72, 0.95, 0.24)
+		RunWorldGenerator.BIOME_FOG_BANK:
+			return Color(0.82, 0.88, 0.94, 0.18)
+		RunWorldGenerator.BIOME_REEF_WATERS:
+			return Color(0.32, 0.86, 0.80, 0.18)
+		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			return Color(0.68, 0.70, 0.76, 0.16)
+		_:
+			return Color(0.46, 0.72, 0.88, 0.12)
+
+func _get_chunk_prop_color(biome_id: String, prop_index: int) -> Color:
+	match biome_id:
+		RunWorldGenerator.BIOME_REEF_WATERS:
+			return Color(0.22, 0.88, 0.78).darkened(float(prop_index) * 0.06)
+		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			return Color(0.47, 0.34, 0.22).lightened(float(prop_index) * 0.04)
+		RunWorldGenerator.BIOME_FOG_BANK:
+			return Color(0.75, 0.80, 0.86).darkened(float(prop_index) * 0.05)
+		RunWorldGenerator.BIOME_STORM_BELT:
+			return Color(0.78, 0.48, 0.18).darkened(float(prop_index) * 0.04)
+		_:
+			return Color(0.90, 0.76, 0.34).darkened(float(prop_index) * 0.05)
+
+func _update_chunk_environment() -> void:
+	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
+	if world_environment == null:
+		world_environment = get_node_or_null("WorldEnvironment") as WorldEnvironment
+	if world_environment == null:
+		return
+	var environment := world_environment.environment
+	if environment == null:
+		return
+	var descriptor := _get_current_chunk_descriptor()
+	var biome_id := str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN))
+	match biome_id:
+		RunWorldGenerator.BIOME_FOG_BANK:
+			environment.background_color = Color(0.58, 0.67, 0.76)
+			environment.fog_enabled = true
+			environment.fog_density = 0.02
+		RunWorldGenerator.BIOME_STORM_BELT:
+			environment.background_color = Color(0.24, 0.34, 0.48)
+			environment.fog_enabled = true
+			environment.fog_density = 0.014
+		RunWorldGenerator.BIOME_REEF_WATERS:
+			environment.background_color = Color(0.40, 0.74, 0.78)
+			environment.fog_enabled = false
+		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			environment.background_color = Color(0.35, 0.48, 0.56)
+			environment.fog_enabled = false
+		_:
+			environment.background_color = Color(0.46, 0.71, 0.92)
+			environment.fog_enabled = false
 
 func _ensure_root_node3d(node_name: String) -> Node3D:
 	var node := get_node_or_null(node_name) as Node3D
@@ -370,6 +523,82 @@ func _ensure_child_node3d(parent: Node3D, node_name: String) -> Node3D:
 	node.name = node_name
 	parent.add_child(node)
 	return node
+
+func _copy_array(value: Variant) -> Array:
+	return value.duplicate(true) if value is Array else []
+
+func _chunk_coord_key(coord_value: Variant) -> String:
+	var coord := RunWorldGenerator._coord_from_variant(coord_value)
+	return "%d:%d" % [coord.x, coord.y]
+
+func _get_active_chunk_coords() -> Array:
+	return _copy_array(NetworkRuntime.run_state.get("active_chunk_coords", []))
+
+func _get_active_chunk_descriptors() -> Array:
+	var descriptors: Array = []
+	for coord_variant in _get_active_chunk_coords():
+		var descriptor := NetworkRuntime.get_chunk_descriptor(coord_variant)
+		if descriptor.is_empty():
+			continue
+		descriptors.append(descriptor)
+	return descriptors
+
+func _get_current_chunk_descriptor() -> Dictionary:
+	return NetworkRuntime.get_chunk_descriptor(NetworkRuntime.get_world_chunk_coord(NetworkRuntime.boat_state.get("position", Vector3.ZERO)))
+
+func _get_poi_sites(site_type: String, available_only: bool = false) -> Array:
+	var matches: Array = []
+	for site_variant in _copy_array(NetworkRuntime.run_state.get("poi_sites", [])):
+		var site: Dictionary = site_variant
+		if str(site.get("site_type", "")) != site_type:
+			continue
+		if available_only:
+			if site_type == RunWorldGenerator.SITE_DISTRESS and not bool(site.get("available", false)):
+				continue
+			if site_type == RunWorldGenerator.SITE_RESUPPLY and not bool(site.get("available", false)):
+				continue
+			if site_type == RunWorldGenerator.SITE_SALVAGE and int(site.get("loot_remaining", 0)) <= 0:
+				continue
+		matches.append(site.duplicate(true))
+	return matches
+
+func _get_nearest_poi_site(site_type: String, available_only: bool = false) -> Dictionary:
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var best_site: Dictionary = {}
+	var best_distance := INF
+	for site_variant in _get_poi_sites(site_type, available_only):
+		var site: Dictionary = site_variant
+		var distance := boat_position.distance_to(site.get("position", Vector3.ZERO))
+		if distance >= best_distance:
+			continue
+		best_distance = distance
+		best_site = site.duplicate(true)
+	return best_site
+
+func _get_revealed_extraction_sites() -> Array:
+	var revealed_lookup := {}
+	for extraction_id_variant in _copy_array(NetworkRuntime.run_state.get("revealed_extraction_ids", [])):
+		revealed_lookup[str(extraction_id_variant)] = true
+	var matches: Array = []
+	for site_variant in _copy_array(NetworkRuntime.run_state.get("extraction_sites", [])):
+		var site: Dictionary = site_variant
+		if revealed_lookup.has(str(site.get("id", ""))):
+			matches.append(site.duplicate(true))
+	return matches
+
+func _get_nearest_extraction_site(revealed_only: bool = true) -> Dictionary:
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var source := _get_revealed_extraction_sites() if revealed_only else _copy_array(NetworkRuntime.run_state.get("extraction_sites", []))
+	var best_site: Dictionary = {}
+	var best_distance := INF
+	for site_variant in source:
+		var site: Dictionary = site_variant
+		var distance := boat_position.distance_to(site.get("position", Vector3.ZERO))
+		if distance >= best_distance:
+			continue
+		best_distance = distance
+		best_site = site.duplicate(true)
+	return best_site
 
 func _get_run_camera_pitch_min() -> float:
 	return deg_to_rad(run_camera_pitch_min_degrees)
@@ -981,6 +1210,7 @@ func _get_run_tool_label(tool_id: String) -> String:
 	return tool_id.capitalize()
 
 func _refresh_world() -> void:
+	_refresh_chunk_visuals()
 	_refresh_runtime_block_visuals()
 	_refresh_sinking_chunk_visuals()
 	_refresh_station_visuals()
@@ -1003,19 +1233,21 @@ func _refresh_hud() -> void:
 	var selected_station_id := _get_selected_station_id()
 	var active_tool_id := _get_selected_run_tool_id()
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
+	var nearest_salvage := _get_nearest_poi_site(RunWorldGenerator.SITE_SALVAGE, true)
+	var nearest_rescue := _get_nearest_poi_site(RunWorldGenerator.SITE_DISTRESS, true)
+	var nearest_cache := _get_nearest_poi_site(RunWorldGenerator.SITE_RESUPPLY, true)
+	var nearest_extraction := _get_nearest_extraction_site(true)
+	var current_chunk := _get_current_chunk_descriptor()
+	var current_biome := str(current_chunk.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN))
 	var extraction_progress: float = float(NetworkRuntime.run_state.get("extraction_progress", 0.0))
 	var extraction_duration: float = float(NetworkRuntime.run_state.get("extraction_duration", 1.0))
 	var hull_integrity: float = float(NetworkRuntime.boat_state.get("hull_integrity", 100.0))
 	var max_hull_integrity: float = float(NetworkRuntime.boat_state.get("max_hull_integrity", 100.0))
 	var breach_stacks := int(NetworkRuntime.boat_state.get("breach_stacks", 0))
-	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
-	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
-	var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
-	var extraction_distance := boat_position.distance_to(extraction_position)
-	var wreck_distance := boat_position.distance_to(wreck_position)
-	var rescue_distance := boat_position.distance_to(rescue_position)
-	var cache_distance := boat_position.distance_to(cache_position)
+	var extraction_distance := boat_position.distance_to(nearest_extraction.get("position", boat_position)) if not nearest_extraction.is_empty() else INF
+	var wreck_distance := boat_position.distance_to(nearest_salvage.get("position", boat_position)) if not nearest_salvage.is_empty() else INF
+	var rescue_distance := boat_position.distance_to(nearest_rescue.get("position", boat_position)) if not nearest_rescue.is_empty() else INF
+	var cache_distance := boat_position.distance_to(nearest_cache.get("position", boat_position)) if not nearest_cache.is_empty() else INF
 	var repair_supplies := int(NetworkRuntime.run_state.get("repair_supplies", 0))
 	var repair_supplies_max := int(NetworkRuntime.run_state.get("repair_supplies_max", 0))
 	var active_block_count := int(NetworkRuntime.boat_state.get("active_block_count", 0))
@@ -1033,7 +1265,11 @@ func _refresh_hud() -> void:
 	var current_cargo := int(NetworkRuntime.run_state.get("cargo_count", 0))
 	var cargo_capacity := int(NetworkRuntime.run_state.get("cargo_capacity", int(NetworkRuntime.boat_state.get("cargo_capacity", 1))))
 	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
-	var layout_label := str(NetworkRuntime.run_state.get("layout_label", "Wreck Push"))
+	var layout_label := str(NetworkRuntime.run_state.get("layout_label", "Open Sea"))
+	var revealed_extractions := _get_revealed_extraction_sites()
+	var extraction_distance_text := "?"
+	if not nearest_extraction.is_empty():
+		extraction_distance_text = "%.1fm" % extraction_distance
 	var brace_timer := float(NetworkRuntime.boat_state.get("brace_timer", 0.0))
 	var brace_cooldown := float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0))
 	var brace_state := "Ready"
@@ -1054,12 +1290,13 @@ func _refresh_hud() -> void:
 	else:
 		objective_label.modulate = HUD_TEXT_PRIMARY
 
-	resource_label.text = "Cargo %d/%d | Extract %.1f/%.1fs | Dist %.1fm\nPatch Kits %d/%d | Bonus %dg / %ds" % [
+	resource_label.text = "Cargo %d/%d | Reveal %d | Extract %.1f/%.1fs | Dist %s\nPatch Kits %d/%d | Bonus %dg / %ds" % [
 		current_cargo,
 		cargo_capacity,
+		revealed_extractions.size(),
 		extraction_progress,
 		extraction_duration,
-		extraction_distance,
+		extraction_distance_text,
 		repair_supplies,
 		repair_supplies_max,
 		int(NetworkRuntime.run_state.get("bonus_gold_bank", 0)),
@@ -1075,13 +1312,17 @@ func _refresh_hud() -> void:
 		]
 
 	var pressure_lines := PackedStringArray()
-	pressure_lines.append("%s | Loot %d left | Wreck %.1fm" % [layout_label, loot_remaining, wreck_distance])
-	if rescue_available:
+	pressure_lines.append("%s | Biome %s | Loot %d left" % [layout_label, current_biome.replace("_", " "), loot_remaining])
+	if not nearest_salvage.is_empty():
+		pressure_lines.append("Nearest Salvage %.1fm | %s" % [wreck_distance, str(nearest_salvage.get("label", "Salvage"))])
+	if rescue_available and not nearest_rescue.is_empty():
 		pressure_lines.append("Rescue %.1fm | Window %.1f/%.1fs" % [rescue_distance, rescue_progress, rescue_duration])
 	elif rescue_completed:
 		pressure_lines.append("Rescue secured")
-	if bool(NetworkRuntime.run_state.get("cache_available", false)):
-		pressure_lines.append("Cache %.1fm | Quick bonus lane" % cache_distance)
+	if bool(NetworkRuntime.run_state.get("cache_available", false)) and not nearest_cache.is_empty():
+		pressure_lines.append("Cache %.1fm | Quick bonus stop" % cache_distance)
+	if not revealed_extractions.is_empty() and not nearest_extraction.is_empty():
+		pressure_lines.append("Outpost %.1fm | %s" % [extraction_distance, str(nearest_extraction.get("label", "Outpost"))])
 	if not squall_bands.is_empty():
 		pressure_lines.append("Squalls %d | %s" % [squall_bands.size(), "Inside storm band" if _boat_inside_any_squall() else "Route pressure"])
 	if cargo_lost_to_sea > 0:
@@ -1588,9 +1829,15 @@ func _refresh_hazard_visuals() -> void:
 	for child in hazard_container.get_children():
 		child.queue_free()
 	hazard_visuals = {}
+	var active_lookup := {}
+	for coord_variant in _get_active_chunk_coords():
+		active_lookup[_chunk_coord_key(coord_variant)] = true
 
 	for hazard in NetworkRuntime.hazard_state:
 		var hazard_data: Dictionary = hazard
+		var chunk_key := _chunk_coord_key(hazard_data.get("chunk_coord", []))
+		if not chunk_key.is_empty() and not active_lookup.has(chunk_key):
+			continue
 		var hazard_node := Node3D.new()
 		hazard_container.add_child(hazard_node)
 		hazard_visuals[int(hazard_data.get("id", 0))] = {
@@ -1618,9 +1865,15 @@ func _refresh_loot_visuals() -> void:
 	for child in loot_container.get_children():
 		child.queue_free()
 	loot_visuals = {}
+	var active_lookup := {}
+	for coord_variant in _get_active_chunk_coords():
+		active_lookup[_chunk_coord_key(coord_variant)] = true
 
 	for loot_target in NetworkRuntime.loot_state:
 		var loot_data: Dictionary = loot_target
+		var chunk_key := _chunk_coord_key(loot_data.get("chunk_coord", []))
+		if not chunk_key.is_empty() and not active_lookup.has(chunk_key):
+			continue
 		var loot_node := Node3D.new()
 		loot_container.add_child(loot_node)
 		loot_visuals[int(loot_data.get("id", 0))] = {
@@ -1643,87 +1896,112 @@ func _refresh_loot_visuals() -> void:
 		label.position = Vector3(0.0, 0.75, 0.0)
 		loot_node.add_child(label)
 
+func _make_site_ring_root(container: Node3D, site: Dictionary, color: Color, body_color: Color, body_kind: String) -> Dictionary:
+	var root := Node3D.new()
+	root.name = "%s_%s" % [str(site.get("site_type", "site")), str(site.get("id", "site"))]
+	container.add_child(root)
+	var ring := MeshInstance3D.new()
+	var ring_mesh := CylinderMesh.new()
+	ring_mesh.height = 0.08
+	ring_mesh.top_radius = float(site.get("radius", 4.0))
+	ring_mesh.bottom_radius = ring_mesh.top_radius
+	ring.mesh = ring_mesh
+	ring.position = Vector3(0.0, 0.05, 0.0)
+	var ring_material := StandardMaterial3D.new()
+	ring_material.albedo_color = color
+	ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	ring.material_override = ring_material
+	root.add_child(ring)
+
+	var body := MeshInstance3D.new()
+	if body_kind == "crate":
+		var crate_mesh := BoxMesh.new()
+		crate_mesh.size = Vector3(0.95, 0.72, 0.95)
+		body.mesh = crate_mesh
+	elif body_kind == "outpost":
+		var outpost_mesh := CylinderMesh.new()
+		outpost_mesh.height = 2.2
+		outpost_mesh.top_radius = 0.95
+		outpost_mesh.bottom_radius = 1.2
+		body.mesh = outpost_mesh
+	else:
+		var hull_mesh := BoxMesh.new()
+		hull_mesh.size = Vector3(1.1, 0.75, 1.8)
+		body.mesh = hull_mesh
+	body.position = Vector3(0.0, 0.55, 0.0)
+	var body_material := StandardMaterial3D.new()
+	body_material.albedo_color = body_color
+	body.material_override = body_material
+	root.add_child(body)
+
+	var label := Label3D.new()
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.font_size = 20
+	label.position = Vector3(0.0, 1.7, 0.0)
+	root.add_child(label)
+	return {
+		"root": root,
+		"ring_material": ring_material,
+		"body_material": body_material,
+		"label": label,
+	}
+
 func _refresh_wreck_visual() -> void:
-	if wreck_root == null:
+	if salvage_site_container == null:
 		return
-
-	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
-	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
-	wreck_root.position = wreck_position
-
-	var ring_mesh_instance := wreck_root.get_node_or_null("WreckRing") as MeshInstance3D
-	if ring_mesh_instance != null:
-		var ring_mesh := ring_mesh_instance.mesh as CylinderMesh
-		if ring_mesh != null:
-			ring_mesh.top_radius = wreck_radius
-			ring_mesh.bottom_radius = wreck_radius
-
-	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
-	var boat_in_wreck := boat_position.distance_to(wreck_position) <= wreck_radius
-	var ready_color := Color(0.23, 0.79, 0.57) if boat_in_wreck and boat_speed <= float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)) else Color(0.87, 0.56, 0.19)
-	wreck_ring_material.albedo_color = ready_color
-	wreck_hull_material.albedo_color = Color(0.38, 0.24, 0.18).lerp(Color(0.58, 0.32, 0.18), 0.18 if boat_in_wreck else 0.0)
-	wreck_label.text = "Wreck Salvage\nLoot %d/%d | Max Speed %.1f" % [
-		int(NetworkRuntime.run_state.get("loot_remaining", 0)),
-		int(NetworkRuntime.run_state.get("loot_total", 0)),
-		float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)),
-	]
-	wreck_label.modulate = ready_color.lightened(0.18)
+	for child in salvage_site_container.get_children():
+		child.queue_free()
+	salvage_site_visuals.clear()
+	var active_lookup := {}
+	for coord_variant in _get_active_chunk_coords():
+		active_lookup[_chunk_coord_key(coord_variant)] = true
+	for site_variant in _get_poi_sites(RunWorldGenerator.SITE_SALVAGE, false):
+		var site: Dictionary = site_variant
+		var chunk_key := _chunk_coord_key(site.get("coord", []))
+		if not active_lookup.has(chunk_key):
+			continue
+		salvage_site_visuals[str(site.get("id", ""))] = _make_site_ring_root(
+			salvage_site_container,
+			site,
+			Color(0.23, 0.79, 0.57, 0.26),
+			Color(0.45, 0.29, 0.18),
+			"wreck"
+		)
 
 func _refresh_rescue_visual() -> void:
-	if rescue_root == null:
+	if distress_site_container == null:
 		return
-
-	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
-	var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
-	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
-	var rescue_engaged := bool(NetworkRuntime.run_state.get("rescue_engaged", false))
-	var rescue_completed := bool(NetworkRuntime.run_state.get("rescue_completed", false))
-	rescue_root.visible = rescue_available or rescue_completed
-	rescue_root.position = rescue_position
-
-	var ring_mesh_instance := rescue_root.get_node_or_null("RescueRing") as MeshInstance3D
-	if ring_mesh_instance != null:
-		var ring_mesh := ring_mesh_instance.mesh as CylinderMesh
-		if ring_mesh != null:
-			ring_mesh.top_radius = rescue_radius
-			ring_mesh.bottom_radius = rescue_radius
-
-	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
-	var in_zone := boat_position.distance_to(rescue_position) <= rescue_radius
-	var ready_color := Color(0.93, 0.72, 0.28)
-	if rescue_completed:
-		ready_color = Color(0.29, 0.82, 0.58)
-	elif rescue_engaged:
-		ready_color = Color(0.95, 0.84, 0.36)
-	elif in_zone and boat_speed <= float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)):
-		ready_color = Color(0.98, 0.86, 0.36)
-	rescue_ring_material.albedo_color = ready_color
-	rescue_flare_material.albedo_color = Color(0.56, 0.37, 0.18).lerp(Color(0.93, 0.56, 0.18), 0.7 if rescue_available else 0.2)
-	rescue_label.text = "%s\nHold %.1f/%.1fs | Max Speed %.1f" % [
-		str(NetworkRuntime.run_state.get("rescue_label", "Distress Rescue")),
-		float(NetworkRuntime.run_state.get("rescue_progress", 0.0)),
-		float(NetworkRuntime.run_state.get("rescue_duration", 1.0)),
-		float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)),
-	]
-	if rescue_completed:
-		rescue_label.text = "%s\nSecured +%d gold | +%d salvage | +%d kit" % [
-			str(NetworkRuntime.run_state.get("rescue_label", "Distress Rescue")),
-			int(NetworkRuntime.run_state.get("rescue_bonus_gold", 0)),
-			int(NetworkRuntime.run_state.get("rescue_bonus_salvage", 0)),
-			int(NetworkRuntime.run_state.get("rescue_patch_kit_bonus", 0)),
-		]
-	rescue_label.modulate = ready_color.lightened(0.16)
+	for child in distress_site_container.get_children():
+		child.queue_free()
+	distress_site_visuals.clear()
+	var active_lookup := {}
+	for coord_variant in _get_active_chunk_coords():
+		active_lookup[_chunk_coord_key(coord_variant)] = true
+	for site_variant in _get_poi_sites(RunWorldGenerator.SITE_DISTRESS, false):
+		var site: Dictionary = site_variant
+		var chunk_key := _chunk_coord_key(site.get("coord", []))
+		if not active_lookup.has(chunk_key):
+			continue
+		distress_site_visuals[str(site.get("id", ""))] = _make_site_ring_root(
+			distress_site_container,
+			site,
+			Color(0.93, 0.72, 0.28, 0.28),
+			Color(0.86, 0.46, 0.18),
+			"wreck"
+		)
 
 func _refresh_squall_visuals() -> void:
 	for child in squall_container.get_children():
 		child.queue_free()
 	squall_visuals.clear()
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var chunk_size := float(NetworkRuntime.run_state.get("chunk_size_m", RunWorldGenerator.CHUNK_SIZE_M))
+	var stream_distance := chunk_size * float(int(NetworkRuntime.run_state.get("stream_radius_chunks", RunWorldGenerator.STREAM_RADIUS_CHUNKS)) + 1)
 
 	for band_variant in Array(NetworkRuntime.run_state.get("squall_bands", [])):
 		var band: Dictionary = band_variant
+		if boat_position.distance_to(band.get("center", Vector3.ZERO)) > stream_distance * 1.25:
+			continue
 		var band_id := int(band.get("id", 0))
 		var root := Node3D.new()
 		root.name = "SquallBand%d" % band_id
@@ -1773,67 +2051,48 @@ func _refresh_squall_visuals() -> void:
 		}
 
 func _refresh_cache_visual() -> void:
-	if cache_root == null:
+	if resupply_site_container == null:
 		return
-
-	var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
-	var cache_radius: float = float(NetworkRuntime.run_state.get("cache_radius", 2.9))
-	var cache_available := bool(NetworkRuntime.run_state.get("cache_available", false))
-	cache_root.position = cache_position
-
-	var ring_mesh_instance := cache_root.get_node_or_null("CacheRing") as MeshInstance3D
-	if ring_mesh_instance != null:
-		var ring_mesh := ring_mesh_instance.mesh as CylinderMesh
-		if ring_mesh != null:
-			ring_mesh.top_radius = cache_radius
-			ring_mesh.bottom_radius = cache_radius
-
-	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
-	var in_zone := boat_position.distance_to(cache_position) <= cache_radius
-	var ready_color := Color(0.21, 0.82, 0.57) if cache_available and in_zone and boat_speed <= float(NetworkRuntime.run_state.get("cache_max_speed", 1.75)) else Color(0.23, 0.71, 0.84)
-	if not cache_available:
-		ready_color = Color(0.44, 0.50, 0.56)
-	cache_ring_material.albedo_color = ready_color
-	cache_crate_material.albedo_color = Color(0.19, 0.48, 0.58).lerp(Color(0.50, 0.55, 0.60), 1.0 if not cache_available else 0.0)
-	cache_label.text = "%s\n+%d gold | +%d salvage | +%d patch kit | Max Speed %.1f" % [
-		str(NetworkRuntime.run_state.get("cache_label", "Resupply Cache")),
-		NetworkRuntime.RESUPPLY_CACHE_GOLD_BONUS,
-		NetworkRuntime.RESUPPLY_CACHE_SALVAGE_BONUS,
-		NetworkRuntime.RESUPPLY_CACHE_SUPPLY_GRANT,
-		float(NetworkRuntime.run_state.get("cache_max_speed", 1.75)),
-	]
-	if not cache_available:
-		cache_label.text = "%s\nRecovered" % str(NetworkRuntime.run_state.get("cache_label", "Resupply Cache"))
-	cache_label.modulate = ready_color.lightened(0.18)
+	for child in resupply_site_container.get_children():
+		child.queue_free()
+	resupply_site_visuals.clear()
+	var active_lookup := {}
+	for coord_variant in _get_active_chunk_coords():
+		active_lookup[_chunk_coord_key(coord_variant)] = true
+	for site_variant in _get_poi_sites(RunWorldGenerator.SITE_RESUPPLY, false):
+		var site: Dictionary = site_variant
+		var chunk_key := _chunk_coord_key(site.get("coord", []))
+		if not active_lookup.has(chunk_key):
+			continue
+		resupply_site_visuals[str(site.get("id", ""))] = _make_site_ring_root(
+			resupply_site_container,
+			site,
+			Color(0.23, 0.71, 0.84, 0.24),
+			Color(0.21, 0.54, 0.62),
+			"crate"
+		)
 
 func _refresh_extraction_visual() -> void:
-	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
-	extraction_root.position = extraction_position
-	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
-	var ring_mesh_instance := extraction_root.get_node_or_null("Ring") as MeshInstance3D
-	if ring_mesh_instance != null:
-		var ring_mesh := ring_mesh_instance.mesh as CylinderMesh
-		if ring_mesh != null:
-			ring_mesh.top_radius = extraction_radius
-			ring_mesh.bottom_radius = extraction_radius
-	var cargo_count := int(NetworkRuntime.run_state.get("cargo_count", 0))
-	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
-	var can_extract := cargo_count > 0 and _boat_within_extraction_zone() and float(NetworkRuntime.boat_state.get("speed", 0.0)) <= NetworkRuntime.EXTRACTION_MAX_SPEED
-	var extraction_color := EXTRACTION_READY_COLOR if can_extract else EXTRACTION_IDLE_COLOR
-	if phase == "failed":
-		extraction_color = EXTRACTION_FAILED_COLOR
-	elif phase == "success":
-		extraction_color = EXTRACTION_READY_COLOR
-
-	extraction_ring_material.albedo_color = extraction_color
-	extraction_buoy_material.albedo_color = extraction_color
-	extraction_label.text = "Extraction\nCargo %d | %.1f/%.1fs" % [
-		cargo_count,
-		float(NetworkRuntime.run_state.get("extraction_progress", 0.0)),
-		float(NetworkRuntime.run_state.get("extraction_duration", 1.0)),
-	]
-	extraction_label.modulate = extraction_color.lightened(0.18)
+	if extraction_site_container == null:
+		return
+	for child in extraction_site_container.get_children():
+		child.queue_free()
+	extraction_site_visuals.clear()
+	var active_lookup := {}
+	for coord_variant in _get_active_chunk_coords():
+		active_lookup[_chunk_coord_key(coord_variant)] = true
+	for site_variant in _get_revealed_extraction_sites():
+		var site: Dictionary = site_variant
+		var chunk_key := _chunk_coord_key(site.get("coord", []))
+		if not active_lookup.has(chunk_key):
+			continue
+		extraction_site_visuals[str(site.get("id", ""))] = _make_site_ring_root(
+			extraction_site_container,
+			site,
+			Color(0.30, 0.62, 0.86, 0.24),
+			Color(0.72, 0.80, 0.88),
+			"outpost"
+		)
 
 func _refresh_result_overlay() -> void:
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
@@ -2256,21 +2515,17 @@ func _apply_autorun_demo(delta: float, input_state: Dictionary) -> void:
 	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var boat_speed: float = float(NetworkRuntime.boat_state.get("speed", 0.0))
-	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
-	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	var salvage_site := _get_nearest_poi_site(RunWorldGenerator.SITE_SALVAGE, true)
 	var breach_stacks := int(NetworkRuntime.boat_state.get("breach_stacks", 0))
 	var brace_timer: float = float(NetworkRuntime.boat_state.get("brace_timer", 0.0))
 	var brace_cooldown: float = float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0))
-	var cache_available := bool(NetworkRuntime.run_state.get("cache_available", false))
-	var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
-	var cache_radius: float = float(NetworkRuntime.run_state.get("cache_radius", 2.9))
-	var cache_max_speed: float = float(NetworkRuntime.run_state.get("cache_max_speed", 1.75))
-	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
-	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
-	var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
-	var rescue_max_speed: float = float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED))
+	var cache_site := _get_nearest_poi_site(RunWorldGenerator.SITE_RESUPPLY, true)
+	var rescue_site := _get_nearest_poi_site(RunWorldGenerator.SITE_DISTRESS, true)
+	var should_cash_out := _should_autorun_cash_out()
 
-	if loot_remaining > 0:
+	if not should_cash_out and loot_remaining > 0 and not salvage_site.is_empty():
+		var wreck_position: Vector3 = salvage_site.get("position", Vector3.ZERO)
+		var wreck_radius: float = float(salvage_site.get("radius", 4.4))
 		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
 			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
@@ -2314,7 +2569,10 @@ func _apply_autorun_demo(delta: float, input_state: Dictionary) -> void:
 				_scripted_move_local_avatar_toward(damage_target.get("local_position", local_run_avatar_position), delta)
 		return
 
-	if rescue_available:
+	if not should_cash_out and not rescue_site.is_empty():
+		var rescue_position: Vector3 = rescue_site.get("position", Vector3.ZERO)
+		var rescue_radius: float = float(rescue_site.get("radius", 3.4))
+		var rescue_max_speed: float = float(rescue_site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED))
 		if boat_position.distance_to(rescue_position) > rescue_radius * 0.8:
 			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
@@ -2333,12 +2591,16 @@ func _apply_autorun_demo(delta: float, input_state: Dictionary) -> void:
 			action_request_cooldown = 0.45
 		return
 
-	if cache_available and boat_position.distance_to(cache_position) <= cache_radius and absf(boat_speed) <= cache_max_speed:
-		_request_station_if_needed("grapple", input_state, delta)
-		if local_station_id == "grapple" and action_request_cooldown <= 0.0:
-			input_state["request_grapple"] = true
-			action_request_cooldown = 0.45
-		return
+	if not should_cash_out and not cache_site.is_empty():
+		var cache_position: Vector3 = cache_site.get("position", Vector3.ZERO)
+		var cache_radius: float = float(cache_site.get("radius", 2.9))
+		var cache_max_speed: float = float(cache_site.get("max_speed", 1.75))
+		if boat_position.distance_to(cache_position) <= cache_radius and absf(boat_speed) <= cache_max_speed:
+			_request_station_if_needed("grapple", input_state, delta)
+			if local_station_id == "grapple" and action_request_cooldown <= 0.0:
+				input_state["request_grapple"] = true
+				action_request_cooldown = 0.45
+			return
 
 	_request_station_if_needed("helm", input_state, delta)
 	if local_station_id != "helm":
@@ -2357,34 +2619,36 @@ func _apply_driver_role(delta: float, input_state: Dictionary) -> void:
 		return
 
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
-	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
-	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
-	if loot_remaining > 0:
+	var should_cash_out := _should_autorun_cash_out()
+	var salvage_site := _get_nearest_poi_site(RunWorldGenerator.SITE_SALVAGE, true)
+	if not should_cash_out and not salvage_site.is_empty():
 		if not _station_is_crewed("grapple"):
 			input_state["throttle"] = 0.0
 			input_state["steer"] = 0.0
 			_maybe_request_autobrace(input_state)
 			return
+		var wreck_position: Vector3 = salvage_site.get("position", Vector3.ZERO)
+		var wreck_radius: float = float(salvage_site.get("radius", 4.4))
 		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
 			_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
 		else:
-			_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
+			_hold_position_over_target(wreck_position, float(salvage_site.get("max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
 		_maybe_request_autobrace(input_state)
 		return
 
-	if bool(NetworkRuntime.run_state.get("rescue_available", false)):
+	var rescue_site := _get_nearest_poi_site(RunWorldGenerator.SITE_DISTRESS, true)
+	if not should_cash_out and not rescue_site.is_empty():
 		if not _station_is_crewed("grapple"):
 			input_state["throttle"] = 0.0
 			input_state["steer"] = 0.0
 			_maybe_request_autobrace(input_state)
 			return
-		var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
-		var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
+		var rescue_position: Vector3 = rescue_site.get("position", Vector3.ZERO)
+		var rescue_radius: float = float(rescue_site.get("radius", 3.4))
 		if boat_position.distance_to(rescue_position) > rescue_radius * 0.8:
 			_apply_drive_to_target(rescue_position + Vector3(0.0, 0.0, -0.8), input_state, 0.52)
 		else:
-			_hold_position_over_target(rescue_position, float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)), input_state)
+			_hold_position_over_target(rescue_position, float(rescue_site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED)), input_state)
 		_maybe_request_autobrace(input_state)
 		return
 
@@ -2400,20 +2664,20 @@ func _apply_driver_detach_test_role(delta: float, input_state: Dictionary) -> vo
 	if local_station_id != "helm":
 		return
 
-	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
-	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
-	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
-	if loot_remaining > 0:
+	var should_cash_out := _should_autorun_cash_out()
+	var salvage_site := _get_nearest_poi_site(RunWorldGenerator.SITE_SALVAGE, true)
+	if not should_cash_out and not salvage_site.is_empty():
 		if not _station_is_crewed("grapple"):
 			input_state["throttle"] = 0.0
 			input_state["steer"] = 0.0
 			_maybe_request_autobrace(input_state)
 			return
-		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
+		var wreck_position: Vector3 = salvage_site.get("position", Vector3.ZERO)
+		var wreck_radius: float = float(salvage_site.get("radius", 4.4))
+		if NetworkRuntime.boat_state.get("position", Vector3.ZERO).distance_to(wreck_position) > wreck_radius * 0.55:
 			_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
 		else:
-			_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
+			_hold_position_over_target(wreck_position, float(salvage_site.get("max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
 		_maybe_request_autobrace(input_state)
 		return
 
@@ -2423,7 +2687,7 @@ func _apply_driver_detach_test_role(delta: float, input_state: Dictionary) -> vo
 		_maybe_request_autobrace(input_state)
 		return
 
-	_apply_drive_to_target(Vector3(0.0, 0.0, 19.2), input_state, 0.84)
+	_apply_coordinated_return_route(input_state)
 	_maybe_request_autobrace(input_state)
 
 func _apply_grapple_role(delta: float, input_state: Dictionary) -> void:
@@ -2435,40 +2699,54 @@ func _apply_grapple_role(delta: float, input_state: Dictionary) -> void:
 	if local_station_id != "grapple":
 		return
 
-	var cache_available := bool(NetworkRuntime.run_state.get("cache_available", false))
-	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	if bool(NetworkRuntime.run_state.get("rescue_available", false)):
-		var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
-		var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
-		if boat_position.distance_to(rescue_position) <= rescue_radius and absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) <= float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)) and action_request_cooldown <= 0.0:
-			input_state["request_grapple"] = true
-			action_request_cooldown = 0.45
-			return
-
-	if cache_available:
-		var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
-		var cache_radius: float = float(NetworkRuntime.run_state.get("cache_radius", 2.9))
-		if boat_position.distance_to(cache_position) <= cache_radius and absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) <= float(NetworkRuntime.run_state.get("cache_max_speed", 1.75)) and action_request_cooldown <= 0.0:
-			input_state["request_grapple"] = true
-			action_request_cooldown = 0.45
-			return
-
-	if int(NetworkRuntime.run_state.get("loot_remaining", 0)) <= 0:
+	if _should_autorun_cash_out():
 		return
 
-	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
-	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
-	if boat_position.distance_to(wreck_position) > wreck_radius:
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var rescue_site := _get_nearest_poi_site(RunWorldGenerator.SITE_DISTRESS, true)
+	if not rescue_site.is_empty():
+		if boat_position.distance_to(rescue_site.get("position", Vector3.ZERO)) <= float(rescue_site.get("radius", 3.4)) and absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) <= float(rescue_site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED)) and action_request_cooldown <= 0.0:
+			input_state["request_grapple"] = true
+			action_request_cooldown = 0.45
+			return
+
+	var cache_site := _get_nearest_poi_site(RunWorldGenerator.SITE_RESUPPLY, true)
+	if not cache_site.is_empty():
+		if boat_position.distance_to(cache_site.get("position", Vector3.ZERO)) <= float(cache_site.get("radius", 2.9)) and absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) <= float(cache_site.get("max_speed", 1.75)) and action_request_cooldown <= 0.0:
+			_request_station_if_needed("grapple", input_state, delta)
+			input_state["request_grapple"] = true
+			action_request_cooldown = 0.45
+			return
+	var salvage_site := _get_nearest_poi_site(RunWorldGenerator.SITE_SALVAGE, true)
+	if salvage_site.is_empty():
+		return
+	if boat_position.distance_to(salvage_site.get("position", Vector3.ZERO)) > float(salvage_site.get("radius", 4.4)):
 		return
 	if float(NetworkRuntime.boat_state.get("brace_timer", 0.0)) <= 0.0:
 		return
-	if absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) > float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
+	if absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) > float(salvage_site.get("max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
 		return
 	if action_request_cooldown > 0.0:
 		return
-
 	input_state["request_grapple"] = true
 	action_request_cooldown = 0.45
+
+func _should_autorun_cash_out() -> bool:
+	var cargo_count := int(NetworkRuntime.run_state.get("cargo_count", 0))
+	if cargo_count <= 0:
+		return false
+	var revealed_extractions := _get_revealed_extraction_sites()
+	if not revealed_extractions.is_empty():
+		return true
+	var cargo_capacity := int(NetworkRuntime.run_state.get("cargo_capacity", int(NetworkRuntime.boat_state.get("cargo_capacity", 1))))
+	var cargo_target := 1 if revealed_extractions.is_empty() else mini(2, cargo_capacity)
+	if cargo_count >= cargo_target:
+		return true
+	if int(NetworkRuntime.run_state.get("repair_supplies", 0)) <= 1:
+		return true
+	var hull_integrity := float(NetworkRuntime.boat_state.get("hull_integrity", NetworkRuntime.BOAT_MAX_INTEGRITY))
+	var max_hull_integrity := maxf(1.0, float(NetworkRuntime.boat_state.get("max_hull_integrity", hull_integrity)))
+	return hull_integrity / max_hull_integrity <= 0.65
 
 func _apply_brace_role(_delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
@@ -2477,9 +2755,8 @@ func _apply_brace_role(_delta: float, input_state: Dictionary) -> void:
 		return
 
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
-	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
-	var salvage_ready := int(NetworkRuntime.run_state.get("loot_remaining", 0)) > 0 and boat_position.distance_to(wreck_position) <= wreck_radius + 0.55 and absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) <= float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)) + 0.45
+	var salvage_site := _get_nearest_poi_site(RunWorldGenerator.SITE_SALVAGE, true)
+	var salvage_ready := not salvage_site.is_empty() and boat_position.distance_to(salvage_site.get("position", Vector3.ZERO)) <= float(salvage_site.get("radius", 4.4)) + 0.55 and absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) <= float(salvage_site.get("max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)) + 0.45
 	var squall_ready := _boat_inside_any_squall()
 	if not salvage_ready and not squall_ready and not _should_autobrace():
 		return
@@ -2542,26 +2819,19 @@ func _maybe_request_autobrace(input_state: Dictionary, require_launch_override: 
 
 func _apply_coordinated_return_route(input_state: Dictionary) -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
-	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
-	var current_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
-
-	if boat_position.x > -4.8 and boat_position.z < 17.0:
-		_apply_lane_shift(-6.2, input_state)
+	var extraction_site := _get_nearest_extraction_site(true)
+	if extraction_site.is_empty():
+		extraction_site = _get_nearest_extraction_site(false)
+	if extraction_site.is_empty():
+		input_state["throttle"] = 0.0
+		input_state["steer"] = 0.0
 		return
-	if boat_position.z < 24.0:
-		var staging_target := Vector3(-5.1, 0.0, 24.8)
-		_apply_drive_to_target(staging_target, input_state, 0.5)
-		if boat_position.distance_to(staging_target) < 1.6 and current_speed < 0.32:
-			input_state["throttle"] = maxf(float(input_state.get("throttle", 0.0)), 0.18)
-		return
+	var extraction_position: Vector3 = extraction_site.get("position", Vector3.ZERO)
+	var extraction_radius: float = float(extraction_site.get("radius", 3.7))
 	if boat_position.distance_to(extraction_position) <= extraction_radius + 0.6:
 		_hold_position_over_target(extraction_position, NetworkRuntime.EXTRACTION_MAX_SPEED, input_state)
 		return
-
-	var final_target := Vector3(-1.9, 0.0, extraction_position.z - 0.35)
-	var throttle_cap := 0.72 if boat_position.z < extraction_position.z - 4.0 else 0.46
-	_apply_drive_to_target(final_target, input_state, throttle_cap)
+	_apply_drive_to_target(extraction_position, input_state, 1.0)
 
 func _apply_lane_shift(target_x: float, input_state: Dictionary) -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
@@ -2716,31 +2986,106 @@ func _update_loot_visuals() -> void:
 		loot_node.position = base_position + Vector3(0.0, 0.55 + bob_height, 0.0)
 
 func _update_wreck_visual() -> void:
-	if wreck_root == null:
-		return
-
-	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
-	wreck_root.position = wreck_position + Vector3(0.0, sin(connect_time_seconds * 0.72) * 0.06, 0.0)
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
+	for site_variant in _get_poi_sites(RunWorldGenerator.SITE_SALVAGE, false):
+		var site: Dictionary = site_variant
+		var visual: Dictionary = salvage_site_visuals.get(str(site.get("id", "")), {})
+		var root := visual.get("root") as Node3D
+		if root == null:
+			continue
+		root.position = site.get("position", Vector3.ZERO) + Vector3(0.0, sin(connect_time_seconds * 0.72 + float(root.get_index())) * 0.06, 0.0)
+		var in_zone := boat_position.distance_to(site.get("position", Vector3.ZERO)) <= float(site.get("radius", 4.4))
+		var ready_color := Color(0.23, 0.79, 0.57) if in_zone and boat_speed <= float(site.get("max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)) else Color(0.87, 0.56, 0.19)
+		var ring_material := visual.get("ring_material") as StandardMaterial3D
+		var body_material := visual.get("body_material") as StandardMaterial3D
+		var label := visual.get("label") as Label3D
+		if ring_material != null:
+			ring_material.albedo_color = ready_color
+		if body_material != null:
+			body_material.albedo_color = Color(0.38, 0.24, 0.18).lerp(Color(0.58, 0.32, 0.18), 0.18 if in_zone else 0.0)
+		if label != null:
+			label.text = "%s\nLoot %d | Max Speed %.1f" % [
+				str(site.get("label", "Wreck Salvage")),
+				int(site.get("loot_remaining", 0)),
+				float(site.get("max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)),
+			]
+			label.modulate = ready_color.lightened(0.18)
 
 func _update_rescue_visual() -> void:
-	if rescue_root == null or not rescue_root.visible:
-		return
-
-	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
-	rescue_root.position = rescue_position + Vector3(0.0, sin(connect_time_seconds * 1.18) * 0.08, 0.0)
-	if rescue_label != null:
-		rescue_label.visible = true
-	var rescue_light := rescue_root.get_node_or_null("RescueLight") as OmniLight3D
-	if rescue_light != null:
-		var pulse := 1.15 + maxf(0.0, sin(connect_time_seconds * 4.4)) * 0.85
-		rescue_light.light_energy = pulse if bool(NetworkRuntime.run_state.get("rescue_available", false)) else 0.65
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
+	for site_variant in _get_poi_sites(RunWorldGenerator.SITE_DISTRESS, false):
+		var site: Dictionary = site_variant
+		var visual: Dictionary = distress_site_visuals.get(str(site.get("id", "")), {})
+		var root := visual.get("root") as Node3D
+		if root == null:
+			continue
+		root.visible = bool(site.get("available", false)) or bool(site.get("completed", false))
+		root.position = site.get("position", Vector3.ZERO) + Vector3(0.0, sin(connect_time_seconds * 1.18) * 0.08, 0.0)
+		var in_zone := boat_position.distance_to(site.get("position", Vector3.ZERO)) <= float(site.get("radius", 3.4))
+		var ready_color := Color(0.93, 0.72, 0.28)
+		if bool(site.get("completed", false)):
+			ready_color = Color(0.29, 0.82, 0.58)
+		elif bool(site.get("engaged", false)):
+			ready_color = Color(0.95, 0.84, 0.36)
+		elif in_zone and boat_speed <= float(site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED)):
+			ready_color = Color(0.98, 0.86, 0.36)
+		var ring_material := visual.get("ring_material") as StandardMaterial3D
+		var body_material := visual.get("body_material") as StandardMaterial3D
+		var label := visual.get("label") as Label3D
+		if ring_material != null:
+			ring_material.albedo_color = ready_color
+		if body_material != null:
+			body_material.albedo_color = Color(0.56, 0.37, 0.18).lerp(Color(0.93, 0.56, 0.18), 0.7 if bool(site.get("available", false)) else 0.2)
+		if label != null:
+			label.text = "%s\nHold %.1f/%.1fs | Max Speed %.1f" % [
+				str(site.get("label", "Distress Rescue")),
+				float(site.get("progress", 0.0)),
+				float(site.get("duration", 1.0)),
+				float(site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED)),
+			]
+			if bool(site.get("completed", false)):
+				label.text = "%s\nSecured +%d gold | +%d salvage | +%d kit" % [
+					str(site.get("label", "Distress Rescue")),
+					int(site.get("bonus_gold", 0)),
+					int(site.get("bonus_salvage", 0)),
+					int(site.get("patch_kit_bonus", 0)),
+				]
+			label.modulate = ready_color.lightened(0.16)
 
 func _update_cache_visual() -> void:
-	if cache_root == null:
-		return
-
-	var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
-	cache_root.position = cache_position + Vector3(0.0, sin(connect_time_seconds * 1.12 + 0.5) * 0.07, 0.0)
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
+	for site_variant in _get_poi_sites(RunWorldGenerator.SITE_RESUPPLY, false):
+		var site: Dictionary = site_variant
+		var visual: Dictionary = resupply_site_visuals.get(str(site.get("id", "")), {})
+		var root := visual.get("root") as Node3D
+		if root == null:
+			continue
+		root.position = site.get("position", Vector3.ZERO) + Vector3(0.0, sin(connect_time_seconds * 1.12 + 0.5) * 0.07, 0.0)
+		var in_zone := boat_position.distance_to(site.get("position", Vector3.ZERO)) <= float(site.get("radius", NetworkRuntime.RESUPPLY_CACHE_RADIUS))
+		var ready_color := Color(0.21, 0.82, 0.57) if bool(site.get("available", false)) and in_zone and boat_speed <= float(site.get("max_speed", NetworkRuntime.RESUPPLY_CACHE_MAX_SPEED)) else Color(0.23, 0.71, 0.84)
+		if not bool(site.get("available", false)):
+			ready_color = Color(0.44, 0.50, 0.56)
+		var ring_material := visual.get("ring_material") as StandardMaterial3D
+		var body_material := visual.get("body_material") as StandardMaterial3D
+		var label := visual.get("label") as Label3D
+		if ring_material != null:
+			ring_material.albedo_color = ready_color
+		if body_material != null:
+			body_material.albedo_color = Color(0.19, 0.48, 0.58).lerp(Color(0.50, 0.55, 0.60), 1.0 if not bool(site.get("available", false)) else 0.0)
+		if label != null:
+			label.text = "%s\n+%d gold | +%d salvage | +%d patch kit | Max Speed %.1f" % [
+				str(site.get("label", "Resupply Cache")),
+				int(site.get("bonus_gold", NetworkRuntime.RESUPPLY_CACHE_GOLD_BONUS)),
+				int(site.get("bonus_salvage", NetworkRuntime.RESUPPLY_CACHE_SALVAGE_BONUS)),
+				int(site.get("supply_grant", NetworkRuntime.RESUPPLY_CACHE_SUPPLY_GRANT)),
+				float(site.get("max_speed", NetworkRuntime.RESUPPLY_CACHE_MAX_SPEED)),
+			]
+			if not bool(site.get("available", false)):
+				label.text = "%s\nRecovered" % str(site.get("label", "Resupply Cache"))
+			label.modulate = ready_color.lightened(0.18)
 
 func _update_squall_visuals() -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
@@ -2771,8 +3116,36 @@ func _update_squall_visuals() -> void:
 			label.modulate = Color(0.90, 0.97, 1.0) if inside else Color(0.70, 0.84, 0.96)
 
 func _update_extraction_visual(_delta: float) -> void:
-	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
-	extraction_root.position = extraction_position + Vector3(0.0, sin(connect_time_seconds * 0.95) * 0.08, 0.0)
+	var cargo_count := int(NetworkRuntime.run_state.get("cargo_count", 0))
+	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
+	for site_variant in _get_revealed_extraction_sites():
+		var site: Dictionary = site_variant
+		var visual: Dictionary = extraction_site_visuals.get(str(site.get("id", "")), {})
+		var root := visual.get("root") as Node3D
+		if root == null:
+			continue
+		root.position = site.get("position", Vector3.ZERO) + Vector3(0.0, sin(connect_time_seconds * 0.95) * 0.08, 0.0)
+		var can_extract := cargo_count > 0 and _boat_within_extraction_zone(str(site.get("id", ""))) and float(NetworkRuntime.boat_state.get("speed", 0.0)) <= NetworkRuntime.EXTRACTION_MAX_SPEED
+		var extraction_color := EXTRACTION_READY_COLOR if can_extract else EXTRACTION_IDLE_COLOR
+		if phase == "failed":
+			extraction_color = EXTRACTION_FAILED_COLOR
+		elif phase == "success":
+			extraction_color = EXTRACTION_READY_COLOR
+		var ring_material := visual.get("ring_material") as StandardMaterial3D
+		var body_material := visual.get("body_material") as StandardMaterial3D
+		var label := visual.get("label") as Label3D
+		if ring_material != null:
+			ring_material.albedo_color = extraction_color
+		if body_material != null:
+			body_material.albedo_color = extraction_color
+		if label != null:
+			label.text = "%s\nCargo %d | %.1f/%.1fs" % [
+				str(site.get("label", "Extraction")),
+				cargo_count,
+				float(NetworkRuntime.run_state.get("extraction_progress", 0.0)),
+				float(NetworkRuntime.run_state.get("extraction_duration", 1.0)),
+			]
+			label.modulate = extraction_color.lightened(0.18)
 
 func _update_camera(delta: float) -> void:
 	if camera == null:
@@ -2806,10 +3179,19 @@ func _update_boat_material() -> void:
 	var healthy_color := Color(0.44, 0.27, 0.16)
 	hull_material.albedo_color = damaged_color.lerp(healthy_color, health_ratio)
 
-func _boat_within_extraction_zone() -> bool:
+func _boat_within_extraction_zone(site_id: String = "") -> bool:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
-	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
+	var extraction_site := _get_nearest_extraction_site(true)
+	if not site_id.is_empty():
+		for site_variant in _get_revealed_extraction_sites():
+			var site: Dictionary = site_variant
+			if str(site.get("id", "")) == site_id:
+				extraction_site = site
+				break
+	if extraction_site.is_empty():
+		return false
+	var extraction_position: Vector3 = extraction_site.get("position", Vector3.ZERO)
+	var extraction_radius: float = float(extraction_site.get("radius", 3.7))
 	return boat_position.distance_to(extraction_position) <= extraction_radius
 
 func _boat_inside_any_squall() -> bool:
@@ -3053,6 +3435,8 @@ func _on_loot_state_changed(_loot_targets: Array) -> void:
 	_refresh_hud()
 
 func _on_run_state_changed(_state: Dictionary) -> void:
+	if not is_inside_tree():
+		return
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
 	var detached_chunk_count := int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
 	var cargo_lost_to_sea := int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
@@ -3080,7 +3464,9 @@ func _on_run_state_changed(_state: Dictionary) -> void:
 		run_result_recorded = true
 	if phase != "running" and bool(launch_overrides.get("autocontinue_to_dock", false)) and not auto_continue_queued:
 		auto_continue_queued = true
-		get_tree().create_timer(0.5).timeout.connect(_continue_to_dock)
+		var scene_tree := get_tree()
+		if scene_tree != null:
+			scene_tree.create_timer(0.5).timeout.connect(_continue_to_dock)
 	last_hud_detached_chunk_count = detached_chunk_count
 	last_hud_cargo_lost_to_sea = cargo_lost_to_sea
 	last_hud_rescue_completed = rescue_completed
@@ -3115,20 +3501,26 @@ func _build_objective_text() -> String:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
 	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
-	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
-	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	var salvage_site := _get_nearest_poi_site(RunWorldGenerator.SITE_SALVAGE, true)
 	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
 	var rescue_engaged := bool(NetworkRuntime.run_state.get("rescue_engaged", false))
-	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
-	var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
+	var rescue_site := _get_nearest_poi_site(RunWorldGenerator.SITE_DISTRESS, true)
 	if loot_remaining > 0:
+		if salvage_site.is_empty():
+			return "Objective: Hunt the sea for another salvage site."
+		var wreck_position: Vector3 = salvage_site.get("position", Vector3.ZERO)
+		var wreck_radius: float = float(salvage_site.get("radius", 4.4))
 		if boat_position.distance_to(wreck_position) > wreck_radius:
-			return "Objective: Bring the boat into the wreck ring."
+			return "Objective: Bring the boat into the nearest salvage ring."
 		if boat_speed > float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
 			return "Objective: Hold below salvage speed."
 		return "Objective: Brace anywhere on deck and let the grappler recover the remaining wreck loot."
 
 	if rescue_available:
+		if rescue_site.is_empty():
+			return "Objective: Distress signal active. Sweep the nearby sea and decide whether to divert."
+		var rescue_position: Vector3 = rescue_site.get("position", Vector3.ZERO)
+		var rescue_radius: float = float(rescue_site.get("radius", 3.4))
 		if boat_position.distance_to(rescue_position) > rescue_radius:
 			return "Objective: Distress signal spotted. Divert if the crew wants the bonus."
 		if boat_speed > float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)):
@@ -3141,7 +3533,10 @@ func _build_objective_text() -> String:
 		return "Objective: Pass through the cache lane for a quick bonus."
 
 	if int(NetworkRuntime.run_state.get("cargo_count", 0)) > 0:
-		if not _boat_within_extraction_zone():
+		var extraction_site := _get_nearest_extraction_site(true)
+		if extraction_site.is_empty():
+			return "Objective: Search the open sea until an outpost beacon is revealed."
+		if not _boat_within_extraction_zone(str(extraction_site.get("id", ""))):
 			return "Objective: Bring the boat into the extraction ring."
 		if boat_speed > NetworkRuntime.EXTRACTION_MAX_SPEED:
 			return "Objective: Bleed speed and hold steady."
@@ -3168,7 +3563,7 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 		return "Onboarding: Squalls drag the boat and fire surge pulses. Keep speed under control and brace through the slam."
 
 	if int(NetworkRuntime.run_state.get("loot_remaining", 0)) > 0:
-		return "Onboarding: Get inside the wreck ring, slow down, brace from anywhere, and keep the grappler safe."
+		return "Onboarding: Sail to any salvage ring, slow down, brace from anywhere, and keep the grappler safe."
 
 	var repair_target := _find_local_repair_target()
 	if not repair_target.is_empty():
@@ -3178,9 +3573,11 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 		return "Onboarding: Distress rescues are optional. Hold inside the ring long enough to secure the bonus."
 
 	if bool(NetworkRuntime.run_state.get("cache_available", false)):
-		return "Onboarding: The resupply cache is a quick bonus stop if the route still looks safe."
+		return "Onboarding: Resupply caches are quick bonus stops if the route still looks safe."
 
 	if int(NetworkRuntime.run_state.get("cargo_count", 0)) > 0:
+		if _get_revealed_extraction_sites().is_empty():
+			return "Onboarding: Outposts stay hidden until you sail close enough to spot them. Keep scanning the horizon."
 		return "Onboarding: Everything aboard is lost if the boat sinks before extraction. Cash out once risk climbs."
 
 	return "Onboarding: Stay near the helm to steer, or roam the deck and support the crew where it hurts."

@@ -1,5 +1,37 @@
 Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean survival extraction game based on the provided concept prompt, using the develop-web-game skill as reference.
 
+## 2026-03-09 Open-Sea Procedural World Gen V1
+
+- Replaced the old fixed `wreck -> cache/rescue -> extraction` corridor with a bounded server-generated open-sea run layout.
+- Added `systems/worldgen/run_world_generator.gd` to generate deterministic chunk descriptors, biome fields, hazard pressure, POI sites, extraction outposts, and fallback-safe layouts from the run seed.
+- Added generated run-state fields for:
+  - `world_bounds_chunks`
+  - `chunk_size_m`
+  - `spawn_chunk`
+  - `chunk_descriptors`
+  - `poi_sites`
+  - `extraction_sites`
+  - `revealed_extraction_ids`
+  - `active_chunk_coords`
+- Converted runtime content to generated site types:
+  - `salvage_site`
+  - `distress_site`
+  - `resupply_site`
+  - `extraction_outpost`
+- Added hidden extraction discovery so outposts reveal only after the boat sails close enough to the beacon.
+- Added ring-loaded chunk visuals and biome presentation in the run client so nearby ocean chunks, props, hazards, and POI markers stream around the shared boat.
+- Retuned generated collision hazards so the open-sea worlds remain survivable enough for autorun and friends-and-family testing.
+- Fixed a real dock-return teardown bug where a late `run_state_changed` callback could hit the run scene after it had already left the tree.
+- Verified with:
+  - `godot --headless --path . --quit-after 2`
+  - `TEST_HOME="$(mktemp -d /tmp/builtaboat-open-sea-XXXXXX)" HOME="$TEST_HOME" godot --headless --path . --quit-after 15000 -- --name=WorldBot --port=7205 --seed=9191 --autohost --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock --quit-after-connect-ms=90000`
+- Observed result on seed `9191`:
+  - procedural open-sea run launched cleanly
+  - the crew recovered cargo from a generated salvage site
+  - `Outpost 1` stayed hidden until discovery, then revealed correctly
+  - extraction succeeded for `35 gold / 2 salvage`
+  - the client returned to hangar with `Session: phase=hangar` and `Run: phase=hangar`
+
 ## 2026-03-06 Feasibility Notes
 
 - Repo state: empty git repository with no commits and no existing web-game scaffold.

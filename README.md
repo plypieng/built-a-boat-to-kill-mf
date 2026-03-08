@@ -82,6 +82,15 @@ Week 2 reward loop adds:
 - server-validated unlock purchases that immediately update the live shared builder palette
 - shared progression persistence so restarting the server reloads the unlocked parts and upgraded blueprint
 
+Open-sea procedural world gen v1 adds:
+
+- a server-authoritative bounded `16 x 16` chunk ocean per run instead of the old fixed encounter lane
+- deterministic chunk descriptors generated from the run seed, including biome, hazard pressure, richness, and props seeds
+- procedural POI placement for `salvage_site`, `distress_site`, and `resupply_site`
+- one or two procedural extraction outposts near the outer ring of the world, revealed only when the crew sails close enough
+- a chunk render/prop ring so clients only build nearby ocean chunks while the server keeps the full world logical state
+- compatibility bridges so salvage, rescue, cache, extraction, overboard, and boat-damage systems now work against generated sites
+
 ## Local Run
 
 Start the local dedicated server:
@@ -98,7 +107,7 @@ Start a client:
 
 The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `1 / 2 / 3` to switch between `Build`, `Remove`, and `Yard`, `Q / E` to cycle blocks, `R` to rotate, `F` to use the active builder tool, `X` to remove, `Z / C` to browse unlocks, `V` to buy the selected part, `I` to open the shared inventory panel, `Tab` or `H` to toggle the detailed hangar overlay, then press `Launch Run`.
 
-In runs, use mouse aim plus `W A S D` to move on deck or swim in the sea, `1 / 2 / 3 / 4 / 5` to switch between `Helm`, `Brace`, `Grapple`, `Repair`, and `Recover`, `Q / E` to cycle the claimable stations, `F` to use the active tool or claim/release the selected station, `Space` to brace from anywhere on the boat, `G` to fire the grapple while on the crane, `R` to patch nearby damaged hull when you are close enough, and `I` to open the ship inventory panel. If you get knocked overboard, swim to a ladder or stern line marker and press `F` to climb back aboard.
+In runs, the crew now sails a generated bounded open sea. Use mouse aim plus `W A S D` to move on deck or swim in the sea, `1 / 2 / 3 / 4 / 5` to switch between `Helm`, `Brace`, `Grapple`, `Repair`, and `Recover`, `Q / E` to cycle the claimable stations, `F` to use the active tool or claim/release the selected station, `Space` to brace from anywhere on the boat, `G` to fire the grapple while on the crane, `R` to patch nearby damaged hull when you are close enough, and `I` to open the ship inventory panel. If you get knocked overboard, swim to a ladder or stern line marker and press `F` to climb back aboard. Extraction outposts start hidden and reveal when the crew sails within about `60m` of their beacon.
 
 Optional client overrides:
 
@@ -256,6 +265,13 @@ Week 3 layout-variation spot check:
 TEST_HOME="$(mktemp -d /tmp/builtaboat-week3-layout-XXXXXX)"
 HOME="$TEST_HOME" ./tools/run_server.sh --port=7000 --seed=404
 HOME="$TEST_HOME" godot --headless --path . --quit-after 4000 -- --host=127.0.0.1 --port=7000 --name=LayoutBot --autoconnect --autobuild-role=builder_launch --autorun-demo --quit-after-connect-ms=14000
+```
+
+Open-sea procedural worldgen extraction regression:
+
+```bash
+TEST_HOME="$(mktemp -d /tmp/builtaboat-open-sea-XXXXXX)"
+HOME="$TEST_HOME" godot --headless --path . --quit-after 15000 -- --name=WorldBot --port=7205 --seed=9191 --autohost --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock --quit-after-connect-ms=90000
 ```
 
 Week 4 local host-flow smoke:

@@ -1,5 +1,7 @@
 extends Node
 
+const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
+
 signal mode_changed(mode_name: String)
 signal status_changed(message: String)
 signal connection_ready()
@@ -1040,6 +1042,8 @@ func server_step_shared_boat(delta: float) -> void:
 	boat_state["tick"] = int(boat_state.get("tick", 0)) + 1
 	boat_state["driver_peer_id"] = driver_peer_id
 	_update_sinking_chunks(delta)
+	_update_active_chunk_streaming()
+	_process_extraction_reveals()
 
 	if breach_stacks > 0:
 		var leak_damage := HULL_LEAK_DAMAGE_PER_BREACH * float(breach_stacks) * delta
@@ -1959,28 +1963,38 @@ func _reset_run_runtime() -> void:
 			"occupant_peer_id": 0,
 		}
 
-	_initialize_hazards()
-	_initialize_loot()
-	_initialize_run_state(repair_capacity, cargo_capacity, launch_warning_text)
+	_initialize_generated_run_state(repair_capacity, cargo_capacity, launch_warning_text)
 
-func _initialize_hazards() -> void:
-	hazard_state = [
-		_make_hazard(Vector3(2.4, 0.0, 19.5), 1.35, "Debris Cluster"),
-		_make_hazard(Vector3(5.4, 0.0, 31.5), 1.25, "Broken Spar"),
-		_make_hazard(Vector3(-5.5, 0.0, 46.5), 1.4, "Cargo Crate"),
-	]
-
-func _initialize_loot() -> void:
-	loot_state = [
-		_make_loot(Vector3(-1.05, 0.0, 10.25), 1, "Barnacled Locker"),
-		_make_loot(Vector3(1.05, 0.0, 11.15), 1, "Sunken Supply Crate"),
-	]
-
-func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_warning_text: String) -> void:
+func _initialize_generated_run_state(repair_capacity: int, cargo_capacity: int, launch_warning_text: String) -> void:
 	var blueprint_stats := Dictionary(boat_blueprint.get("stats", {}))
-	var seeded_layout := _build_seeded_run_layout()
+	var generated_world := RunWorldGenerator.generate_world(int(run_seed))
+	var poi_sites := _copy_array(generated_world.get("poi_sites", []))
+	var extraction_sites := _copy_array(generated_world.get("extraction_sites", []))
+	var chunk_descriptors := _copy_array(generated_world.get("chunk_descriptors", []))
+	var hazard_fields := _copy_array(generated_world.get("hazard_fields", []))
+	var primary_salvage_site := _find_site_in_array(poi_sites, RunWorldGenerator.SITE_SALVAGE)
+	var primary_distress_site := _find_site_in_array(poi_sites, RunWorldGenerator.SITE_DISTRESS)
+	var primary_resupply_site := _find_site_in_array(poi_sites, RunWorldGenerator.SITE_RESUPPLY)
+	var primary_extraction_site: Dictionary = extraction_sites[0] if not extraction_sites.is_empty() else {}
+
+	hazard_state = _build_generated_hazard_state(chunk_descriptors, poi_sites)
+	loot_state = _build_generated_loot_state(poi_sites)
 	run_state = {
 		"phase": "running",
+		"world_bounds_chunks": _copy_array(generated_world.get("world_bounds_chunks", [RunWorldGenerator.WORLD_SIZE_CHUNKS, RunWorldGenerator.WORLD_SIZE_CHUNKS])),
+		"chunk_size_m": float(generated_world.get("chunk_size_m", RunWorldGenerator.CHUNK_SIZE_M)),
+		"spawn_chunk": _copy_array(generated_world.get("spawn_chunk", [7, 7])),
+		"chunk_descriptors": chunk_descriptors,
+		"active_chunk_coords": [],
+		"stream_radius_chunks": int(generated_world.get("stream_radius_chunks", RunWorldGenerator.STREAM_RADIUS_CHUNKS)),
+		"poi_sites": poi_sites,
+		"extraction_sites": extraction_sites,
+		"revealed_extraction_ids": [],
+		"active_extraction_id": "",
+		"hazard_fields": hazard_fields,
+		"squall_bands": hazard_fields.duplicate(true),
+		"world_label": str(generated_world.get("world_label", "Open Sea")),
+		"layout_label": str(generated_world.get("world_label", "Open Sea")),
 		"cargo_count": 0,
 		"cargo_manifest": [],
 		"secured_manifest": [],
@@ -1988,40 +2002,37 @@ func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_war
 		"loot_collected": 0,
 		"loot_total": loot_state.size(),
 		"loot_remaining": loot_state.size(),
-		"wreck_position": Vector3(0.0, 0.0, 10.6),
-		"wreck_radius": 4.1,
-		"salvage_max_speed": SALVAGE_MAX_SPEED,
-		"layout_label": str(seeded_layout.get("layout_label", "Wreck Push")),
+		"wreck_position": primary_salvage_site.get("position", Vector3.ZERO),
+		"wreck_radius": float(primary_salvage_site.get("radius", 4.4)),
+		"salvage_max_speed": float(primary_salvage_site.get("max_speed", SALVAGE_MAX_SPEED)),
 		"repair_actions": 0,
 		"repair_supplies": repair_capacity,
 		"repair_supplies_max": repair_capacity,
 		"cargo_capacity": cargo_capacity,
-		"rescue_position": seeded_layout.get("rescue_position", Vector3(6.2, 0.0, 18.6)),
-		"rescue_radius": float(seeded_layout.get("rescue_radius", 3.4)),
-		"rescue_max_speed": float(seeded_layout.get("rescue_max_speed", RESCUE_MAX_SPEED)),
-		"rescue_duration": float(seeded_layout.get("rescue_duration", RESCUE_DURATION)),
+		"rescue_position": primary_distress_site.get("position", Vector3.ZERO),
+		"rescue_radius": float(primary_distress_site.get("radius", 3.4)),
+		"rescue_max_speed": float(primary_distress_site.get("max_speed", RESCUE_MAX_SPEED)),
+		"rescue_duration": float(primary_distress_site.get("duration", RESCUE_DURATION)),
 		"rescue_progress": 0.0,
-		"rescue_available": true,
+		"rescue_available": not primary_distress_site.is_empty() and bool(primary_distress_site.get("available", true)),
 		"rescue_engaged": false,
 		"rescue_completed": false,
-		"rescue_label": str(seeded_layout.get("rescue_label", "Distress Rescue")),
-		"rescue_archetype": str(seeded_layout.get("rescue_archetype", "side_lane")),
-		"rescue_bonus_gold": int(seeded_layout.get("rescue_bonus_gold", RESCUE_GOLD_BONUS_MIN)),
-		"rescue_bonus_salvage": int(seeded_layout.get("rescue_bonus_salvage", RESCUE_SALVAGE_BONUS_MIN)),
-		"rescue_patch_kit_bonus": int(seeded_layout.get("rescue_patch_kit_bonus", RESCUE_PATCH_KIT_GRANT)),
-		"cache_position": Vector3(-5.8, 0.0, 24.8),
-		"cache_radius": RESUPPLY_CACHE_RADIUS,
-		"cache_max_speed": RESUPPLY_CACHE_MAX_SPEED,
-		"cache_available": true,
-		"cache_label": "Resupply Cache",
+		"rescue_label": str(primary_distress_site.get("label", "Distress Rescue")),
+		"rescue_bonus_gold": int(primary_distress_site.get("bonus_gold", RESCUE_GOLD_BONUS_MIN)),
+		"rescue_bonus_salvage": int(primary_distress_site.get("bonus_salvage", RESCUE_SALVAGE_BONUS_MIN)),
+		"rescue_patch_kit_bonus": int(primary_distress_site.get("patch_kit_bonus", RESCUE_PATCH_KIT_GRANT)),
+		"cache_position": primary_resupply_site.get("position", Vector3.ZERO),
+		"cache_radius": float(primary_resupply_site.get("radius", RESUPPLY_CACHE_RADIUS)),
+		"cache_max_speed": float(primary_resupply_site.get("max_speed", RESUPPLY_CACHE_MAX_SPEED)),
+		"cache_available": not primary_resupply_site.is_empty() and bool(primary_resupply_site.get("available", true)),
+		"cache_label": str(primary_resupply_site.get("label", "Resupply Cache")),
 		"cache_recovered": false,
-		"squall_bands": Array(seeded_layout.get("squall_bands", [])).duplicate(true),
 		"bonus_gold_bank": 0,
 		"bonus_salvage_bank": 0,
-		"extraction_position": Vector3(0.0, 0.0, 34.0),
-		"extraction_radius": EXTRACTION_RADIUS,
+		"extraction_position": primary_extraction_site.get("position", Vector3.ZERO),
+		"extraction_radius": float(primary_extraction_site.get("radius", EXTRACTION_RADIUS)),
 		"extraction_progress": 0.0,
-		"extraction_duration": EXTRACTION_DURATION,
+		"extraction_duration": float(primary_extraction_site.get("duration", EXTRACTION_DURATION)),
 		"reward_gold": 0,
 		"reward_salvage": 0,
 		"result_title": "",
@@ -2037,87 +2048,262 @@ func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_war
 		"recoveries_completed": 0,
 		"launch_loose_chunks": int(blueprint_stats.get("loose_blocks", 0)),
 	}
+	boat_state["position"] = generated_world.get("spawn_position", Vector3.ZERO)
 	_initialize_runtime_boat_from_blueprint()
+	_sync_generated_world_runtime_metrics()
+	_update_active_chunk_streaming(true)
 
-func _build_seeded_run_layout() -> Dictionary:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = int(run_seed) * 131 + 17
-	var rescue_archetypes := [
-		{
-			"id": "left_detour",
-			"position": Vector3(-6.4, 0.0, 18.8),
-			"label": "Distress Flare",
-		},
-		{
-			"id": "right_detour",
-			"position": Vector3(6.3, 0.0, 18.4),
-			"label": "Rescue Beacon",
-		},
-		{
-			"id": "post_wreck_lane",
-			"position": Vector3(4.6, 0.0, 24.2),
-			"label": "Broken Skiff",
-		},
-	]
-	var rescue_archetype: Dictionary = rescue_archetypes[int(rng.randi() % rescue_archetypes.size())]
-	var rescue_position: Vector3 = rescue_archetype.get("position", Vector3(6.2, 0.0, 18.6))
-	var rescue_radius := rng.randf_range(3.15, 3.8)
-	var rescue_duration := rng.randf_range(1.55, 2.15)
-	var rescue_bonus_gold := rng.randi_range(RESCUE_GOLD_BONUS_MIN, RESCUE_GOLD_BONUS_MAX)
-	var rescue_bonus_salvage := rng.randi_range(RESCUE_SALVAGE_BONUS_MIN, RESCUE_SALVAGE_BONUS_MAX)
-	var squall_bands: Array = []
-	var first_half_width := rng.randf_range(4.1, 5.2)
-	var first_half_depth := rng.randf_range(2.2, 3.1)
-	squall_bands.append(_make_squall_band(
-		1,
-		Vector3(clampf(rescue_position.x * 0.45, -3.2, 3.2), 0.0, rescue_position.z + rng.randf_range(-1.6, 1.2)),
-		Vector3(first_half_width, 0.0, first_half_depth),
-		"Squall Front",
-		rng.randf_range(SQUALL_DRAG_MIN, SQUALL_DRAG_MAX),
-		rng.randf_range(SQUALL_PULSE_INTERVAL_MIN, SQUALL_PULSE_INTERVAL_MAX),
-		rng.randf_range(SQUALL_PULSE_DAMAGE_MIN, SQUALL_PULSE_DAMAGE_MAX)
-	))
-	if bool(rng.randi() % 2):
-		squall_bands.append(_make_squall_band(
-			2,
-			Vector3(rng.randf_range(-2.4, 2.4), 0.0, rng.randf_range(27.5, 30.8)),
-			Vector3(rng.randf_range(4.0, 5.0), 0.0, rng.randf_range(2.1, 2.8)),
-			"Rear Squall",
-			rng.randf_range(SQUALL_DRAG_MIN, SQUALL_DRAG_MAX),
-			rng.randf_range(SQUALL_PULSE_INTERVAL_MIN, SQUALL_PULSE_INTERVAL_MAX),
-			rng.randf_range(SQUALL_PULSE_DAMAGE_MIN, SQUALL_PULSE_DAMAGE_MAX)
+func _build_generated_hazard_state(chunk_descriptors: Array, poi_sites: Array) -> Array:
+	var hazards: Array = []
+	var occupied_coords := {}
+	for site_variant in poi_sites:
+		var site: Dictionary = site_variant
+		occupied_coords[_coord_key(site.get("coord", [0, 0]))] = true
+	for descriptor_variant in chunk_descriptors:
+		var descriptor: Dictionary = descriptor_variant
+		if bool(descriptor.get("is_border_chunk", false)):
+			continue
+		if occupied_coords.has(_coord_key(descriptor.get("coord", [0, 0]))):
+			continue
+		var hazard_level := float(descriptor.get("hazard_level", 0.0))
+		if hazard_level < 0.56:
+			continue
+		if int(descriptor.get("props_seed", 0)) % 7 != 0:
+			continue
+		var center: Vector3 = descriptor.get("world_center", Vector3.ZERO)
+		var biome_id := str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN))
+		var label := "Debris Cluster"
+		if biome_id == RunWorldGenerator.BIOME_REEF_WATERS:
+			label = "Reef Teeth"
+		elif biome_id == RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			label = "Broken Spar"
+		elif biome_id == RunWorldGenerator.BIOME_STORM_BELT:
+			label = "Storm Debris"
+		hazards.append(_make_hazard(
+			center + Vector3(
+				sin(float(int(descriptor.get("props_seed", 0)) % 360)) * 4.2,
+				0.0,
+				cos(float(int(descriptor.get("props_seed", 0)) % 360)) * 3.6
+			),
+			lerpf(1.05, 1.6, clampf((hazard_level - 0.48) / 0.52, 0.0, 1.0)),
+			label,
+			{
+				"chunk_coord": _copy_coord_array(descriptor.get("coord", [0, 0])),
+				"home_position": center,
+			}
 		))
+	return hazards
 
-	var layout_label := "%s + %d squall band%s" % [
-		str(rescue_archetype.get("id", "rescue")).replace("_", " ").capitalize(),
-		squall_bands.size(),
-		"" if squall_bands.size() == 1 else "s",
+func _build_generated_loot_state(poi_sites: Array) -> Array:
+	var generated_loot: Array = []
+	for site_variant in poi_sites:
+		var site: Dictionary = site_variant
+		if str(site.get("site_type", "")) != RunWorldGenerator.SITE_SALVAGE:
+			continue
+		var loot_count := maxi(1, int(site.get("loot_count", 1)))
+		var site_id := str(site.get("id", "salvage"))
+		var site_label := str(site.get("label", "Wreck Salvage"))
+		var site_position: Vector3 = site.get("position", Vector3.ZERO)
+		for loot_index in range(loot_count):
+			var angle := float((site_id.hash() + loot_index * 97) % 360)
+			var offset := Vector3(sin(deg_to_rad(angle)) * 1.25, 0.0, cos(deg_to_rad(angle)) * 1.15)
+			generated_loot.append(_make_loot(
+				site_position + offset,
+				1,
+				"%s Cargo %d" % [site_label, loot_index + 1],
+				true,
+				{
+					"site_id": site_id,
+					"site_type": RunWorldGenerator.SITE_SALVAGE,
+					"site_label": site_label,
+					"chunk_coord": _copy_coord_array(site.get("coord", [0, 0])),
+				}
+			))
+	return generated_loot
+
+func _sync_generated_world_runtime_metrics() -> void:
+	var poi_sites := _copy_array(run_state.get("poi_sites", []))
+	var salvage_position := Vector3.ZERO
+	var rescue_position := Vector3.ZERO
+	var cache_position := Vector3.ZERO
+	var rescue_available := false
+	var rescue_engaged := false
+	var rescue_completed := false
+	var rescue_progress := 0.0
+	var rescue_duration := RESCUE_DURATION
+	var rescue_max_speed := RESCUE_MAX_SPEED
+	var rescue_label := "Distress Rescue"
+	var rescue_bonus_gold := RESCUE_GOLD_BONUS_MIN
+	var rescue_bonus_salvage := RESCUE_SALVAGE_BONUS_MIN
+	var rescue_patch_kit_bonus := RESCUE_PATCH_KIT_GRANT
+	var cache_available := false
+	var cache_recovered := false
+	var cache_label := "Resupply Cache"
+	var cache_radius := RESUPPLY_CACHE_RADIUS
+	var cache_max_speed := RESUPPLY_CACHE_MAX_SPEED
+	for site_index in range(poi_sites.size()):
+		var site: Dictionary = poi_sites[site_index]
+		var site_type := str(site.get("site_type", ""))
+		if site_type == RunWorldGenerator.SITE_SALVAGE:
+			var total_loot := 0
+			var remaining_loot := 0
+			for loot_variant in loot_state:
+				var loot_target: Dictionary = loot_variant
+				if str(loot_target.get("site_id", "")) != str(site.get("id", "")):
+					continue
+				total_loot += 1
+				remaining_loot += 1
+			site["loot_remaining"] = remaining_loot
+			if salvage_position == Vector3.ZERO and remaining_loot > 0:
+				salvage_position = site.get("position", Vector3.ZERO)
+				run_state["wreck_radius"] = float(site.get("radius", 4.4))
+				run_state["salvage_max_speed"] = float(site.get("max_speed", SALVAGE_MAX_SPEED))
+		elif site_type == RunWorldGenerator.SITE_DISTRESS:
+			if bool(site.get("completed", false)):
+				rescue_completed = true
+			if rescue_position == Vector3.ZERO and bool(site.get("available", true)):
+				rescue_position = site.get("position", Vector3.ZERO)
+				rescue_available = bool(site.get("available", true))
+				rescue_engaged = bool(site.get("engaged", false))
+				rescue_progress = float(site.get("progress", 0.0))
+				rescue_duration = float(site.get("duration", RESCUE_DURATION))
+				rescue_max_speed = float(site.get("max_speed", RESCUE_MAX_SPEED))
+				rescue_label = str(site.get("label", "Distress Rescue"))
+				rescue_bonus_gold = int(site.get("bonus_gold", RESCUE_GOLD_BONUS_MIN))
+				rescue_bonus_salvage = int(site.get("bonus_salvage", RESCUE_SALVAGE_BONUS_MIN))
+				rescue_patch_kit_bonus = int(site.get("patch_kit_bonus", RESCUE_PATCH_KIT_GRANT))
+				run_state["rescue_radius"] = float(site.get("radius", 3.4))
+		elif site_type == RunWorldGenerator.SITE_RESUPPLY:
+			if bool(site.get("recovered", false)):
+				cache_recovered = true
+			if cache_position == Vector3.ZERO and bool(site.get("available", true)):
+				cache_position = site.get("position", Vector3.ZERO)
+				cache_available = bool(site.get("available", true))
+				cache_label = str(site.get("label", "Resupply Cache"))
+				cache_radius = float(site.get("radius", RESUPPLY_CACHE_RADIUS))
+				cache_max_speed = float(site.get("max_speed", RESUPPLY_CACHE_MAX_SPEED))
+		poi_sites[site_index] = site
+
+	run_state["poi_sites"] = poi_sites
+	run_state["loot_total"] = loot_state.size()
+	run_state["loot_remaining"] = loot_state.size()
+	run_state["wreck_position"] = salvage_position
+	run_state["rescue_position"] = rescue_position
+	run_state["rescue_available"] = rescue_available
+	run_state["rescue_engaged"] = rescue_engaged
+	run_state["rescue_completed"] = rescue_completed
+	run_state["rescue_progress"] = rescue_progress
+	run_state["rescue_duration"] = rescue_duration
+	run_state["rescue_max_speed"] = rescue_max_speed
+	run_state["rescue_label"] = rescue_label
+	run_state["rescue_bonus_gold"] = rescue_bonus_gold
+	run_state["rescue_bonus_salvage"] = rescue_bonus_salvage
+	run_state["rescue_patch_kit_bonus"] = rescue_patch_kit_bonus
+	run_state["cache_position"] = cache_position
+	run_state["cache_available"] = cache_available
+	run_state["cache_recovered"] = cache_recovered
+	run_state["cache_label"] = cache_label
+	run_state["cache_radius"] = cache_radius
+	run_state["cache_max_speed"] = cache_max_speed
+	run_state["squall_bands"] = _copy_array(run_state.get("hazard_fields", []))
+	var visible_extractions := _get_revealed_extraction_sites()
+	var all_extractions := _copy_array(run_state.get("extraction_sites", []))
+	var primary_extraction: Dictionary = visible_extractions[0] if not visible_extractions.is_empty() else (all_extractions[0] if not all_extractions.is_empty() else {})
+	run_state["extraction_position"] = primary_extraction.get("position", Vector3.ZERO)
+	run_state["extraction_radius"] = float(primary_extraction.get("radius", EXTRACTION_RADIUS))
+	run_state["extraction_duration"] = float(primary_extraction.get("duration", EXTRACTION_DURATION))
+
+func _find_site_in_array(sites: Array, site_type: String) -> Dictionary:
+	for site_variant in sites:
+		var site: Dictionary = site_variant
+		if str(site.get("site_type", "")) == site_type:
+			return site.duplicate(true)
+	return {}
+
+func _coord_key(coord_value: Variant) -> String:
+	var coord := _coord_from_variant(coord_value)
+	return "%d:%d" % [coord.x, coord.y]
+
+func _coord_from_variant(coord_value: Variant) -> Vector2i:
+	if coord_value is Vector2i:
+		return coord_value
+	if coord_value is Vector2:
+		return Vector2i(int(coord_value.x), int(coord_value.y))
+	if coord_value is Array and coord_value.size() >= 2:
+		return Vector2i(int(coord_value[0]), int(coord_value[1]))
+	return Vector2i.ZERO
+
+func _copy_array(value: Variant) -> Array:
+	return value.duplicate(true) if value is Array else []
+
+func _copy_coord_array(coord_value: Variant) -> Array:
+	var coord := _coord_from_variant(coord_value)
+	return [coord.x, coord.y]
+
+func _get_world_bounds_chunks() -> Vector2i:
+	var bounds := _copy_array(run_state.get("world_bounds_chunks", [RunWorldGenerator.WORLD_SIZE_CHUNKS, RunWorldGenerator.WORLD_SIZE_CHUNKS]))
+	if bounds.size() < 2:
+		return Vector2i(RunWorldGenerator.WORLD_SIZE_CHUNKS, RunWorldGenerator.WORLD_SIZE_CHUNKS)
+	return Vector2i(int(bounds[0]), int(bounds[1]))
+
+func _get_chunk_size_m() -> float:
+	return float(run_state.get("chunk_size_m", RunWorldGenerator.CHUNK_SIZE_M))
+
+func get_world_chunk_coord(world_position: Vector3) -> Array:
+	var chunk_size := _get_chunk_size_m()
+	var spawn_chunk := _coord_from_variant(run_state.get("spawn_chunk", [7, 7]))
+	var chunk_x := int(round(world_position.x / chunk_size)) + spawn_chunk.x
+	var chunk_z := int(round(world_position.z / chunk_size)) + spawn_chunk.y
+	var world_bounds := _get_world_bounds_chunks()
+	return [
+		clampi(chunk_x, 0, world_bounds.x - 1),
+		clampi(chunk_z, 0, world_bounds.y - 1),
 	]
-	return {
-		"layout_label": layout_label,
-		"rescue_archetype": str(rescue_archetype.get("id", "side_lane")),
-		"rescue_position": rescue_position,
-		"rescue_radius": rescue_radius,
-		"rescue_duration": rescue_duration,
-		"rescue_max_speed": RESCUE_MAX_SPEED,
-		"rescue_label": str(rescue_archetype.get("label", "Distress Rescue")),
-		"rescue_bonus_gold": rescue_bonus_gold,
-		"rescue_bonus_salvage": rescue_bonus_salvage,
-		"rescue_patch_kit_bonus": RESCUE_PATCH_KIT_GRANT,
-		"squall_bands": squall_bands,
-	}
 
-func _make_squall_band(band_id: int, center: Vector3, half_extents: Vector3, label: String, drag_multiplier: float, pulse_interval: float, pulse_damage: float) -> Dictionary:
-	return {
-		"id": band_id,
-		"center": center,
-		"half_extents": half_extents,
-		"label": label,
-		"drag_multiplier": drag_multiplier,
-		"pulse_interval": pulse_interval,
-		"pulse_timer": pulse_interval * 0.72,
-		"pulse_damage": pulse_damage,
-	}
+func get_chunk_world_center(coord_value: Variant) -> Vector3:
+	return RunWorldGenerator._chunk_center_world_position(coord_value, run_state.get("spawn_chunk", [7, 7]))
+
+func get_chunk_descriptor(coord_value: Variant) -> Dictionary:
+	var target_key := _coord_key(coord_value)
+	for descriptor_variant in _copy_array(run_state.get("chunk_descriptors", [])):
+		var descriptor: Dictionary = descriptor_variant
+		if _coord_key(descriptor.get("coord", [0, 0])) == target_key:
+			return descriptor.duplicate(true)
+	return {}
+
+func _update_active_chunk_streaming(force_broadcast: bool = false) -> void:
+	if str(run_state.get("phase", "running")) not in ["running", "success", "failed"]:
+		return
+	var center_coord := _coord_from_variant(get_world_chunk_coord(boat_state.get("position", Vector3.ZERO)))
+	var radius := int(run_state.get("stream_radius_chunks", RunWorldGenerator.STREAM_RADIUS_CHUNKS))
+	var world_bounds := _get_world_bounds_chunks()
+	var active_coords: Array = []
+	for z in range(center_coord.y - radius, center_coord.y + radius + 1):
+		for x in range(center_coord.x - radius, center_coord.x + radius + 1):
+			if x < 0 or z < 0:
+				continue
+			if x >= world_bounds.x:
+				continue
+			if z >= world_bounds.y:
+				continue
+			active_coords.append([x, z])
+	var previous := _copy_array(run_state.get("active_chunk_coords", []))
+	if not force_broadcast and previous.hash() == active_coords.hash():
+		return
+	run_state["active_chunk_coords"] = active_coords
+	if multiplayer.multiplayer_peer != null and multiplayer.is_server():
+		_broadcast_run_state()
+
+func _get_revealed_extraction_sites() -> Array:
+	var revealed_ids := {}
+	for extraction_id_variant in _copy_array(run_state.get("revealed_extraction_ids", [])):
+		revealed_ids[str(extraction_id_variant)] = true
+	var sites: Array = []
+	for site_variant in _copy_array(run_state.get("extraction_sites", [])):
+		var site: Dictionary = site_variant
+		if revealed_ids.has(str(site.get("id", ""))):
+			sites.append(site.duplicate(true))
+	return sites
 
 func _initialize_runtime_boat_from_blueprint() -> void:
 	var runtime_blocks: Array = []
@@ -2623,6 +2809,7 @@ func _return_to_hangar_session(peer_id: int) -> void:
 		return
 
 	_reset_run_runtime()
+	_clear_run_state_for_hangar()
 	_reset_connected_hangar_avatars()
 	_set_session_phase(SESSION_PHASE_HANGAR)
 	_broadcast_boat_state()
@@ -2633,6 +2820,36 @@ func _return_to_hangar_session(peer_id: int) -> void:
 	_broadcast_run_avatar_state()
 	_broadcast_reaction_state()
 	_set_status("%s returned the crew to the hangar." % _get_peer_name(peer_id))
+
+func _clear_run_state_for_hangar() -> void:
+	hazard_state = []
+	loot_state = []
+	run_avatar_state = {}
+	reaction_state = {}
+	run_state = {
+		"phase": "hangar",
+		"layout_label": "Hangar",
+		"world_label": "Hangar",
+		"active_chunk_coords": [],
+		"poi_sites": [],
+		"extraction_sites": [],
+		"revealed_extraction_ids": [],
+		"cargo_count": 0,
+		"cargo_manifest": [],
+		"secured_manifest": [],
+		"cargo_secured": 0,
+		"loot_collected": 0,
+		"loot_total": 0,
+		"loot_remaining": 0,
+		"repair_actions": 0,
+		"repair_supplies": 0,
+		"repair_supplies_max": 0,
+		"reward_gold": 0,
+		"reward_salvage": 0,
+		"result_title": "",
+		"result_message": "",
+		"failure_reason": "",
+	}
 
 func _unlock_builder_block(peer_id: int, block_type: String) -> void:
 	if not multiplayer.is_server():
@@ -3058,26 +3275,32 @@ func _get_peer_name(peer_id: int) -> String:
 	var peer_data: Dictionary = peer_snapshot.get(peer_id, {})
 	return str(peer_data.get("name", "Peer %d" % peer_id))
 
-func _make_hazard(position: Vector3, radius: float, label: String) -> Dictionary:
+func _make_hazard(position: Vector3, radius: float, label: String, extras: Dictionary = {}) -> Dictionary:
 	var hazard_id: int = _next_hazard_id
 	_next_hazard_id += 1
-	return {
+	var hazard := {
 		"id": hazard_id,
 		"position": position,
 		"radius": radius,
 		"label": label,
 	}
+	for key_variant in extras.keys():
+		hazard[str(key_variant)] = extras[key_variant]
+	return hazard
 
-func _make_loot(position: Vector3, value: int, label: String, requires_brace: bool = true) -> Dictionary:
+func _make_loot(position: Vector3, value: int, label: String, requires_brace: bool = true, extras: Dictionary = {}) -> Dictionary:
 	var loot_id: int = _next_loot_id
 	_next_loot_id += 1
-	return {
+	var loot := {
 		"id": loot_id,
 		"position": position,
 		"value": value,
 		"label": label,
 		"requires_brace": requires_brace,
 	}
+	for key_variant in extras.keys():
+		loot[str(key_variant)] = extras[key_variant]
+	return loot
 
 func _set_driver(peer_id: int, broadcast: bool = true) -> void:
 	if driver_peer_id == peer_id:
@@ -3231,6 +3454,78 @@ func _process_repair(peer_id: int) -> void:
 		int(run_state.get("repair_supplies", 0)),
 	])
 
+func _get_poi_site_index(site_id: String) -> int:
+	var sites := _copy_array(run_state.get("poi_sites", []))
+	for site_index in range(sites.size()):
+		var site: Dictionary = sites[site_index]
+		if str(site.get("id", "")) == site_id:
+			return site_index
+	return -1
+
+func _get_poi_site(site_id: String) -> Dictionary:
+	var site_index := _get_poi_site_index(site_id)
+	if site_index == -1:
+		return {}
+	return Dictionary(_copy_array(run_state.get("poi_sites", []))[site_index]).duplicate(true)
+
+func _store_poi_site(site: Dictionary) -> void:
+	var sites := _copy_array(run_state.get("poi_sites", []))
+	var site_id := str(site.get("id", ""))
+	for site_index in range(sites.size()):
+		var existing_site: Dictionary = sites[site_index]
+		if str(existing_site.get("id", "")) != site_id:
+			continue
+		sites[site_index] = site
+		run_state["poi_sites"] = sites
+		_sync_generated_world_runtime_metrics()
+		return
+
+func _get_extraction_site_index(site_id: String) -> int:
+	var sites := _copy_array(run_state.get("extraction_sites", []))
+	for site_index in range(sites.size()):
+		var site: Dictionary = sites[site_index]
+		if str(site.get("id", "")) == site_id:
+			return site_index
+	return -1
+
+func _find_nearest_active_site(site_type: String, from_position: Vector3, require_available: bool = true) -> Dictionary:
+	var best_site: Dictionary = {}
+	var best_distance := INF
+	for site_variant in _copy_array(run_state.get("poi_sites", [])):
+		var site: Dictionary = site_variant
+		if str(site.get("site_type", "")) != site_type:
+			continue
+		if require_available:
+			if site_type == RunWorldGenerator.SITE_DISTRESS and not bool(site.get("available", false)):
+				continue
+			if site_type == RunWorldGenerator.SITE_RESUPPLY and not bool(site.get("available", false)):
+				continue
+		if site_type == RunWorldGenerator.SITE_SALVAGE and int(site.get("loot_remaining", 0)) <= 0:
+			continue
+		var distance := from_position.distance_to(site.get("position", Vector3.ZERO))
+		if distance >= best_distance:
+			continue
+		best_distance = distance
+		best_site = site.duplicate(true)
+	return best_site
+
+func _find_nearest_extraction_site(from_position: Vector3, revealed_only: bool = true) -> Dictionary:
+	var revealed_lookup := {}
+	for extraction_id_variant in _copy_array(run_state.get("revealed_extraction_ids", [])):
+		revealed_lookup[str(extraction_id_variant)] = true
+	var best_site: Dictionary = {}
+	var best_distance := INF
+	for site_variant in _copy_array(run_state.get("extraction_sites", [])):
+		var site: Dictionary = site_variant
+		if revealed_only and not revealed_lookup.has(str(site.get("id", ""))):
+			continue
+		var distance := from_position.distance_to(site.get("position", Vector3.ZERO))
+		if distance >= best_distance:
+			continue
+		best_distance = distance
+		best_site = site.duplicate(true)
+	return best_site
+
 func _process_grapple(peer_id: int) -> void:
 	if session_phase != SESSION_PHASE_RUN:
 		return
@@ -3250,13 +3545,18 @@ func _process_grapple(peer_id: int) -> void:
 		return
 
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
-	var wreck_position: Vector3 = run_state.get("wreck_position", Vector3.ZERO)
-	var wreck_radius: float = float(run_state.get("wreck_radius", 4.1))
-	if boat_position.distance_to(wreck_position) > wreck_radius:
-		_set_status("Bring the boat into the wreck ring before grappling salvage.")
+	var salvage_site := _find_nearest_active_site(RunWorldGenerator.SITE_SALVAGE, boat_position, false)
+	if salvage_site.is_empty():
+		_set_status("Bring the crew to a salvage site before grappling cargo.")
 		return
-	if absf(float(boat_state.get("speed", 0.0))) > SALVAGE_MAX_SPEED:
-		_set_status("Slow the boat down before attempting wreck salvage.")
+	var salvage_position: Vector3 = salvage_site.get("position", Vector3.ZERO)
+	var salvage_radius: float = float(salvage_site.get("radius", 4.4))
+	var salvage_max_speed: float = float(salvage_site.get("max_speed", SALVAGE_MAX_SPEED))
+	if boat_position.distance_to(salvage_position) > salvage_radius:
+		_set_status("Bring the boat into the salvage ring before grappling cargo.")
+		return
+	if absf(float(boat_state.get("speed", 0.0))) > salvage_max_speed:
+		_set_status("Slow the boat down before attempting salvage.")
 		return
 
 	var grapple_position := _get_station_world_position("grapple")
@@ -3264,6 +3564,8 @@ func _process_grapple(peer_id: int) -> void:
 	var closest_distance := GRAPPLE_RANGE
 	for index in range(loot_state.size()):
 		var loot_target: Dictionary = loot_state[index]
+		if str(loot_target.get("site_id", "")) != str(salvage_site.get("id", "")):
+			continue
 		var loot_position: Vector3 = loot_target.get("position", Vector3.ZERO)
 		var distance := grapple_position.distance_to(loot_position)
 		if distance <= closest_distance:
@@ -3271,6 +3573,7 @@ func _process_grapple(peer_id: int) -> void:
 			closest_index = index
 
 	if closest_index == -1:
+		_set_status("Swing the crane closer to the salvage before grappling.")
 		return
 
 	var loot_target: Dictionary = loot_state[closest_index]
@@ -3287,12 +3590,10 @@ func _process_grapple(peer_id: int) -> void:
 		str(loot_target.get("label", "Recovered Cargo")),
 		cargo_value,
 		"cargo",
-		"Wreck salvage"
+		str(loot_target.get("site_label", "Open Sea Salvage"))
 	)
 	run_state["loot_collected"] = int(run_state.get("loot_collected", 0)) + 1
 	loot_state.remove_at(closest_index)
-	run_state["loot_remaining"] = loot_state.size()
-
 	if requires_brace:
 		boat_state["brace_timer"] = 0.0
 		if was_braced:
@@ -3310,6 +3611,7 @@ func _process_grapple(peer_id: int) -> void:
 			var run_continues := _apply_localized_block_damage(SALVAGE_BACKLASH_DAMAGE, grapple_impact_local, "salvage_backlash")
 			_broadcast_runtime_boat_state()
 			if not run_continues:
+				_sync_generated_world_runtime_metrics()
 				_broadcast_loot_state()
 				_broadcast_run_state()
 				_broadcast_boat_state()
@@ -3326,12 +3628,13 @@ func _process_grapple(peer_id: int) -> void:
 				"grapple"
 			)
 			if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
+				_sync_generated_world_runtime_metrics()
 				_broadcast_loot_state()
 				_broadcast_run_state()
 				_broadcast_boat_state()
 				_resolve_run_failure("The salvage surge tore the hull apart.")
 				return
-
+	_sync_generated_world_runtime_metrics()
 	_broadcast_loot_state()
 	_broadcast_run_state()
 	_broadcast_boat_state()
@@ -3341,111 +3644,112 @@ func _process_grapple(peer_id: int) -> void:
 		_set_status("Grappled %s." % str(loot_target.get("label", "Loot")))
 
 func _process_resupply_cache_grapple() -> bool:
-	if not bool(run_state.get("cache_available", false)):
-		return false
-
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
-	var cache_position: Vector3 = run_state.get("cache_position", Vector3.ZERO)
-	var cache_radius: float = float(run_state.get("cache_radius", RESUPPLY_CACHE_RADIUS))
-	var cache_max_speed: float = float(run_state.get("cache_max_speed", RESUPPLY_CACHE_MAX_SPEED))
+	var cache_site := _find_nearest_active_site(RunWorldGenerator.SITE_RESUPPLY, boat_position)
+	if cache_site.is_empty():
+		return false
+	var cache_position: Vector3 = cache_site.get("position", Vector3.ZERO)
+	var cache_radius: float = float(cache_site.get("radius", RESUPPLY_CACHE_RADIUS))
+	var cache_max_speed: float = float(cache_site.get("max_speed", RESUPPLY_CACHE_MAX_SPEED))
 	if boat_position.distance_to(cache_position) > cache_radius:
 		return false
 	if absf(float(boat_state.get("speed", 0.0))) > cache_max_speed:
 		_set_status("Slow the boat down before attempting cache recovery.")
 		return true
-
 	var grapple_position := _get_station_world_position("grapple")
 	if grapple_position.distance_to(cache_position) > GRAPPLE_RANGE:
 		return false
-
-	run_state["cache_available"] = false
-	run_state["cache_recovered"] = true
+	cache_site["available"] = false
+	cache_site["recovered"] = true
+	_store_poi_site(cache_site)
 	run_state["repair_supplies"] = mini(
 		int(run_state.get("repair_supplies_max", REPAIR_SUPPLIES_MAX)),
-		int(run_state.get("repair_supplies", 0)) + RESUPPLY_CACHE_SUPPLY_GRANT
+		int(run_state.get("repair_supplies", 0)) + int(cache_site.get("supply_grant", RESUPPLY_CACHE_SUPPLY_GRANT))
 	)
-	run_state["bonus_gold_bank"] = int(run_state.get("bonus_gold_bank", 0)) + RESUPPLY_CACHE_GOLD_BONUS
-	run_state["bonus_salvage_bank"] = int(run_state.get("bonus_salvage_bank", 0)) + RESUPPLY_CACHE_SALVAGE_BONUS
+	run_state["bonus_gold_bank"] = int(run_state.get("bonus_gold_bank", 0)) + int(cache_site.get("bonus_gold", RESUPPLY_CACHE_GOLD_BONUS))
+	run_state["bonus_salvage_bank"] = int(run_state.get("bonus_salvage_bank", 0)) + int(cache_site.get("bonus_salvage", RESUPPLY_CACHE_SALVAGE_BONUS))
+	_sync_generated_world_runtime_metrics()
 	_broadcast_run_state()
-	_set_status("Recovered the resupply cache: +%d gold, +%d salvage, +%d patch kit." % [
-		RESUPPLY_CACHE_GOLD_BONUS,
-		RESUPPLY_CACHE_SALVAGE_BONUS,
-		RESUPPLY_CACHE_SUPPLY_GRANT,
+	_set_status("Recovered %s: +%d gold, +%d salvage, +%d patch kit." % [
+		str(cache_site.get("label", "Resupply Cache")),
+		int(cache_site.get("bonus_gold", RESUPPLY_CACHE_GOLD_BONUS)),
+		int(cache_site.get("bonus_salvage", RESUPPLY_CACHE_SALVAGE_BONUS)),
+		int(cache_site.get("supply_grant", RESUPPLY_CACHE_SUPPLY_GRANT)),
 	])
 	return true
 
 func _process_rescue_grapple() -> bool:
-	if not bool(run_state.get("rescue_available", false)):
-		return false
-
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
-	var rescue_position: Vector3 = run_state.get("rescue_position", Vector3.ZERO)
-	var rescue_radius: float = float(run_state.get("rescue_radius", 3.4))
-	var rescue_max_speed: float = float(run_state.get("rescue_max_speed", RESCUE_MAX_SPEED))
+	var rescue_site := _find_nearest_active_site(RunWorldGenerator.SITE_DISTRESS, boat_position)
+	if rescue_site.is_empty():
+		return false
+	var rescue_position: Vector3 = rescue_site.get("position", Vector3.ZERO)
+	var rescue_radius: float = float(rescue_site.get("radius", 3.4))
+	var rescue_max_speed: float = float(rescue_site.get("max_speed", RESCUE_MAX_SPEED))
 	if boat_position.distance_to(rescue_position) > rescue_radius:
 		return false
 	if absf(float(boat_state.get("speed", 0.0))) > rescue_max_speed:
 		_set_status("Slow the boat down before attempting the rescue.")
 		return true
-
 	var grapple_position := _get_station_world_position("grapple")
 	if grapple_position.distance_to(rescue_position) > GRAPPLE_RANGE:
 		return false
-
-	if bool(run_state.get("rescue_engaged", false)):
+	if bool(rescue_site.get("engaged", false)):
 		_set_status("Hold the boat steady while the rescue line stays tight.")
 		return true
-
-	run_state["rescue_engaged"] = true
-	run_state["rescue_progress"] = maxf(float(run_state.get("rescue_progress", 0.0)), 0.08)
+	rescue_site["engaged"] = true
+	rescue_site["progress"] = maxf(float(rescue_site.get("progress", 0.0)), 0.08)
+	_store_poi_site(rescue_site)
 	_broadcast_run_state()
 	_set_status("Rescue line secured. Hold steady until the evac completes.")
 	return true
 
 func _process_rescue_hold(delta: float) -> void:
-	if not bool(run_state.get("rescue_available", false)):
-		return
-	if not bool(run_state.get("rescue_engaged", false)):
-		return
-
-	var rescue_position: Vector3 = run_state.get("rescue_position", Vector3.ZERO)
-	var rescue_radius: float = float(run_state.get("rescue_radius", 3.4))
-	var rescue_max_speed: float = float(run_state.get("rescue_max_speed", RESCUE_MAX_SPEED))
-	var rescue_duration: float = float(run_state.get("rescue_duration", RESCUE_DURATION))
-	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
-	var boat_speed: float = absf(float(boat_state.get("speed", 0.0)))
-	var progress := float(run_state.get("rescue_progress", 0.0))
-	var progress_before := progress
-	if boat_position.distance_to(rescue_position) <= rescue_radius and boat_speed <= rescue_max_speed:
-		progress = minf(rescue_duration, progress + delta)
-	else:
-		progress = maxf(0.0, progress - delta * 1.5)
-
-	run_state["rescue_progress"] = progress
-	if not is_equal_approx(progress_before, progress):
+	var any_updates := false
+	for site_variant in _copy_array(run_state.get("poi_sites", [])):
+		var rescue_site: Dictionary = site_variant
+		if str(rescue_site.get("site_type", "")) != RunWorldGenerator.SITE_DISTRESS:
+			continue
+		if not bool(rescue_site.get("available", false)) or not bool(rescue_site.get("engaged", false)):
+			continue
+		var rescue_position: Vector3 = rescue_site.get("position", Vector3.ZERO)
+		var rescue_radius: float = float(rescue_site.get("radius", 3.4))
+		var rescue_max_speed: float = float(rescue_site.get("max_speed", RESCUE_MAX_SPEED))
+		var rescue_duration: float = float(rescue_site.get("duration", RESCUE_DURATION))
+		var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+		var boat_speed: float = absf(float(boat_state.get("speed", 0.0)))
+		var progress := float(rescue_site.get("progress", 0.0))
+		var progress_before := progress
+		if boat_position.distance_to(rescue_position) <= rescue_radius and boat_speed <= rescue_max_speed:
+			progress = minf(rescue_duration, progress + delta)
+		else:
+			progress = maxf(0.0, progress - delta * 1.5)
+		rescue_site["progress"] = progress
+		if progress >= rescue_duration:
+			rescue_site["available"] = false
+			rescue_site["engaged"] = false
+			rescue_site["completed"] = true
+			run_state["repair_supplies"] = mini(
+				int(run_state.get("repair_supplies_max", REPAIR_SUPPLIES_MAX)),
+				int(run_state.get("repair_supplies", 0)) + int(rescue_site.get("patch_kit_bonus", RESCUE_PATCH_KIT_GRANT))
+			)
+			run_state["bonus_gold_bank"] = int(run_state.get("bonus_gold_bank", 0)) + int(rescue_site.get("bonus_gold", RESCUE_GOLD_BONUS_MIN))
+			run_state["bonus_salvage_bank"] = int(run_state.get("bonus_salvage_bank", 0)) + int(rescue_site.get("bonus_salvage", RESCUE_SALVAGE_BONUS_MIN))
+			_set_status("%s completed: +%d gold, +%d salvage, +%d patch kit." % [
+				str(rescue_site.get("label", "Rescue")),
+				int(rescue_site.get("bonus_gold", RESCUE_GOLD_BONUS_MIN)),
+				int(rescue_site.get("bonus_salvage", RESCUE_SALVAGE_BONUS_MIN)),
+				int(rescue_site.get("patch_kit_bonus", RESCUE_PATCH_KIT_GRANT)),
+			])
+		_store_poi_site(rescue_site)
+		if not is_equal_approx(progress_before, progress) or bool(rescue_site.get("completed", false)):
+			any_updates = true
+	if any_updates:
 		_broadcast_run_state()
-
-	if progress >= rescue_duration:
-		run_state["rescue_available"] = false
-		run_state["rescue_engaged"] = false
-		run_state["rescue_completed"] = true
-		run_state["repair_supplies"] = mini(
-			int(run_state.get("repair_supplies_max", REPAIR_SUPPLIES_MAX)),
-			int(run_state.get("repair_supplies", 0)) + int(run_state.get("rescue_patch_kit_bonus", RESCUE_PATCH_KIT_GRANT))
-		)
-		run_state["bonus_gold_bank"] = int(run_state.get("bonus_gold_bank", 0)) + int(run_state.get("rescue_bonus_gold", RESCUE_GOLD_BONUS_MIN))
-		run_state["bonus_salvage_bank"] = int(run_state.get("bonus_salvage_bank", 0)) + int(run_state.get("rescue_bonus_salvage", RESCUE_SALVAGE_BONUS_MIN))
-		_broadcast_run_state()
-		_set_status("%s completed: +%d gold, +%d salvage, +%d patch kit." % [
-			str(run_state.get("rescue_label", "Rescue")),
-			int(run_state.get("rescue_bonus_gold", RESCUE_GOLD_BONUS_MIN)),
-			int(run_state.get("rescue_bonus_salvage", RESCUE_SALVAGE_BONUS_MIN)),
-			int(run_state.get("rescue_patch_kit_bonus", RESCUE_PATCH_KIT_GRANT)),
-		])
 
 func _get_active_squall_drag_multiplier(position: Vector3) -> float:
 	var drag_multiplier := 1.0
-	for band_variant in Array(run_state.get("squall_bands", [])):
+	for band_variant in _copy_array(run_state.get("squall_bands", [])):
 		var band: Dictionary = band_variant
 		if not _position_inside_squall(position, band):
 			continue
@@ -3453,7 +3757,7 @@ func _get_active_squall_drag_multiplier(position: Vector3) -> float:
 	return drag_multiplier
 
 func _process_squall_pressure(delta: float) -> void:
-	var bands: Array = Array(run_state.get("squall_bands", [])).duplicate(true)
+	var bands := _copy_array(run_state.get("squall_bands", []))
 	if bands.is_empty():
 		return
 
@@ -3475,6 +3779,7 @@ func _process_squall_pressure(delta: float) -> void:
 
 	if updated_bands:
 		run_state["squall_bands"] = bands
+		run_state["hazard_fields"] = bands.duplicate(true)
 
 func _resolve_squall_pulse(band: Dictionary) -> void:
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
@@ -3568,6 +3873,38 @@ func _process_hazard_collisions() -> void:
 			_resolve_run_failure("Hull destroyed in open water.")
 		return
 
+func _process_extraction_reveals() -> void:
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var revealed_ids := _copy_array(run_state.get("revealed_extraction_ids", []))
+	var revealed_lookup := {}
+	for extraction_id_variant in revealed_ids:
+		revealed_lookup[str(extraction_id_variant)] = true
+	var sites := _copy_array(run_state.get("extraction_sites", []))
+	var changed := false
+	for site_index in range(sites.size()):
+		var site: Dictionary = sites[site_index]
+		var site_id := str(site.get("id", ""))
+		if revealed_lookup.has(site_id):
+			if not bool(site.get("revealed", false)):
+				site["revealed"] = true
+				sites[site_index] = site
+				changed = true
+			continue
+		if boat_position.distance_to(site.get("position", Vector3.ZERO)) > float(site.get("reveal_radius", RunWorldGenerator.EXTRACTION_REVEAL_RADIUS)):
+			continue
+		revealed_ids.append(site_id)
+		revealed_lookup[site_id] = true
+		site["revealed"] = true
+		sites[site_index] = site
+		changed = true
+		_set_status("%s sighted on the horizon. Extraction is now available." % str(site.get("label", "Outpost")))
+	if not changed:
+		return
+	run_state["revealed_extraction_ids"] = revealed_ids
+	run_state["extraction_sites"] = sites
+	_sync_generated_world_runtime_metrics()
+	_broadcast_run_state()
+
 func _process_extraction(delta: float) -> void:
 	if session_phase != SESSION_PHASE_RUN:
 		return
@@ -3578,10 +3915,16 @@ func _process_extraction(delta: float) -> void:
 	var extraction_progress := previous_progress
 	var cargo_count := int(run_state.get("cargo_count", 0))
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
-	var extraction_position: Vector3 = run_state.get("extraction_position", Vector3.ZERO)
-	var extraction_radius: float = float(run_state.get("extraction_radius", EXTRACTION_RADIUS))
 	var boat_speed: float = float(boat_state.get("speed", 0.0))
-	var can_extract := cargo_count > 0 and boat_position.distance_to(extraction_position) <= extraction_radius and boat_speed <= EXTRACTION_MAX_SPEED
+	var active_site := _find_nearest_extraction_site(boat_position, true)
+	var can_extract := false
+	if not active_site.is_empty():
+		var extraction_position: Vector3 = active_site.get("position", Vector3.ZERO)
+		var extraction_radius: float = float(active_site.get("radius", EXTRACTION_RADIUS))
+		can_extract = cargo_count > 0 and boat_position.distance_to(extraction_position) <= extraction_radius and boat_speed <= EXTRACTION_MAX_SPEED
+		run_state["active_extraction_id"] = str(active_site.get("id", ""))
+	else:
+		run_state["active_extraction_id"] = ""
 
 	if can_extract:
 		extraction_progress = minf(float(run_state.get("extraction_duration", EXTRACTION_DURATION)), previous_progress + delta)
@@ -3603,14 +3946,17 @@ func _resolve_run_success() -> void:
 	var cargo_secured := int(run_state.get("cargo_count", 0))
 	var reward_gold := cargo_secured * REWARD_GOLD_PER_CARGO + int(run_state.get("bonus_gold_bank", 0))
 	var reward_salvage := cargo_secured * REWARD_SALVAGE_PER_CARGO + int(run_state.get("bonus_salvage_bank", 0))
+	var extraction_site := _find_nearest_extraction_site(boat_state.get("position", Vector3.ZERO), true)
+	var extraction_label := str(extraction_site.get("label", "the outpost"))
 	run_state["phase"] = "success"
 	run_state["cargo_secured"] = cargo_secured
 	run_state["secured_manifest"] = Array(run_state.get("cargo_manifest", [])).duplicate(true)
 	run_state["reward_gold"] = reward_gold
 	run_state["reward_salvage"] = reward_salvage
 	run_state["result_title"] = "Extraction Successful"
-	run_state["result_message"] = "Secured %d cargo item(s) at the outpost for %d gold and %d salvage." % [
+	run_state["result_message"] = "Secured %d cargo item(s) at %s for %d gold and %d salvage." % [
 		cargo_secured,
+		extraction_label,
 		reward_gold,
 		reward_salvage,
 	]
@@ -3652,15 +3998,14 @@ func _freeze_boat() -> void:
 	_peer_inputs = {}
 
 func _respawn_hazard(index: int) -> void:
-	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
 	var hazard: Dictionary = hazard_state[index]
-	var lane_offset := 0.0
-	if index == 1:
-		lane_offset = -5.5
-	elif index == 2:
-		lane_offset = 5.5
-	var next_position := boat_position + Vector3(lane_offset, 0.0, 28.0 + float(index * 7))
-	hazard["position"] = next_position
+	var home_position: Vector3 = hazard.get("home_position", hazard.get("position", Vector3.ZERO))
+	var jitter_seed := int(hazard.get("id", index + 1)) * 97 + int(boat_state.get("tick", 0))
+	hazard["position"] = home_position + Vector3(
+		sin(float(jitter_seed % 360)) * 3.6,
+		0.0,
+		cos(float((jitter_seed * 3) % 360)) * 3.1
+	)
 	hazard_state[index] = hazard
 
 func _get_station_world_position(station_id: String) -> Vector3:
