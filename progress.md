@@ -782,6 +782,20 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - local hangar capture with `--autohangar-role=bumper_left` at `/tmp/builtaboat-hangar-chase.png`
 - The hangar capture confirms the camera is now sitting behind the avatar instead of sticking to the shared boat framing.
 
+## 2026-03-08 Third-Person Avatar Control Refactor Design
+
+- Approved the full control-model refactor toward one Fortnite-style third-person avatar system across hangar and run.
+- Locked the new control rules:
+  - crosshair-centered camera
+  - avatar always faces aim yaw
+  - free deck movement during runs
+  - soft helm interaction zone
+  - brace usable anywhere on the boat
+  - repair as a proximity action near damaged sections
+  - real overboard state with active recovery
+- Wrote the approved design doc to `docs/plans/2026-03-08-third-person-avatar-control-refactor-design.md`.
+- Wrote the fallback implementation plan to `docs/plans/2026-03-08-third-person-avatar-control-refactor-implementation-plan.md` because the `writing-plans` skill is not available in this session.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
