@@ -41,6 +41,14 @@ func _on_heartbeat_timeout() -> void:
 		int(NetworkRuntime.get_blueprint_stats().get("block_count", 0)),
 		int(NetworkRuntime.get_blueprint_stats().get("loose_blocks", 0)),
 	])
+	var progression_snapshot := NetworkRuntime.get_progression_state()
+	var last_unlock := Dictionary(progression_snapshot.get("last_unlock", {}))
+	print("Progression: gold=%d salvage=%d unlocked=%d lastUnlock=%s" % [
+		int(progression_snapshot.get("total_gold", 0)),
+		int(progression_snapshot.get("total_salvage", 0)),
+		Array(progression_snapshot.get("unlocked_blocks", [])).size(),
+		str(last_unlock.get("label", "None")),
+	])
 	print("Boat: driver=%s pos=%s speed=%.2f/%.2f throttle=%.2f steer=%.2f hp=%.1f breaches=%d brace=%.2f repairCd=%.2f collisions=%d hazards=%d" % [
 		NetworkRuntime.get_driver_name(),
 		str(boat_position),

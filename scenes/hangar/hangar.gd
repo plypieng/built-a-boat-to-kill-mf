@@ -35,9 +35,11 @@ var builder_label: Label
 var warning_label: Label
 var roster_label: Label
 var profile_label: Label
+var store_label: Label
 var controls_label: Label
 var last_run_label: Label
 var launch_button: Button
+var unlock_button: Button
 var crosshair_label: Label
 var dock_body: StaticBody3D
 var boat_root: Node3D
@@ -69,6 +71,7 @@ var reaction_visual_state: Dictionary = {}
 var local_reaction_impulse := Vector3.ZERO
 var local_camera_jolt := Vector3.ZERO
 var last_local_reaction_id := 0
+var selected_store_index := 0
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -84,6 +87,7 @@ func _ready() -> void:
 	NetworkRuntime.hangar_avatar_state_changed.connect(_on_hangar_avatar_state_changed)
 	NetworkRuntime.reaction_state_changed.connect(_on_reaction_state_changed)
 	NetworkRuntime.boat_blueprint_changed.connect(_on_boat_blueprint_changed)
+	NetworkRuntime.progression_state_changed.connect(_on_progression_state_changed)
 	NetworkRuntime.session_phase_changed.connect(_on_session_phase_changed)
 	DockState.profile_changed.connect(_on_profile_changed)
 	reaction_visual_state = NetworkRuntime.get_reaction_state()
@@ -124,6 +128,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cycle_block(-1)
 		KEY_E:
 			_cycle_block(1)
+		KEY_Z:
+			_cycle_store_selection(-1)
+		KEY_C:
+			_cycle_store_selection(1)
+		KEY_V:
+			_purchase_selected_unlock()
 		KEY_R:
 			_rotate_selected_block()
 		KEY_F:
@@ -492,6 +502,15 @@ func _build_hud() -> void:
 	profile_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	right_layout.add_child(profile_label)
 
+	store_label = Label.new()
+	store_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	right_layout.add_child(store_label)
+
+	unlock_button = Button.new()
+	unlock_button.text = "Unlock Part"
+	unlock_button.pressed.connect(_purchase_selected_unlock)
+	right_layout.add_child(unlock_button)
+
 	roster_label = Label.new()
 	roster_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	right_layout.add_child(roster_label)
@@ -691,18 +710,59 @@ func _refresh_hud() -> void:
 	launch_button.text = str(readiness_snapshot.get("button_text", "Launch Run"))
 	launch_button.tooltip_text = "\n".join(warning_lines)
 
-	var total_runs := DockState.get_total_runs()
-	var successful_runs := DockState.get_successful_runs()
+	var progression_snapshot := _get_progression_snapshot()
+	var total_runs := int(progression_snapshot.get("total_runs", 0))
+	var successful_runs := int(progression_snapshot.get("successful_runs", 0))
 	var extraction_rate := 0.0
 	if total_runs > 0:
 		extraction_rate = float(successful_runs) / float(total_runs) * 100.0
-	profile_label.text = "Dock Totals\nGold %d | Salvage %d | Runs %d | Extracted %d (%.0f%%)" % [
-		DockState.get_total_gold(),
-		DockState.get_total_salvage(),
+	var unlocked_blocks := Array(progression_snapshot.get("unlocked_blocks", []))
+	profile_label.text = "Dock Totals\nGold %d | Salvage %d | Runs %d | Extracted %d (%.0f%%)\nUnlocked Parts %d/%d" % [
+		int(progression_snapshot.get("total_gold", 0)),
+		int(progression_snapshot.get("total_salvage", 0)),
 		total_runs,
 		successful_runs,
 		extraction_rate,
+		unlocked_blocks.size(),
+		NetworkRuntime.BUILDER_BLOCK_ORDER.size(),
 	]
+	var store_entries := NetworkRuntime.get_builder_store_entries()
+	if store_entries.is_empty():
+		store_label.text = "Unlock Yard\nAll prototype parts are already available."
+		if unlock_button != null:
+			unlock_button.disabled = true
+			unlock_button.text = "All Parts Unlocked"
+	else:
+		selected_store_index = wrapi(selected_store_index, 0, store_entries.size())
+		var selected_store_entry: Dictionary = store_entries[selected_store_index]
+		var store_lines := PackedStringArray()
+		for store_index in range(store_entries.size()):
+			var store_entry: Dictionary = store_entries[store_index]
+			var prefix := ">" if store_index == selected_store_index else " "
+			var entry_label := str(store_entry.get("label", "Part"))
+			var entry_status := "Unlocked"
+			if not bool(store_entry.get("unlocked", false)):
+				entry_status = "Ready" if bool(store_entry.get("affordable", false)) else "Locked"
+			store_lines.append("%s %s - %s (%dg/%ds)" % [
+				prefix,
+				entry_label,
+				entry_status,
+				int(store_entry.get("unlock_cost_gold", 0)),
+				int(store_entry.get("unlock_cost_salvage", 0)),
+			])
+
+		store_label.text = "Unlock Yard\n%s\nSelected %s\n%s\nCost %d gold / %d salvage" % [
+			"\n".join(store_lines),
+			str(selected_store_entry.get("label", "Part")),
+			str(selected_store_entry.get("description", "")),
+			int(selected_store_entry.get("unlock_cost_gold", 0)),
+			int(selected_store_entry.get("unlock_cost_salvage", 0)),
+		]
+		if unlock_button != null:
+			var selected_unlocked := bool(selected_store_entry.get("unlocked", false))
+			var selected_affordable := bool(selected_store_entry.get("affordable", false))
+			unlock_button.disabled = NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR or selected_unlocked or not selected_affordable
+			unlock_button.text = "Already Unlocked" if selected_unlocked else "Unlock %s" % str(selected_store_entry.get("label", "Part"))
 
 	var crew_lines := PackedStringArray()
 	var local_position := local_avatar_body.global_position if local_avatar_body != null and is_instance_valid(local_avatar_body) and local_avatar_body.is_inside_tree() else Vector3.ZERO
@@ -725,9 +785,10 @@ func _refresh_hud() -> void:
 		crew_lines.append("No crew connected yet.")
 	roster_label.text = "Crew In Hangar (%d)\n%s" % [NetworkRuntime.get_player_peer_ids().size(), "\n".join(crew_lines)]
 
-	var last_run := DockState.get_last_run()
+	var last_run := Dictionary(progression_snapshot.get("last_run", {}))
+	var last_unlock := Dictionary(progression_snapshot.get("last_unlock", {}))
 	if last_run.is_empty():
-		last_run_label.text = "Last Run\nNo extracted runs recorded locally yet."
+		last_run_label.text = "Last Run\nNo extracted team runs recorded on this host yet."
 	else:
 		last_run_label.text = "Last Run\n%s\nGold %d | Salvage %d | Secured %d | Lost %d | Recorded %s" % [
 			str(last_run.get("title", "Run Complete")),
@@ -737,8 +798,14 @@ func _refresh_hud() -> void:
 			int(last_run.get("cargo_lost", 0)),
 			str(last_run.get("timestamp", "")),
 		]
+	if not last_unlock.is_empty():
+		last_run_label.text += "\nLast Unlock: %s for %d gold / %d salvage" % [
+			str(last_unlock.get("label", "Part")),
+			int(last_unlock.get("cost_gold", 0)),
+			int(last_unlock.get("cost_salvage", 0)),
+		]
 
-	controls_label.text = "Controls\nW A S D move | Space jump\nAim the center crosshair at the boat or dock\nQ / E cycle parts | R rotate | F place | X remove\nGreen ready | Amber occupied | Blue move closer | Red blocked\nHard collisions can knock builders around\nEnter launches the run | Esc returns to connect"
+	controls_label.text = "Controls\nW A S D move | Space jump\nAim the center crosshair at the boat or dock\nQ / E cycle parts | R rotate | F place | X remove\nZ / C cycle unlocks | V purchase selected part\nGreen ready | Amber occupied | Blue move closer | Red blocked\nHard collisions can knock builders around\nEnter launches the run | Esc returns to connect"
 
 func _get_launch_readiness_snapshot(stats: Dictionary, warnings: Array) -> Dictionary:
 	var loose_blocks := int(stats.get("loose_blocks", 0))
@@ -1006,6 +1073,27 @@ func _cycle_block(direction: int) -> void:
 	_refresh_cursor_visual()
 	_refresh_hud()
 
+func _cycle_store_selection(direction: int) -> void:
+	var store_entries := NetworkRuntime.get_builder_store_entries()
+	if store_entries.is_empty():
+		return
+	selected_store_index = wrapi(selected_store_index + direction, 0, store_entries.size())
+	_refresh_hud()
+
+func _purchase_selected_unlock() -> void:
+	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
+		return
+	var store_entries := NetworkRuntime.get_builder_store_entries()
+	if store_entries.is_empty():
+		return
+	selected_store_index = wrapi(selected_store_index, 0, store_entries.size())
+	var selected_store_entry: Dictionary = store_entries[selected_store_index]
+	if bool(selected_store_entry.get("unlocked", false)):
+		return
+	if not bool(selected_store_entry.get("affordable", false)):
+		return
+	NetworkRuntime.request_unlock_builder_block(str(selected_store_entry.get("block_id", "")))
+
 func _rotate_selected_block() -> void:
 	selected_rotation_steps = wrapi(selected_rotation_steps + 1, 0, 4)
 	_refresh_cursor_visual()
@@ -1055,6 +1143,12 @@ func _get_selected_block_id() -> String:
 		return "structure"
 	selected_block_index = wrapi(selected_block_index, 0, block_ids.size())
 	return str(block_ids[selected_block_index])
+
+func _get_progression_snapshot() -> Dictionary:
+	var snapshot := NetworkRuntime.get_progression_state()
+	if snapshot.is_empty():
+		return DockState.get_profile_snapshot()
+	return snapshot
 
 func _cell_to_local_position(cell_value: Variant) -> Vector3:
 	var cell := _normalize_cell(cell_value)
@@ -1367,6 +1461,23 @@ func _initialize_autobuild() -> void:
 				{"type": "place", "cell": [0, 0, 4], "block": "cargo"},
 				{"type": "launch"},
 			]
+		"builder_unlock_reinforced_hull":
+			autobuild_actions = [
+				{"type": "unlock", "block": "reinforced_hull"},
+				{"type": "place", "cell": [2, 0, 0], "block": "reinforced_hull"},
+			]
+		"builder_unlock_twin_engine_launch":
+			autobuild_actions = [
+				{"type": "unlock", "block": "twin_engine"},
+				{"type": "remove", "cell": [0, 0, -1]},
+				{"type": "place", "cell": [0, 0, -1], "block": "twin_engine"},
+				{"type": "launch"},
+			]
+		"builder_unlock_stabilizer":
+			autobuild_actions = [
+				{"type": "unlock", "block": "stabilizer"},
+				{"type": "place", "cell": [1, 1, 0], "block": "stabilizer"},
+			]
 
 func _process_autobuild(delta: float) -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
@@ -1402,6 +1513,8 @@ func _process_autobuild(delta: float) -> void:
 
 func _execute_autobuild_action(action: Dictionary) -> void:
 	match str(action.get("type", "")):
+		"unlock":
+			NetworkRuntime.request_unlock_builder_block(str(action.get("block", "")))
 		"place":
 			var cell := _normalize_cell(action.get("cell", [0, 0, 0]))
 			NetworkRuntime.request_place_blueprint_block(cell, str(action.get("block", "structure")), int(action.get("rotation_steps", 0)))
@@ -1457,6 +1570,9 @@ func _on_session_phase_changed(phase: String) -> void:
 	_refresh_hud()
 
 func _on_profile_changed(_snapshot: Dictionary) -> void:
+	_refresh_hud()
+
+func _on_progression_state_changed(_snapshot: Dictionary) -> void:
 	_refresh_hud()
 
 func _get_local_peer_id() -> int:

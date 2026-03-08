@@ -101,6 +101,7 @@ func _ready() -> void:
 	NetworkRuntime.station_state_changed.connect(_on_station_state_changed)
 	NetworkRuntime.loot_state_changed.connect(_on_loot_state_changed)
 	NetworkRuntime.run_state_changed.connect(_on_run_state_changed)
+	NetworkRuntime.progression_state_changed.connect(_on_progression_state_changed)
 	reaction_visual_state = NetworkRuntime.get_reaction_state()
 
 func _process(delta: float) -> void:
@@ -556,6 +557,7 @@ func _refresh_hud() -> void:
 	var destroyed_block_count := int(NetworkRuntime.run_state.get("destroyed_block_count", 0))
 	var detached_chunk_count := int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
 	var cargo_lost_to_sea := int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
+	var progression_snapshot := _get_progression_snapshot()
 
 	objective_label.text = _build_objective_text()
 	resource_label.text = "Resources: Patch Kits %d/%d | Bonus Bank %d gold / %d salvage | Cargo Lost To Sea %d | Dock %d gold / %d salvage" % [
@@ -564,8 +566,8 @@ func _refresh_hud() -> void:
 		int(NetworkRuntime.run_state.get("bonus_gold_bank", 0)),
 		int(NetworkRuntime.run_state.get("bonus_salvage_bank", 0)),
 		cargo_lost_to_sea,
-		DockState.get_total_gold(),
-		DockState.get_total_salvage(),
+		int(progression_snapshot.get("total_gold", 0)),
+		int(progression_snapshot.get("total_salvage", 0)),
 	]
 	run_label.text = "Phase: %s | Seed: %d | Cargo: %d | Loot Remaining: %d | Blocks: %d active / %d destroyed | Chunks Lost: %d | Breaches: %d | Wreck Dist: %.1f | Extract: %.1f/%.1fs | Dist: %.1f" % [
 		str(NetworkRuntime.run_state.get("phase", "running")),
@@ -1908,7 +1910,6 @@ func _on_run_state_changed(_state: Dictionary) -> void:
 		print("Run phase changed: %s" % phase)
 		last_known_phase = phase
 	if phase != "running" and not run_result_recorded:
-		DockState.record_run_result(NetworkRuntime.run_seed, NetworkRuntime.run_state)
 		run_result_recorded = true
 	if phase != "running" and bool(launch_overrides.get("autocontinue_to_dock", false)) and not auto_continue_queued:
 		auto_continue_queued = true
@@ -1918,6 +1919,15 @@ func _on_run_state_changed(_state: Dictionary) -> void:
 	_refresh_extraction_visual()
 	_refresh_result_overlay()
 	_refresh_hud()
+
+func _on_progression_state_changed(_snapshot: Dictionary) -> void:
+	_refresh_hud()
+
+func _get_progression_snapshot() -> Dictionary:
+	var snapshot := NetworkRuntime.get_progression_state()
+	if snapshot.is_empty():
+		return DockState.get_profile_snapshot()
+	return snapshot
 
 func _build_objective_text() -> String:
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))

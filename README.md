@@ -72,6 +72,16 @@ Milestone C social builder avatars adds:
 - a short-range camera-crosshair build ghost that snaps against the boat and dock in front of the crew
 - authoritative hangar build-range validation so edits now depend on where the builder avatar is standing
 
+Week 2 reward loop adds:
+
+- a shared host/server progression snapshot that tracks team gold, salvage, unlocks, and the latest unlock result
+- a compact hangar unlock yard with three new prototype parts:
+  - `reinforced_hull`
+  - `twin_engine`
+  - `stabilizer`
+- server-validated unlock purchases that immediately update the live shared builder palette
+- shared progression persistence so restarting the server reloads the unlocked parts and upgraded blueprint
+
 ## Local Run
 
 Start the local dedicated server:
@@ -86,7 +96,7 @@ Start a client:
 ./tools/run_client.sh
 ```
 
-The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `Q / E` to cycle blocks, `R` to rotate, `F` to place, `X` to remove, then press `Launch Run`.
+The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `Q / E` to cycle blocks, `R` to rotate, `F` to place, `X` to remove, `Z / C` to browse unlocks, `V` to buy the selected part, then press `Launch Run`.
 
 Optional client overrides:
 
@@ -214,6 +224,15 @@ Headless dock handoff check:
 godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --name=DockVerifier --autoconnect --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock
 ```
 
+Week 2 unlock-loop smoke sequence:
+
+```bash
+TEST_HOME="$(mktemp -d /tmp/builtaboat-week2-XXXXXX)"
+HOME="$TEST_HOME" ./tools/run_server.sh --port=7000 --seed=424242
+HOME="$TEST_HOME" godot --headless --path . --quit-after 6000 -- --host=127.0.0.1 --port=7000 --name=RewardBot --autoconnect --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock --quit-after-connect-ms=24000
+HOME="$TEST_HOME" godot --headless --path . --quit-after 900 -- --host=127.0.0.1 --port=7000 --name=UnlockBot --autoconnect --autobuild-role=builder_unlock_reinforced_hull --quit-after-connect-ms=4200
+```
+
 ## Notes
 
 - For deterministic smoke tests, start the server and all clients with the same temporary `HOME` so the shared boat blueprint starts from a clean save.
@@ -222,12 +241,13 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 - The current client scene now renders deck stations, placeholder crew, wreck salvage, loot, extraction markers, and a result overlay.
 - The current run model includes breach-driven speed loss and hull leakage that can be countered at the repair bench.
 - The current autorun route and hazard layout now support a clean four-role extraction pass with no damage when the crew coordinates correctly.
-- The current run result now banks local gold and salvage into the dock scene after extraction or failure.
+- The current run result now banks shared gold and salvage into the host/server profile after extraction or failure, and the hangar store spends from that shared pool.
 - Repairs are limited by shared patch kits, and the resupply cache can top the team back up once per run while adding bonus rewards.
 - The current connect flow now lands in a shared 3D hangar builder where the crew can edit one live blueprint together before launching.
 - The current hangar now uses a short-range camera-crosshair build ghost tied to the third-person builder avatar, so moving around the boat matters while building.
 - The current shared-builder autobuild helpers now reposition the hangar avatar before placing or removing blocks so automated smoke tests obey the same range rule as manual builders.
 - The current hangar now shows a clearer build-tool panel, placement-state feedback, and launch-readiness summary so the crew can read the boat status faster before launching.
+- The current hangar also shows an unlock yard with shared team totals, selected-part descriptions, and immediate palette updates after server-approved purchases.
 - The current hangar presentation now frames the shared boat more deliberately with an over-shoulder camera, lighter dock dressing, and simplified crew roster text.
 - The current hangar now supports hard builder-to-builder bump reactions, and the new `--autohangar-role=bumper_left|bumper_right` helpers give a repeatable smoke path for that behavior.
 - The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.
@@ -235,6 +255,6 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 - The current reaction system is a lightweight non-ragdoll layer: hard hangar bumps and run impacts briefly interrupt control, add knockback/camera jolt, and let brace reduce the severity of run-side reactions.
 - The current networking model now sends boat motion separately from structural runtime state so large block boats do not overflow the unreliable ENet packet budget during launch.
 - Disconnect cleanup now coalesces network state flushes for a short window so quick multi-client hangar teardowns do not re-trigger the old ENet send error.
-- The current server scene logs heartbeat, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
+- The current server scene logs heartbeat, progression totals, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
 - `--capture-frame-path` and `--capture-frame-delay-ms` let the hangar and run client save a viewport PNG for local visual inspections without relying on OS-level window capture.
 - A manual visual pass confirmed the post-run reward handoff, but also showed that the hangar boat reads too small beneath the current UI and the in-run nameplates/station labels are overcrowded once multiple crew stand on deck.

@@ -548,6 +548,43 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - `stabilizer`
 - Locked progression ownership to the shared host/server profile so the builder palette and unlock flow stay authoritative.
 
+## 2026-03-08 Week 2 Reward Loop Implementation
+
+- Implemented shared progression persistence in `autoload/dock_state.gd`:
+  - added unlocked block ids to the saved host profile
+  - added last-unlock summary persistence
+  - added a server-side unlock purchase helper
+- Implemented authoritative progression runtime in `autoload/network_runtime.gd`:
+  - added replicated progression state for gold, salvage, runs, unlocks, last run, and last unlock
+  - moved reward banking onto the server at run resolution
+  - gated the shared builder palette by unlocked block ids
+  - added a server-validated unlock RPC
+  - added the first unlock catalog:
+    - `reinforced_hull`
+    - `twin_engine`
+    - `stabilizer`
+- Implemented the hangar-side unlock yard in `scenes/hangar/hangar.gd`:
+  - new compact store panel with shared totals, unlock costs, descriptions, and selected-part state
+  - new controls:
+    - `Z / C` cycle unlocks
+    - `V` purchases the selected unlock
+  - added autobuild helpers for unlock-flow smoke coverage
+- Updated `scenes/run_client/run_client.gd` to read shared progression totals from the replicated runtime instead of the old local-only dock profile.
+- Updated `scenes/run_server/run_server.gd` heartbeat logging to include progression totals and latest unlock name.
+- Verified on a fresh temporary `HOME`:
+  - clean server/client boot on ports `7161` and `7162`
+  - one successful autorun extraction banked shared rewards on the host profile
+  - a second headless client unlocked `Reinforced Hull` and placed it into the shared blueprint, advancing the blueprint from `v1` to `v2`
+  - the saved host profile persisted:
+    - unlocked block ids
+    - `last_unlock`
+    - updated gold and salvage totals
+  - restarting the server reloaded the upgraded blueprint and the unlocked part
+  - the upgraded `v2` boat launched and completed another full `hangar -> run -> hangar` loop with:
+    - `max_hull_integrity=142.4`
+    - `active_block_count=6`
+    - `phase=success`
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:

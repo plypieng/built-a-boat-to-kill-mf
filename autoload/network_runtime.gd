@@ -17,6 +17,7 @@ signal hazard_state_changed(hazards: Array)
 signal station_state_changed(stations: Dictionary)
 signal loot_state_changed(loot_targets: Array)
 signal run_state_changed(state: Dictionary)
+signal progression_state_changed(snapshot: Dictionary)
 
 enum Mode {
 	OFFLINE,
@@ -56,10 +57,24 @@ const HANGAR_SPAWN_POINTS := [
 	Vector3(1.2, 0.55, 6.4),
 	Vector3(3.6, 0.55, 6.8),
 ]
-const BUILDER_BLOCK_ORDER := ["core", "hull", "engine", "cargo", "utility", "structure"]
+const BUILDER_BLOCK_ORDER := [
+	"core",
+	"hull",
+	"reinforced_hull",
+	"engine",
+	"twin_engine",
+	"cargo",
+	"utility",
+	"stabilizer",
+	"structure",
+]
 const BUILDER_BLOCK_LIBRARY := {
 	"core": {
 		"label": "Core",
+		"description": "The shared heart of the boat. Losing the main core chunk is a bad day.",
+		"unlockable": false,
+		"unlock_cost_gold": 0,
+		"unlock_cost_salvage": 0,
 		"color": Color(0.84, 0.30, 0.24),
 		"size": Vector3(1.05, 1.05, 1.05),
 		"max_hp": 34.0,
@@ -73,6 +88,10 @@ const BUILDER_BLOCK_LIBRARY := {
 	},
 	"hull": {
 		"label": "Hull",
+		"description": "Basic float support for everyday builds.",
+		"unlockable": false,
+		"unlock_cost_gold": 0,
+		"unlock_cost_salvage": 0,
 		"color": Color(0.54, 0.35, 0.20),
 		"size": Vector3(1.2, 0.8, 1.2),
 		"max_hp": 24.0,
@@ -84,8 +103,29 @@ const BUILDER_BLOCK_LIBRARY := {
 		"brace": 0.03,
 		"hull": 1.0,
 	},
+	"reinforced_hull": {
+		"label": "Reinforced Hull",
+		"description": "Heavier plating for crews that want more hull and buoyancy margin.",
+		"unlockable": true,
+		"unlock_cost_gold": 55,
+		"unlock_cost_salvage": 1,
+		"color": Color(0.42, 0.30, 0.18),
+		"size": Vector3(1.28, 0.9, 1.28),
+		"max_hp": 34.0,
+		"weight": 3.1,
+		"buoyancy": 6.6,
+		"thrust": 0.0,
+		"cargo": 0,
+		"repair": 0,
+		"brace": 0.05,
+		"hull": 1.55,
+	},
 	"engine": {
 		"label": "Engine",
+		"description": "Reliable starter thrust for the main hull.",
+		"unlockable": false,
+		"unlock_cost_gold": 0,
+		"unlock_cost_salvage": 0,
 		"color": Color(0.27, 0.34, 0.38),
 		"size": Vector3(1.0, 0.9, 1.2),
 		"max_hp": 18.0,
@@ -97,8 +137,29 @@ const BUILDER_BLOCK_LIBRARY := {
 		"brace": 0.0,
 		"hull": 0.35,
 	},
+	"twin_engine": {
+		"label": "Twin Engine",
+		"description": "A louder, faster drive block that trades sturdiness for speed.",
+		"unlockable": true,
+		"unlock_cost_gold": 70,
+		"unlock_cost_salvage": 3,
+		"color": Color(0.20, 0.25, 0.29),
+		"size": Vector3(1.18, 0.96, 1.26),
+		"max_hp": 16.0,
+		"weight": 3.3,
+		"buoyancy": 1.6,
+		"thrust": 1.75,
+		"cargo": 0,
+		"repair": 0,
+		"brace": -0.02,
+		"hull": 0.3,
+	},
 	"cargo": {
 		"label": "Cargo",
+		"description": "Adds space for salvage at the cost of extra weight.",
+		"unlockable": false,
+		"unlock_cost_gold": 0,
+		"unlock_cost_salvage": 0,
 		"color": Color(0.82, 0.62, 0.22),
 		"size": Vector3(1.0, 1.0, 1.0),
 		"max_hp": 16.0,
@@ -112,6 +173,10 @@ const BUILDER_BLOCK_LIBRARY := {
 	},
 	"utility": {
 		"label": "Utility",
+		"description": "General-purpose support gear for patch kits and brace help.",
+		"unlockable": false,
+		"unlock_cost_gold": 0,
+		"unlock_cost_salvage": 0,
 		"color": Color(0.24, 0.62, 0.50),
 		"size": Vector3(1.0, 1.0, 1.0),
 		"max_hp": 20.0,
@@ -123,8 +188,29 @@ const BUILDER_BLOCK_LIBRARY := {
 		"brace": 0.18,
 		"hull": 0.5,
 	},
+	"stabilizer": {
+		"label": "Stabilizer",
+		"description": "Support rigging that improves brace strength and repair capacity.",
+		"unlockable": true,
+		"unlock_cost_gold": 62,
+		"unlock_cost_salvage": 2,
+		"color": Color(0.19, 0.52, 0.63),
+		"size": Vector3(1.0, 1.12, 1.0),
+		"max_hp": 24.0,
+		"weight": 1.9,
+		"buoyancy": 2.1,
+		"thrust": 0.0,
+		"cargo": 0,
+		"repair": 2,
+		"brace": 0.34,
+		"hull": 0.62,
+	},
 	"structure": {
 		"label": "Structure",
+		"description": "Cheap scaffold material for shape, walkways, and goofy ideas.",
+		"unlockable": false,
+		"unlock_cost_gold": 0,
+		"unlock_cost_salvage": 0,
 		"color": Color(0.68, 0.74, 0.78),
 		"size": Vector3(1.0, 1.0, 1.0),
 		"max_hp": 14.0,
@@ -206,6 +292,7 @@ var hazard_state: Array = []
 var station_state: Dictionary = {}
 var loot_state: Array = []
 var run_state: Dictionary = {}
+var progression_state: Dictionary = {}
 
 var _peer_inputs: Dictionary = {}
 var _boat_broadcast_accumulator := 0.0
@@ -246,6 +333,7 @@ func start_server(listen_port: int = GameConfig.DEFAULT_PORT, seed: int = GameCo
 			"status": "hosting",
 		},
 	}
+	_reset_progression_runtime()
 	_reset_hangar_avatar_state()
 	_reset_reaction_runtime()
 	_reset_blueprint_runtime()
@@ -285,6 +373,7 @@ func shutdown() -> void:
 	mode = Mode.OFFLINE
 	session_phase = SESSION_PHASE_HANGAR
 	boat_blueprint = _decorate_blueprint(DockState.get_boat_blueprint())
+	progression_state = _decorate_progression_snapshot(DockState.get_profile_snapshot())
 	peer_snapshot = {}
 	hangar_avatar_state = {}
 	reaction_state = {}
@@ -319,12 +408,47 @@ func get_hangar_build_range() -> float:
 	return HANGAR_BUILD_RANGE
 
 func get_builder_block_ids() -> Array:
-	return BUILDER_BLOCK_ORDER.duplicate()
+	var unlocked_lookup := _get_unlocked_block_lookup()
+	var block_ids: Array = []
+	for block_id_variant in BUILDER_BLOCK_ORDER:
+		var block_id := str(block_id_variant)
+		if not unlocked_lookup.has(block_id):
+			continue
+		block_ids.append(block_id)
+	return block_ids
 
 func get_builder_block_definition(block_type: String) -> Dictionary:
 	var block_id := block_type.strip_edges().to_lower()
 	var definition: Dictionary = BUILDER_BLOCK_LIBRARY.get(block_id, BUILDER_BLOCK_LIBRARY["structure"])
 	return definition.duplicate(true)
+
+func get_progression_state() -> Dictionary:
+	return progression_state.duplicate(true)
+
+func get_builder_store_entries() -> Array:
+	var store_entries: Array = []
+	var unlocked_lookup := _get_unlocked_block_lookup()
+	var total_gold := int(progression_state.get("total_gold", 0))
+	var total_salvage := int(progression_state.get("total_salvage", 0))
+	for block_id_variant in BUILDER_BLOCK_ORDER:
+		var block_id := str(block_id_variant)
+		var block_def := get_builder_block_definition(block_id)
+		if not bool(block_def.get("unlockable", false)):
+			continue
+		var unlock_cost_gold := int(block_def.get("unlock_cost_gold", 0))
+		var unlock_cost_salvage := int(block_def.get("unlock_cost_salvage", 0))
+		var unlocked := unlocked_lookup.has(block_id)
+		store_entries.append({
+			"block_id": block_id,
+			"label": str(block_def.get("label", block_id.capitalize())),
+			"description": str(block_def.get("description", "")),
+			"unlock_cost_gold": unlock_cost_gold,
+			"unlock_cost_salvage": unlock_cost_salvage,
+			"unlocked": unlocked,
+			"affordable": unlocked or (total_gold >= unlock_cost_gold and total_salvage >= unlock_cost_salvage),
+			"definition": block_def.duplicate(true),
+		})
+	return store_entries
 
 func get_hangar_avatar_state() -> Dictionary:
 	return hangar_avatar_state.duplicate(true)
@@ -410,6 +534,16 @@ func request_station_release() -> void:
 		return
 
 	server_request_station_release.rpc_id(1)
+
+func request_unlock_builder_block(block_type: String) -> void:
+	var normalized_block_type := block_type.strip_edges().to_lower()
+	if normalized_block_type.is_empty():
+		return
+	if multiplayer.is_server():
+		_unlock_builder_block(multiplayer.get_unique_id(), normalized_block_type)
+		return
+
+	server_request_unlock_builder_block.rpc_id(1, normalized_block_type)
 
 func request_brace() -> void:
 	if multiplayer.is_server():
@@ -570,6 +704,7 @@ func _set_status(message: String) -> void:
 func _emit_all_runtime_state() -> void:
 	emit_signal("session_phase_changed", session_phase)
 	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
+	emit_signal("progression_state_changed", progression_state.duplicate(true))
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
 	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
 	emit_signal("reaction_state_changed", reaction_state.duplicate(true))
@@ -592,6 +727,13 @@ func _broadcast_blueprint_state() -> void:
 		var snapshot := boat_blueprint.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_blueprint_state.rpc_id(int(peer_id), snapshot)
+
+func _broadcast_progression_state() -> void:
+	emit_signal("progression_state_changed", progression_state.duplicate(true))
+	if multiplayer.is_server():
+		var snapshot := progression_state.duplicate(true)
+		for peer_id in _get_server_broadcast_peer_ids():
+			client_receive_progression_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_peer_snapshot() -> void:
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
@@ -661,6 +803,7 @@ func _send_bootstrap(peer_id: int) -> void:
 		return
 
 	client_receive_bootstrap.rpc_id(peer_id, run_seed, current_port, GameConfig.MAX_PLAYERS, session_phase, boat_blueprint.duplicate(true))
+	client_receive_progression_state.rpc_id(peer_id, progression_state.duplicate(true))
 	client_receive_boat_state.rpc_id(peer_id, _build_client_boat_state_snapshot(), driver_peer_id)
 	client_receive_hazard_state.rpc_id(peer_id, hazard_state.duplicate(true))
 	client_receive_station_state.rpc_id(peer_id, station_state.duplicate(true))
@@ -888,6 +1031,9 @@ func _build_peer_pair_key(left_peer: int, right_peer: int) -> String:
 	var low_peer := mini(left_peer, right_peer)
 	var high_peer := maxi(left_peer, right_peer)
 	return "%d:%d" % [low_peer, high_peer]
+
+func _reset_progression_runtime() -> void:
+	progression_state = _decorate_progression_snapshot(DockState.get_profile_snapshot())
 
 func _reset_blueprint_runtime() -> void:
 	boat_blueprint = _decorate_blueprint(DockState.get_boat_blueprint())
@@ -1305,7 +1451,7 @@ func _compute_runtime_stats_for_blocks(blocks: Array) -> Dictionary:
 		total_repair += int(block_def.get("repair", 0))
 		total_brace += float(block_def.get("brace", 0.0))
 		total_hull += float(block_def.get("hull", 0.0))
-		if str(block.get("type", "")) == "engine":
+		if float(block_def.get("thrust", 0.0)) > 0.0:
 			engine_count += 1
 
 	var block_count := blocks.size()
@@ -1503,6 +1649,41 @@ func _return_to_hangar_session(peer_id: int) -> void:
 	_broadcast_reaction_state()
 	_set_status("%s returned the crew to the hangar." % _get_peer_name(peer_id))
 
+func _unlock_builder_block(peer_id: int, block_type: String) -> void:
+	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_HANGAR:
+		return
+	if not BUILDER_BLOCK_LIBRARY.has(block_type):
+		return
+	if _is_block_unlocked(block_type):
+		return
+
+	var block_def := get_builder_block_definition(block_type)
+	if not bool(block_def.get("unlockable", false)):
+		return
+
+	var unlock_cost_gold: int = maxi(0, int(block_def.get("unlock_cost_gold", 0)))
+	var unlock_cost_salvage: int = maxi(0, int(block_def.get("unlock_cost_salvage", 0)))
+	var unlock_result: Dictionary = DockState.unlock_block(
+		block_type,
+		unlock_cost_gold,
+		unlock_cost_salvage,
+		str(block_def.get("label", block_type.capitalize())),
+		str(block_def.get("description", ""))
+	)
+	if unlock_result.is_empty():
+		return
+
+	progression_state = _decorate_progression_snapshot(DockState.get_profile_snapshot())
+	_broadcast_progression_state()
+	_set_status("%s unlocked %s for %d gold and %d salvage." % [
+		_get_peer_name(peer_id),
+		str(block_def.get("label", block_type.capitalize())),
+		unlock_cost_gold,
+		unlock_cost_salvage,
+	])
+
 func _place_blueprint_block(peer_id: int, cell: Array, block_type: String, rotation_steps: int) -> void:
 	if not multiplayer.is_server():
 		return
@@ -1513,6 +1694,8 @@ func _place_blueprint_block(peer_id: int, cell: Array, block_type: String, rotat
 	if not _peer_within_builder_range(peer_id, cell):
 		return
 	if not BUILDER_BLOCK_LIBRARY.has(block_type):
+		return
+	if not _is_block_unlocked(block_type):
 		return
 
 	var persisted := _extract_persisted_blueprint(boat_blueprint)
@@ -1578,6 +1761,63 @@ func _extract_persisted_blueprint(snapshot: Dictionary) -> Dictionary:
 		"next_block_id": int(snapshot.get("next_block_id", 1)),
 		"blocks": Array(snapshot.get("blocks", [])).duplicate(true),
 	}
+
+func _decorate_progression_snapshot(snapshot: Dictionary) -> Dictionary:
+	var normalized := {
+		"total_gold": max(0, int(snapshot.get("total_gold", 0))),
+		"total_salvage": max(0, int(snapshot.get("total_salvage", 0))),
+		"total_runs": max(0, int(snapshot.get("total_runs", 0))),
+		"successful_runs": max(0, int(snapshot.get("successful_runs", 0))),
+		"last_run": {},
+		"last_unlock": {},
+		"unlocked_blocks": [],
+	}
+	var last_run_variant: Variant = snapshot.get("last_run", {})
+	if typeof(last_run_variant) == TYPE_DICTIONARY:
+		normalized["last_run"] = Dictionary(last_run_variant).duplicate(true)
+	var last_unlock_variant: Variant = snapshot.get("last_unlock", {})
+	if typeof(last_unlock_variant) == TYPE_DICTIONARY:
+		normalized["last_unlock"] = Dictionary(last_unlock_variant).duplicate(true)
+
+	var unlocked_lookup := {}
+	for base_block_variant in _get_default_unlocked_block_ids():
+		var base_block_id := str(base_block_variant)
+		unlocked_lookup[base_block_id] = true
+	for block_value in Array(snapshot.get("unlocked_blocks", [])):
+		var block_id := str(block_value).strip_edges().to_lower()
+		if block_id.is_empty() or not BUILDER_BLOCK_LIBRARY.has(block_id):
+			continue
+		unlocked_lookup[block_id] = true
+
+	var ordered_unlocked_blocks: Array = []
+	for block_id_variant in BUILDER_BLOCK_ORDER:
+		var ordered_block_id := str(block_id_variant)
+		if unlocked_lookup.has(ordered_block_id):
+			ordered_unlocked_blocks.append(ordered_block_id)
+	normalized["unlocked_blocks"] = ordered_unlocked_blocks
+	return normalized
+
+func _get_default_unlocked_block_ids() -> Array:
+	var block_ids: Array = []
+	for block_id_variant in BUILDER_BLOCK_ORDER:
+		var block_id := str(block_id_variant)
+		var block_def := Dictionary(BUILDER_BLOCK_LIBRARY.get(block_id, {}))
+		if bool(block_def.get("unlockable", false)):
+			continue
+		block_ids.append(block_id)
+	return block_ids
+
+func _get_unlocked_block_lookup() -> Dictionary:
+	var unlocked_lookup := {}
+	for block_id_variant in Array(progression_state.get("unlocked_blocks", [])):
+		var block_id := str(block_id_variant)
+		if block_id.is_empty():
+			continue
+		unlocked_lookup[block_id] = true
+	return unlocked_lookup
+
+func _is_block_unlocked(block_type: String) -> bool:
+	return _get_unlocked_block_lookup().has(block_type.strip_edges().to_lower())
 
 func _decorate_blueprint(snapshot: Dictionary) -> Dictionary:
 	var normalized := _normalize_blueprint(snapshot)
@@ -1649,6 +1889,7 @@ func _decorate_blueprint(snapshot: Dictionary) -> Dictionary:
 	var total_repair := 0
 	var total_brace := 0.0
 	var total_hull := 0.0
+	var propulsion_count := 0
 	for block_id in main_block_ids:
 		var block: Dictionary = blocks_by_id.get(int(block_id), {})
 		var block_type := str(block.get("type", "structure"))
@@ -1661,9 +1902,11 @@ func _decorate_blueprint(snapshot: Dictionary) -> Dictionary:
 		total_repair += int(block_def.get("repair", 0))
 		total_brace += float(block_def.get("brace", 0.0))
 		total_hull += float(block_def.get("hull", 0.0))
+		if float(block_def.get("thrust", 0.0)) > 0.0:
+			propulsion_count += 1
 
 	var main_block_count := main_block_ids.size()
-	var engine_count := int(block_counts.get("engine", 0))
+	var engine_count := propulsion_count
 	var buoyancy_margin := total_buoyancy - total_weight
 	var top_speed := 4.5 + total_thrust * 3.4 - maxf(0.0, total_weight - total_buoyancy * 0.78) * 0.22
 	if engine_count <= 0:
@@ -2208,8 +2451,10 @@ func _resolve_run_success() -> void:
 		reward_gold,
 		reward_salvage,
 	]
+	_record_shared_run_result()
 	_broadcast_boat_state()
 	_broadcast_run_state()
+	_broadcast_progression_state()
 	_set_status(str(run_state.get("result_message", "")))
 
 func _resolve_run_failure(reason: String) -> void:
@@ -2224,9 +2469,17 @@ func _resolve_run_failure(reason: String) -> void:
 	run_state["failure_reason"] = reason
 	run_state["result_title"] = "Run Failed"
 	run_state["result_message"] = "%s Lost %d cargo item(s)." % [reason, int(run_state.get("cargo_count", 0))]
+	_record_shared_run_result()
 	_broadcast_boat_state()
 	_broadcast_run_state()
+	_broadcast_progression_state()
 	_set_status(str(run_state.get("result_message", "")))
+
+func _record_shared_run_result() -> void:
+	if not multiplayer.is_server():
+		return
+	DockState.record_run_result(run_seed, run_state)
+	progression_state = _decorate_progression_snapshot(DockState.get_profile_snapshot())
 
 func _freeze_boat() -> void:
 	boat_state["speed"] = 0.0
@@ -2396,6 +2649,14 @@ func server_request_remove_blueprint_block(cell: Array) -> void:
 	_remove_blueprint_block(peer_id, cell)
 
 @rpc("any_peer", "call_remote", "reliable")
+func server_request_unlock_builder_block(block_type: String) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_unlock_builder_block(peer_id, block_type.strip_edges().to_lower())
+
+@rpc("any_peer", "call_remote", "reliable")
 func server_request_launch_run() -> void:
 	if not multiplayer.is_server():
 		return
@@ -2462,6 +2723,11 @@ func client_receive_session_phase(phase: String) -> void:
 func client_receive_blueprint_state(snapshot: Dictionary) -> void:
 	boat_blueprint = _decorate_blueprint(snapshot)
 	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
+
+@rpc("authority", "call_remote", "reliable")
+func client_receive_progression_state(snapshot: Dictionary) -> void:
+	progression_state = _decorate_progression_snapshot(snapshot)
+	emit_signal("progression_state_changed", progression_state.duplicate(true))
 
 @rpc("authority", "call_remote", "reliable")
 func client_receive_peer_snapshot(snapshot: Dictionary) -> void:

@@ -5,12 +5,15 @@ signal boat_blueprint_changed(snapshot: Dictionary)
 
 const PROFILE_SAVE_PATH := "user://dock_profile.json"
 const BOAT_BLUEPRINT_SAVE_PATH := "user://shared_boat_blueprint.json"
+const DEFAULT_UNLOCKED_BLOCKS := ["core", "hull", "engine", "cargo", "utility", "structure"]
 const DEFAULT_PROFILE := {
 	"total_gold": 0,
 	"total_salvage": 0,
 	"total_runs": 0,
 	"successful_runs": 0,
 	"last_run": {},
+	"unlocked_blocks": DEFAULT_UNLOCKED_BLOCKS,
+	"last_unlock": {},
 }
 const DEFAULT_BOAT_BLUEPRINT := {
 	"version": 1,
@@ -74,6 +77,12 @@ func get_successful_runs() -> int:
 func get_last_run() -> Dictionary:
 	return Dictionary(profile.get("last_run", {})).duplicate(true)
 
+func get_last_unlock() -> Dictionary:
+	return Dictionary(profile.get("last_unlock", {})).duplicate(true)
+
+func get_unlocked_blocks() -> Array:
+	return Array(profile.get("unlocked_blocks", DEFAULT_UNLOCKED_BLOCKS)).duplicate(true)
+
 func get_boat_blueprint() -> Dictionary:
 	return boat_blueprint.duplicate(true)
 
@@ -110,6 +119,38 @@ func record_run_result(run_seed: int, run_state: Dictionary) -> Dictionary:
 	emit_signal("profile_changed", get_profile_snapshot())
 	return last_run.duplicate(true)
 
+func unlock_block(block_id: String, cost_gold: int, cost_salvage: int, label: String, description: String = "") -> Dictionary:
+	var normalized_block_id := block_id.strip_edges().to_lower()
+	if normalized_block_id.is_empty():
+		return {}
+
+	var unlocked_blocks := _normalize_unlocked_blocks(profile.get("unlocked_blocks", DEFAULT_UNLOCKED_BLOCKS))
+	if unlocked_blocks.has(normalized_block_id):
+		return {}
+
+	var total_gold := int(profile.get("total_gold", 0))
+	var total_salvage := int(profile.get("total_salvage", 0))
+	if total_gold < cost_gold or total_salvage < cost_salvage:
+		return {}
+
+	total_gold -= max(0, cost_gold)
+	total_salvage -= max(0, cost_salvage)
+	unlocked_blocks.append(normalized_block_id)
+	profile["total_gold"] = total_gold
+	profile["total_salvage"] = total_salvage
+	profile["unlocked_blocks"] = _normalize_unlocked_blocks(unlocked_blocks)
+	profile["last_unlock"] = {
+		"block_id": normalized_block_id,
+		"label": label,
+		"description": description,
+		"cost_gold": maxi(0, cost_gold),
+		"cost_salvage": maxi(0, cost_salvage),
+		"timestamp": Time.get_datetime_string_from_system(false, true),
+	}
+	_save_profile()
+	emit_signal("profile_changed", get_profile_snapshot())
+	return Dictionary(profile.get("last_unlock", {})).duplicate(true)
+
 func _load_profile() -> void:
 	profile = DEFAULT_PROFILE.duplicate(true)
 	if not FileAccess.file_exists(PROFILE_SAVE_PATH):
@@ -129,6 +170,9 @@ func _load_profile() -> void:
 
 	if typeof(profile.get("last_run", {})) != TYPE_DICTIONARY:
 		profile["last_run"] = {}
+	if typeof(profile.get("last_unlock", {})) != TYPE_DICTIONARY:
+		profile["last_unlock"] = {}
+	profile["unlocked_blocks"] = _normalize_unlocked_blocks(profile.get("unlocked_blocks", DEFAULT_UNLOCKED_BLOCKS))
 
 	emit_signal("profile_changed", get_profile_snapshot())
 
@@ -229,3 +273,25 @@ func _normalize_cell(cell_value: Variant) -> Array:
 
 func _cell_to_key(cell: Array) -> String:
 	return "%d:%d:%d" % [int(cell[0]), int(cell[1]), int(cell[2])]
+
+func _normalize_unlocked_blocks(block_values: Variant) -> Array:
+	var ordered_blocks: Array = []
+	var seen_blocks := {}
+	for base_block in DEFAULT_UNLOCKED_BLOCKS:
+		var base_block_id := str(base_block).strip_edges().to_lower()
+		if base_block_id.is_empty() or seen_blocks.has(base_block_id):
+			continue
+		ordered_blocks.append(base_block_id)
+		seen_blocks[base_block_id] = true
+
+	if typeof(block_values) != TYPE_ARRAY:
+		return ordered_blocks
+
+	for block_value in block_values:
+		var block_id := str(block_value).strip_edges().to_lower()
+		if block_id.is_empty() or seen_blocks.has(block_id):
+			continue
+		ordered_blocks.append(block_id)
+		seen_blocks[block_id] = true
+
+	return ordered_blocks
