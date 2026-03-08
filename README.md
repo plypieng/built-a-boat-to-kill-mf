@@ -91,6 +91,14 @@ Open-sea procedural world gen v1 adds:
 - a chunk render/prop ring so clients only build nearby ocean chunks while the server keeps the full world logical state
 - compatibility bridges so salvage, rescue, cache, extraction, overboard, and boat-damage systems now work against generated sites
 
+Dangerous sea feel pass adds:
+
+- a real water shader with layered swells, chop, and darker open-ocean coloring
+- boat heave, pitch, and roll sampled from the same sea-state function that drives the water surface
+- stern wake and bow spray visuals that scale with speed, squalls, and rough water
+- colder, heavier biome atmosphere through fog, sky tint, and sun-light tuning
+- chunk-floor and prop visuals pushed down and darkened so the sea reads first and the debug grid stays secondary
+
 ## Local Run
 
 Start the local dedicated server:

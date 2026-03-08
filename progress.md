@@ -1000,3 +1000,16 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - run-path smoke on seed `9191` up through helm, grappling, rescue, squall knockback, overboard recovery, and continued traversal on the live block boat
 - Remaining check:
   - a full end-to-end extraction autorun under the new traversal model is still flaky in the longer headless regression, so a real manual/custom-boat feel pass is still needed before calling this fully signed off
+
+## 2026-03-09 - Dangerous sea feel pass
+
+- Added shader-driven open-sea water in `shaders/open_sea_water.gdshader`
+- Added wake and bow-spray shaders in `shaders/open_sea_wake.gdshader`
+- Updated `scenes/run_client/run_client.gd` so the boat now samples the same sea-state model for bob, pitch, and roll
+- Added speed- and storm-driven wake/spray visuals anchored to the runtime boat
+- Darkened and cooled open-ocean atmosphere so even baseline runs feel more threatening
+- Pushed chunk floor markers deeper and muted their colors so they support navigation without overpowering the sea surface
+- Verified:
+  - `godot --headless --path . --quit-after 2`
+  - visual capture at `/tmp/builtaboat-sea-danger-v2.png`
+  - generated-world end-to-end regression on seed `9191` with successful extraction and clean hangar return

@@ -3,6 +3,8 @@ extends Node3D
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
 const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
+const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
+const OpenSeaWakeShader = preload("res://shaders/open_sea_wake.gdshader")
 const IDLE_CREW_SLOTS := [
 	Vector3(0.0, 0.92, 1.35),
 	Vector3(-1.2, 0.92, 1.05),
@@ -22,6 +24,9 @@ const RUN_AVATAR_ACCELERATION := 15.0
 const RUN_SWIM_MOVE_SPEED := 2.6
 const RUN_SWIM_ACCELERATION := 8.5
 const RUN_AVATAR_SYNC_INTERVAL := 0.05
+const WATER_SURFACE_Y := -0.12
+const WATER_SURFACE_SIZE := 640.0
+const WATER_SURFACE_SUBDIVISIONS := 180
 const HUD_PANEL_BG := Color(0.05, 0.09, 0.13, 0.78)
 const HUD_PANEL_BG_SOFT := Color(0.07, 0.12, 0.17, 0.70)
 const HUD_BORDER_BLUE := Color(0.30, 0.53, 0.66, 0.92)
@@ -60,6 +65,9 @@ var inventory_label: Label
 var footer_label: Label
 var boat_root: Node3D
 var chunk_container: Node3D
+var water_mesh_instance: MeshInstance3D
+var water_shader_material: ShaderMaterial
+var sun_light: DirectionalLight3D
 var hull_mesh_instance: MeshInstance3D
 var hull_material: StandardMaterial3D
 var deck_mesh_instance: MeshInstance3D
@@ -67,6 +75,13 @@ var mast_mesh_instance: MeshInstance3D
 var main_block_container: Node3D
 var sinking_chunk_container: Node3D
 var crew_container: Node3D
+var wake_root: Node3D
+var wake_mesh_instance: MeshInstance3D
+var wake_material: ShaderMaterial
+var bow_spray_left: MeshInstance3D
+var bow_spray_left_material: ShaderMaterial
+var bow_spray_right: MeshInstance3D
+var bow_spray_right_material: ShaderMaterial
 var hazard_container: Node3D
 var squall_container: Node3D
 var station_container: Node3D
@@ -193,6 +208,7 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	connect_time_seconds += delta
 	_tick_reaction_visuals(delta)
+	_update_sea_presentation(delta)
 	_update_boat_visual(delta)
 	_update_runtime_block_visuals()
 	_update_sinking_chunk_visuals(delta)
@@ -306,6 +322,8 @@ func _build_world() -> void:
 	_build_recovery_visuals()
 
 	crew_container = _ensure_child_node3d(boat_root, "CrewContainer")
+	wake_root = _ensure_child_node3d(boat_root, "WakeRoot")
+	_ensure_sea_fx()
 
 	camera = get_node_or_null("RunCamera") as Camera3D
 	if camera == null:
@@ -357,6 +375,231 @@ func _build_static_world_fallback() -> void:
 	water.material_override = water_material
 	fallback_root.add_child(water)
 
+func _ensure_sea_fx() -> void:
+	water_mesh_instance = get_node_or_null("Environment/Water") as MeshInstance3D
+	if water_mesh_instance == null:
+		water_mesh_instance = get_node_or_null("EnvironmentFallback/Water") as MeshInstance3D
+	if water_mesh_instance != null:
+		if water_mesh_instance.mesh is PlaneMesh:
+			var plane_mesh := water_mesh_instance.mesh as PlaneMesh
+			plane_mesh.size = Vector2(WATER_SURFACE_SIZE, WATER_SURFACE_SIZE)
+			plane_mesh.subdivide_width = WATER_SURFACE_SUBDIVISIONS
+			plane_mesh.subdivide_depth = WATER_SURFACE_SUBDIVISIONS
+		water_shader_material = water_mesh_instance.material_override as ShaderMaterial
+		if water_shader_material == null:
+			water_shader_material = ShaderMaterial.new()
+			water_shader_material.shader = OpenSeaWaterShader
+			water_mesh_instance.material_override = water_shader_material
+		elif water_shader_material.shader == null:
+			water_shader_material.shader = OpenSeaWaterShader
+
+	sun_light = get_node_or_null("Environment/SunLight") as DirectionalLight3D
+	if sun_light == null:
+		sun_light = get_node_or_null("EnvironmentFallback/SunLight") as DirectionalLight3D
+
+	if wake_root == null:
+		return
+	wake_mesh_instance = _ensure_wake_plane("WakeTrail", Vector2(1.0, 1.0))
+	wake_material = wake_mesh_instance.material_override as ShaderMaterial
+	bow_spray_left = _ensure_wake_plane("BowSprayLeft", Vector2(1.0, 1.0))
+	bow_spray_left.position = Vector3(-0.9, 0.06, -2.55)
+	bow_spray_right = _ensure_wake_plane("BowSprayRight", Vector2(1.0, 1.0))
+	bow_spray_right.position = Vector3(0.9, 0.06, -2.55)
+	bow_spray_left_material = bow_spray_left.material_override as ShaderMaterial
+	bow_spray_right_material = bow_spray_right.material_override as ShaderMaterial
+
+func _ensure_wake_plane(node_name: String, plane_size: Vector2) -> MeshInstance3D:
+	var plane_node := wake_root.get_node_or_null(node_name) as MeshInstance3D
+	if plane_node != null:
+		return plane_node
+	plane_node = MeshInstance3D.new()
+	plane_node.name = node_name
+	var plane_mesh := PlaneMesh.new()
+	plane_mesh.size = plane_size
+	plane_mesh.subdivide_width = 12
+	plane_mesh.subdivide_depth = 20
+	plane_node.mesh = plane_mesh
+	var material := ShaderMaterial.new()
+	material.shader = OpenSeaWakeShader
+	plane_node.material_override = material
+	wake_root.add_child(plane_node)
+	return plane_node
+
+func _get_biome_sea_profile(biome_id: String) -> Dictionary:
+	match biome_id:
+		RunWorldGenerator.BIOME_REEF_WATERS:
+			return {
+				"wave_amp": 0.18,
+				"wave_speed": 0.92,
+				"chop_strength": 0.24,
+				"cross_weight": 0.28,
+				"background": Color(0.26, 0.58, 0.63),
+				"fog_density": 0.0,
+				"deep_color": Color(0.04, 0.20, 0.25),
+				"shallow_color": Color(0.12, 0.49, 0.46),
+				"foam_color": Color(0.76, 0.93, 0.88),
+				"horizon_color": Color(0.28, 0.54, 0.56),
+				"sun_energy": 0.95,
+				"sun_color": Color(0.96, 0.94, 0.85),
+			}
+		RunWorldGenerator.BIOME_FOG_BANK:
+			return {
+				"wave_amp": 0.21,
+				"wave_speed": 0.84,
+				"chop_strength": 0.14,
+				"cross_weight": 0.24,
+				"background": Color(0.36, 0.42, 0.48),
+				"fog_density": 0.028,
+				"deep_color": Color(0.06, 0.11, 0.15),
+				"shallow_color": Color(0.11, 0.22, 0.28),
+				"foam_color": Color(0.76, 0.82, 0.88),
+				"horizon_color": Color(0.34, 0.40, 0.46),
+				"sun_energy": 0.56,
+				"sun_color": Color(0.82, 0.86, 0.90),
+			}
+		RunWorldGenerator.BIOME_STORM_BELT:
+			return {
+				"wave_amp": 0.42,
+				"wave_speed": 1.18,
+				"chop_strength": 0.52,
+				"cross_weight": 0.44,
+				"background": Color(0.15, 0.19, 0.25),
+				"fog_density": 0.021,
+				"deep_color": Color(0.03, 0.08, 0.12),
+				"shallow_color": Color(0.06, 0.16, 0.21),
+				"foam_color": Color(0.86, 0.92, 0.97),
+				"horizon_color": Color(0.18, 0.25, 0.31),
+				"sun_energy": 0.36,
+				"sun_color": Color(0.60, 0.66, 0.76),
+			}
+		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			return {
+				"wave_amp": 0.30,
+				"wave_speed": 0.98,
+				"chop_strength": 0.26,
+				"cross_weight": 0.31,
+				"background": Color(0.24, 0.29, 0.33),
+				"fog_density": 0.009,
+				"deep_color": Color(0.05, 0.10, 0.12),
+				"shallow_color": Color(0.08, 0.20, 0.20),
+				"foam_color": Color(0.72, 0.82, 0.84),
+				"horizon_color": Color(0.20, 0.26, 0.29),
+				"sun_energy": 0.52,
+				"sun_color": Color(0.78, 0.78, 0.72),
+			}
+		_:
+			return {
+				"wave_amp": 0.28,
+				"wave_speed": 1.02,
+				"chop_strength": 0.24,
+				"cross_weight": 0.26,
+				"background": Color(0.17, 0.23, 0.30),
+				"fog_density": 0.006,
+				"deep_color": Color(0.03, 0.09, 0.13),
+				"shallow_color": Color(0.06, 0.20, 0.27),
+				"foam_color": Color(0.74, 0.86, 0.92),
+				"horizon_color": Color(0.15, 0.25, 0.31),
+				"sun_energy": 0.66,
+				"sun_color": Color(0.80, 0.84, 0.88),
+			}
+
+func _sample_wave_height(world_position: Vector3) -> float:
+	var descriptor := NetworkRuntime.get_chunk_descriptor(NetworkRuntime.get_world_chunk_coord(world_position))
+	var profile := _get_biome_sea_profile(str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN)))
+	var hazard_level := clampf(float(descriptor.get("hazard_level", 0.35)), 0.0, 1.0)
+	var x := world_position.x
+	var z := world_position.z
+	var time := connect_time_seconds
+	var wave_speed := float(profile.get("wave_speed", 1.0))
+	var swell_a := sin(x * 0.046 + time * (0.88 * wave_speed))
+	var swell_b := cos(z * 0.039 - time * (0.74 * wave_speed))
+	var cross := sin((x + z) * 0.026 + time * (0.52 * wave_speed))
+	var chop := sin(x * 0.19 - time * (1.70 * wave_speed)) * cos(z * 0.16 + time * (1.26 * wave_speed))
+	var wave_amplitude := float(profile.get("wave_amp", 0.24)) * (0.88 + hazard_level * 0.72)
+	return (swell_a * 0.55 + swell_b * 0.45 + cross * float(profile.get("cross_weight", 0.26))) * wave_amplitude + chop * wave_amplitude * float(profile.get("chop_strength", 0.18))
+
+func _sample_boat_wave_pose(world_position: Vector3, rotation_y: float) -> Dictionary:
+	var forward := -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
+	var right := Vector3.RIGHT.rotated(Vector3.UP, rotation_y)
+	var bow_sample := _sample_wave_height(world_position + forward * 2.4)
+	var stern_sample := _sample_wave_height(world_position - forward * 2.0)
+	var port_sample := _sample_wave_height(world_position - right * 1.35)
+	var starboard_sample := _sample_wave_height(world_position + right * 1.35)
+	var center_height := _sample_wave_height(world_position)
+	return {
+		"height": center_height,
+		"pitch": clampf(atan2(bow_sample - stern_sample, 4.4), -0.24, 0.24),
+		"roll": clampf(atan2(starboard_sample - port_sample, 2.7), -0.30, 0.30),
+	}
+
+func _update_sea_presentation(delta: float) -> void:
+	var descriptor := _get_current_chunk_descriptor()
+	var biome_id := str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN))
+	var hazard_level := clampf(float(descriptor.get("hazard_level", 0.35)), 0.0, 1.0)
+	var profile := _get_biome_sea_profile(biome_id)
+	var atmosphere_blend := minf(1.0, delta * 2.2)
+	var storm_strength := clampf(hazard_level * 0.8 + (0.35 if biome_id == RunWorldGenerator.BIOME_STORM_BELT else 0.0), 0.0, 1.0)
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+
+	if water_mesh_instance != null:
+		water_mesh_instance.global_position = Vector3(boat_position.x, WATER_SURFACE_Y, boat_position.z)
+	if water_shader_material != null:
+		water_shader_material.set_shader_parameter("deep_color", profile.get("deep_color", Color(0.05, 0.16, 0.22)))
+		water_shader_material.set_shader_parameter("shallow_color", profile.get("shallow_color", Color(0.08, 0.34, 0.42)))
+		water_shader_material.set_shader_parameter("foam_color", profile.get("foam_color", Color(0.76, 0.90, 0.96)))
+		water_shader_material.set_shader_parameter("horizon_color", profile.get("horizon_color", Color(0.25, 0.42, 0.50)))
+		water_shader_material.set_shader_parameter("wave_amplitude", float(profile.get("wave_amp", 0.24)) * (0.95 + hazard_level * 0.62))
+		water_shader_material.set_shader_parameter("wave_speed", float(profile.get("wave_speed", 1.0)) * (0.92 + hazard_level * 0.30))
+		water_shader_material.set_shader_parameter("chop_strength", float(profile.get("chop_strength", 0.18)) * (0.9 + hazard_level * 0.55))
+		water_shader_material.set_shader_parameter("storm_strength", storm_strength)
+		water_shader_material.set_shader_parameter("foam_amount", 0.34 + storm_strength * 0.30)
+
+	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
+	if world_environment == null:
+		world_environment = get_node_or_null("WorldEnvironment") as WorldEnvironment
+	if world_environment != null and world_environment.environment != null:
+		var environment := world_environment.environment
+		environment.background_color = environment.background_color.lerp(profile.get("background", Color(0.28, 0.44, 0.55)), atmosphere_blend)
+		var target_fog_density := float(profile.get("fog_density", 0.0)) + hazard_level * 0.004
+		environment.fog_enabled = target_fog_density > 0.002
+		environment.fog_density = lerpf(environment.fog_density, target_fog_density, atmosphere_blend)
+		environment.ambient_light_color = environment.ambient_light_color.lerp(profile.get("horizon_color", Color(0.25, 0.42, 0.50)), atmosphere_blend)
+		environment.ambient_light_energy = lerpf(environment.ambient_light_energy, 0.65 - storm_strength * 0.18, atmosphere_blend)
+
+	if sun_light != null:
+		sun_light.light_color = sun_light.light_color.lerp(profile.get("sun_color", Color(0.95, 0.93, 0.85)), atmosphere_blend)
+		sun_light.light_energy = lerpf(sun_light.light_energy, float(profile.get("sun_energy", 0.82)) - storm_strength * 0.12, atmosphere_blend)
+		sun_light.rotation_degrees.x = lerpf(sun_light.rotation_degrees.x, -48.0 - storm_strength * 7.0, atmosphere_blend)
+		sun_light.rotation_degrees.y = lerpf(sun_light.rotation_degrees.y, 38.0 + storm_strength * 6.0, atmosphere_blend)
+
+	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / maxf(0.1, float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED))), 0.0, 1.0)
+	if wake_mesh_instance != null:
+		wake_mesh_instance.position = Vector3(0.0, -0.18, 3.45)
+		wake_mesh_instance.scale = Vector3(1.5 + speed_ratio * 1.8, 1.0, 4.5 + speed_ratio * 7.5)
+	if wake_material != null:
+		wake_material.set_shader_parameter("wake_strength", clampf(speed_ratio * 0.95 + storm_strength * 0.28, 0.0, 1.0))
+		wake_material.set_shader_parameter("core_color", Color(0.84, 0.94, 0.98, 1.0))
+		wake_material.set_shader_parameter("edge_color", profile.get("shallow_color", Color(0.08, 0.34, 0.42)))
+		wake_material.set_shader_parameter("noise_scale", 0.95 + storm_strength * 0.45)
+
+	var spray_strength := clampf(speed_ratio * 0.85 + storm_strength * 0.48 + (0.20 if _boat_inside_any_squall() else 0.0), 0.0, 1.0)
+	for spray_pair in [
+		{"node": bow_spray_left, "material": bow_spray_left_material, "x": -0.95},
+		{"node": bow_spray_right, "material": bow_spray_right_material, "x": 0.95},
+	]:
+		var spray_node := spray_pair["node"] as MeshInstance3D
+		var spray_material := spray_pair["material"] as ShaderMaterial
+		if spray_node != null:
+			spray_node.position = Vector3(float(spray_pair["x"]), -0.12, -2.58)
+			spray_node.rotation_degrees.y = -16.0 if float(spray_pair["x"]) < 0.0 else 16.0
+			spray_node.scale = Vector3(0.95 + spray_strength * 0.65, 1.0, 1.8 + spray_strength * 2.6)
+			spray_node.visible = spray_strength > 0.05
+		if spray_material != null:
+			spray_material.set_shader_parameter("wake_strength", spray_strength)
+			spray_material.set_shader_parameter("core_color", Color(0.92, 0.96, 0.98, 1.0))
+			spray_material.set_shader_parameter("edge_color", profile.get("foam_color", Color(0.76, 0.90, 0.96)))
+			spray_material.set_shader_parameter("noise_scale", 1.25 + storm_strength * 0.55)
+
 func _refresh_chunk_visuals() -> void:
 	if chunk_container == null:
 		return
@@ -380,12 +623,13 @@ func _refresh_chunk_visuals() -> void:
 		var tile := MeshInstance3D.new()
 		var tile_mesh := BoxMesh.new()
 		var chunk_size := float(NetworkRuntime.run_state.get("chunk_size_m", RunWorldGenerator.CHUNK_SIZE_M))
-		tile_mesh.size = Vector3(chunk_size * 0.98, 0.12, chunk_size * 0.98)
+		tile_mesh.size = Vector3(chunk_size * 0.98, 0.08, chunk_size * 0.98)
 		tile.mesh = tile_mesh
-		tile.position = Vector3(0.0, -0.08, 0.0)
+		tile.position = Vector3(0.0, -0.82, 0.0)
 		var tile_material := StandardMaterial3D.new()
 		tile_material.albedo_color = _get_chunk_biome_color(str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN)))
-		tile_material.roughness = 0.24
+		tile_material.roughness = 0.38
+		tile_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		tile.material_override = tile_material
 		chunk_root.add_child(tile)
 
@@ -393,7 +637,7 @@ func _refresh_chunk_visuals() -> void:
 		var ring_mesh := BoxMesh.new()
 		ring_mesh.size = Vector3(chunk_size * 0.96, 0.05, chunk_size * 0.96)
 		border_ring.mesh = ring_mesh
-		border_ring.position = Vector3(0.0, 0.01, 0.0)
+		border_ring.position = Vector3(0.0, -0.58, 0.0)
 		var ring_material := StandardMaterial3D.new()
 		ring_material.albedo_color = _get_chunk_outline_color(str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN)))
 		ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -440,71 +684,44 @@ func _build_chunk_props(parent: Node3D, descriptor: Dictionary) -> void:
 func _get_chunk_biome_color(biome_id: String) -> Color:
 	match biome_id:
 		RunWorldGenerator.BIOME_REEF_WATERS:
-			return Color(0.11, 0.51, 0.58, 0.92)
+			return Color(0.08, 0.18, 0.18, 0.16)
 		RunWorldGenerator.BIOME_FOG_BANK:
-			return Color(0.28, 0.38, 0.47, 0.9)
+			return Color(0.11, 0.13, 0.16, 0.12)
 		RunWorldGenerator.BIOME_STORM_BELT:
-			return Color(0.16, 0.29, 0.42, 0.92)
+			return Color(0.05, 0.07, 0.10, 0.18)
 		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
-			return Color(0.24, 0.35, 0.40, 0.92)
+			return Color(0.09, 0.10, 0.11, 0.15)
 		_:
-			return Color(0.08, 0.43, 0.65, 0.92)
+			return Color(0.05, 0.10, 0.14, 0.12)
 
 func _get_chunk_outline_color(biome_id: String) -> Color:
 	match biome_id:
 		RunWorldGenerator.BIOME_STORM_BELT:
-			return Color(0.58, 0.72, 0.95, 0.24)
+			return Color(0.58, 0.72, 0.95, 0.10)
 		RunWorldGenerator.BIOME_FOG_BANK:
-			return Color(0.82, 0.88, 0.94, 0.18)
+			return Color(0.82, 0.88, 0.94, 0.08)
 		RunWorldGenerator.BIOME_REEF_WATERS:
-			return Color(0.32, 0.86, 0.80, 0.18)
+			return Color(0.32, 0.86, 0.80, 0.08)
 		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
-			return Color(0.68, 0.70, 0.76, 0.16)
+			return Color(0.68, 0.70, 0.76, 0.08)
 		_:
-			return Color(0.46, 0.72, 0.88, 0.12)
+			return Color(0.46, 0.72, 0.88, 0.05)
 
 func _get_chunk_prop_color(biome_id: String, prop_index: int) -> Color:
 	match biome_id:
 		RunWorldGenerator.BIOME_REEF_WATERS:
-			return Color(0.22, 0.88, 0.78).darkened(float(prop_index) * 0.06)
+			return Color(0.14, 0.36, 0.33).darkened(float(prop_index) * 0.06)
 		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
 			return Color(0.47, 0.34, 0.22).lightened(float(prop_index) * 0.04)
 		RunWorldGenerator.BIOME_FOG_BANK:
-			return Color(0.75, 0.80, 0.86).darkened(float(prop_index) * 0.05)
+			return Color(0.48, 0.52, 0.56).darkened(float(prop_index) * 0.05)
 		RunWorldGenerator.BIOME_STORM_BELT:
-			return Color(0.78, 0.48, 0.18).darkened(float(prop_index) * 0.04)
+			return Color(0.33, 0.37, 0.42).darkened(float(prop_index) * 0.04)
 		_:
-			return Color(0.90, 0.76, 0.34).darkened(float(prop_index) * 0.05)
+			return Color(0.32, 0.38, 0.42).darkened(float(prop_index) * 0.05)
 
 func _update_chunk_environment() -> void:
-	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
-	if world_environment == null:
-		world_environment = get_node_or_null("WorldEnvironment") as WorldEnvironment
-	if world_environment == null:
-		return
-	var environment := world_environment.environment
-	if environment == null:
-		return
-	var descriptor := _get_current_chunk_descriptor()
-	var biome_id := str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN))
-	match biome_id:
-		RunWorldGenerator.BIOME_FOG_BANK:
-			environment.background_color = Color(0.58, 0.67, 0.76)
-			environment.fog_enabled = true
-			environment.fog_density = 0.02
-		RunWorldGenerator.BIOME_STORM_BELT:
-			environment.background_color = Color(0.24, 0.34, 0.48)
-			environment.fog_enabled = true
-			environment.fog_density = 0.014
-		RunWorldGenerator.BIOME_REEF_WATERS:
-			environment.background_color = Color(0.40, 0.74, 0.78)
-			environment.fog_enabled = false
-		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
-			environment.background_color = Color(0.35, 0.48, 0.56)
-			environment.fog_enabled = false
-		_:
-			environment.background_color = Color(0.46, 0.71, 0.92)
-			environment.fog_enabled = false
+	_update_sea_presentation(1.0)
 
 func _ensure_root_node3d(node_name: String) -> Node3D:
 	var node := get_node_or_null(node_name) as Node3D
@@ -2954,10 +3171,15 @@ func _should_autobrace() -> bool:
 
 func _update_boat_visual(delta: float) -> void:
 	var server_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
-	var target_position := server_position + Vector3(0.0, 0.34 + sin(connect_time_seconds * 1.35) * 0.08, 0.0)
 	var rotation_y: float = float(NetworkRuntime.boat_state.get("rotation_y", 0.0))
-	boat_root.position = boat_root.position.lerp(target_position, minf(1.0, delta * 8.0))
+	var sea_pose := _sample_boat_wave_pose(server_position, rotation_y)
+	var target_position := server_position + Vector3(0.0, 0.34 + float(sea_pose.get("height", 0.0)), 0.0)
+	var target_pitch := float(sea_pose.get("pitch", 0.0))
+	var target_roll := -float(sea_pose.get("roll", 0.0))
+	boat_root.position = boat_root.position.lerp(target_position, minf(1.0, delta * 6.8))
 	boat_root.rotation.y = lerp_angle(boat_root.rotation.y, rotation_y, minf(1.0, delta * 8.0))
+	boat_root.rotation.x = lerpf(boat_root.rotation.x, target_pitch, minf(1.0, delta * 4.2))
+	boat_root.rotation.z = lerpf(boat_root.rotation.z, target_roll, minf(1.0, delta * 4.2))
 
 func _update_hazard_visuals() -> void:
 	for hazard in NetworkRuntime.hazard_state:
