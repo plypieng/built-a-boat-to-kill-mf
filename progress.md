@@ -503,10 +503,43 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - better remote builder readability
   - clearer launch readiness and seaworthiness warnings
 
+## 2026-03-08 Week 1 Social Builder Polish
+
+- Implemented the first MVP delivery slice in `scenes/hangar/hangar.gd`.
+- Improved hangar presentation:
+  - added simple dock props and warm lights to frame the build space
+  - shifted the camera into a stronger over-shoulder composition that keeps the boat more central
+  - resized the HUD panels so they leave more room for the 3D hangar
+- Improved builder readability:
+  - added a dedicated build-tool panel with palette, selected-part stats, and current rotation
+  - added a separate placement panel that calls out range, blocking, and target state more clearly
+  - updated the crosshair and build ghost so they reflect placement state more cleanly
+  - made the in-world cursor label shorter so the HUD carries the detail instead of the 3D scene
+- Improved social readability:
+  - local builders now show `You` instead of the old generic `Builder` label
+  - remote builders now use more distinct avatar colors
+  - the roster now shows names and relative distance instead of raw peer ids and coordinates
+- Improved launch readiness feedback:
+  - added a dedicated launch-readiness summary with clearer safe/risky messaging
+  - updated the launch button text to reflect riskier launches such as loose chunks
+  - kept the permissive launch model while making the consequences easier to understand
+- Fixed a real scene-transition bug during validation:
+  - the new hangar HUD could ask the local avatar for `global_position` during hangar-to-run teardown
+  - guarding the local-avatar lookup removed the `!is_inside_tree()` error during scene change
+- Verified a fresh visual capture on port `7148`:
+  - captured `/tmp/builtaboat-week1/hangar-v2.png`
+  - confirmed the new build-tool, placement, and launch-readiness panels render in the hangar
+- Verified a two-client co-build regression on port `7149`:
+  - `BuilderA` and `BuilderB` still advanced the shared blueprint from `v1` to `v7`
+  - no new builder-range or placement regressions appeared
+- Verified a fresh hangar-to-run handoff on port `7150`:
+  - `LaunchBot` launched from `phase=hangar`
+  - the server switched cleanly to `phase=run`
+  - the hangar teardown error no longer appeared
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
-  - clearer build-ghost feedback when aiming at blocked or out-of-range cells
   - better local co-op readability once multiple avatars build on the same section
 - Finish multiplayer visual verification for the new hangar avatars with a clearer shared-frame or hands-on local co-op pass.
 - Return to narrower readability polish after the new social builder baseline exists.

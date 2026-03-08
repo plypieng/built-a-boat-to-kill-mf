@@ -227,6 +227,8 @@ godot --headless --path . --quit-after 4200 -- --host=127.0.0.1 --port=7000 --na
 - The current connect flow now lands in a shared 3D hangar builder where the crew can edit one live blueprint together before launching.
 - The current hangar now uses a short-range camera-crosshair build ghost tied to the third-person builder avatar, so moving around the boat matters while building.
 - The current shared-builder autobuild helpers now reposition the hangar avatar before placing or removing blocks so automated smoke tests obey the same range rule as manual builders.
+- The current hangar now shows a clearer build-tool panel, placement-state feedback, and launch-readiness summary so the crew can read the boat status faster before launching.
+- The current hangar presentation now frames the shared boat more deliberately with an over-shoulder camera, lighter dock dressing, and simplified crew roster text.
 - The current hangar now supports hard builder-to-builder bump reactions, and the new `--autohangar-role=bumper_left|bumper_right` helpers give a repeatable smoke path for that behavior.
 - The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.
 - The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.
