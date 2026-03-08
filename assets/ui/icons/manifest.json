@@ -1,0 +1,64 @@
+{
+  "set": "builtaboat-icon-pack-v1",
+  "theme": "expedition-board",
+  "palette": {
+    "storm_blue": "#183642",
+    "chart_cream": "#EFE3C2",
+    "oxidized_teal": "#3E6F73",
+    "sea_glass_green": "#73BDA8",
+    "buoy_orange": "#D98F3D",
+    "flare_red_rust": "#A84E39"
+  },
+  "icons": [
+    {
+      "id": "helm",
+      "path": "assets/ui/icons/helm.svg",
+      "purpose": "Helm control and steering ownership."
+    },
+    {
+      "id": "brace",
+      "path": "assets/ui/icons/brace.svg",
+      "purpose": "Brace readiness, impact mitigation, and danger prep."
+    },
+    {
+      "id": "repair_kit",
+      "path": "assets/ui/icons/repair-kit.svg",
+      "purpose": "Patch-kit inventory and repair actions."
+    },
+    {
+      "id": "cargo",
+      "path": "assets/ui/icons/cargo.svg",
+      "purpose": "Cargo count, capacity, and secured load."
+    },
+    {
+      "id": "salvage",
+      "path": "assets/ui/icons/salvage.svg",
+      "purpose": "Salvage reward and salvage cache context."
+    },
+    {
+      "id": "gold",
+      "path": "assets/ui/icons/gold.svg",
+      "purpose": "Gold rewards and dock totals."
+    },
+    {
+      "id": "extraction",
+      "path": "assets/ui/icons/extraction.svg",
+      "purpose": "Extraction board, return point, and objective markers."
+    },
+    {
+      "id": "reinforced_hull",
+      "path": "assets/ui/icons/reinforced-hull.svg",
+      "purpose": "Unlock-yard icon for the reinforced hull block."
+    },
+    {
+      "id": "twin_engine",
+      "path": "assets/ui/icons/twin-engine.svg",
+      "purpose": "Unlock-yard icon for the twin engine block."
+    },
+    {
+      "id": "stabilizer",
+      "path": "assets/ui/icons/stabilizer.svg",
+      "purpose": "Unlock-yard icon for the stabilizer block."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <title>Gold icon</title>
+  <rect x="12" y="12" width="104" height="104" rx="22" fill="#183642"/>
+  <rect x="12" y="12" width="104" height="104" rx="22" stroke="#EFE3C2" stroke-width="4"/>
+  <ellipse cx="50" cy="82" rx="20" ry="10" fill="#D98F3D" stroke="#EFE3C2" stroke-width="4"/>
+  <path d="M30 68C30 62 39 58 50 58C61 58 70 62 70 68V82C70 88 61 92 50 92C39 92 30 88 30 82V68Z" fill="#D98F3D" fill-opacity="0.9" stroke="#EFE3C2" stroke-width="4"/>
+  <ellipse cx="78" cy="60" rx="20" ry="10" fill="#D98F3D" stroke="#EFE3C2" stroke-width="4"/>
+  <path d="M58 46C58 40 67 36 78 36C89 36 98 40 98 46V60C98 66 89 70 78 70C67 70 58 66 58 60V46Z" fill="#D98F3D" fill-opacity="0.9" stroke="#EFE3C2" stroke-width="4"/>
+  <path d="M78 44L81 50L88 51L83 56L84 63L78 59L72 63L73 56L68 51L75 50L78 44Z" fill="#73BDA8"/>
+</svg>

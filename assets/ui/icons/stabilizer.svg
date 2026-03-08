@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <title>Stabilizer icon</title>
+  <rect x="12" y="12" width="104" height="104" rx="22" fill="#183642"/>
+  <rect x="12" y="12" width="104" height="104" rx="22" stroke="#EFE3C2" stroke-width="4"/>
+  <path d="M24 70H104" stroke="#EFE3C2" stroke-width="6" stroke-linecap="round"/>
+  <path d="M54 44L64 70L74 44" stroke="#73BDA8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M34 70L22 54" stroke="#D98F3D" stroke-width="7" stroke-linecap="round"/>
+  <path d="M94 70L106 54" stroke="#D98F3D" stroke-width="7" stroke-linecap="round"/>
+  <path d="M44 86H84" stroke="#3E6F73" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="64" cy="70" r="7" fill="#A84E39" stroke="#EFE3C2" stroke-width="3"/>
+</svg>

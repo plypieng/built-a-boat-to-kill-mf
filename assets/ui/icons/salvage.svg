@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <title>Salvage icon</title>
+  <rect x="12" y="12" width="104" height="104" rx="22" fill="#183642"/>
+  <rect x="12" y="12" width="104" height="104" rx="22" stroke="#EFE3C2" stroke-width="4"/>
+  <path d="M64 28V46" stroke="#EFE3C2" stroke-width="6" stroke-linecap="round"/>
+  <path d="M64 46C64 59 56 65 56 75C56 84 62 91 71 91C79 91 85 85 85 77C85 72 83 69 80 66" stroke="#D98F3D" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M71 78H86" stroke="#D98F3D" stroke-width="7" stroke-linecap="round"/>
+  <path d="M36 74L50 64L64 74V90L50 100L36 90V74Z" fill="#3E6F73" stroke="#EFE3C2" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M50 64V100M36 74L50 82L64 74" stroke="#EFE3C2" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M28 36H100" stroke="#3E6F73" stroke-width="6" stroke-linecap="round"/>
+</svg>

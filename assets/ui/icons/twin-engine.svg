@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <title>Twin engine icon</title>
+  <rect x="12" y="12" width="104" height="104" rx="22" fill="#183642"/>
+  <rect x="12" y="12" width="104" height="104" rx="22" stroke="#EFE3C2" stroke-width="4"/>
+  <rect x="28" y="38" width="26" height="46" rx="8" fill="#3E6F73" stroke="#EFE3C2" stroke-width="5"/>
+  <rect x="74" y="38" width="26" height="46" rx="8" fill="#3E6F73" stroke="#EFE3C2" stroke-width="5"/>
+  <path d="M41 38V28M87 38V28" stroke="#EFE3C2" stroke-width="5" stroke-linecap="round"/>
+  <path d="M36 94L41 84L46 94M82 94L87 84L92 94" stroke="#D98F3D" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M54 60H74" stroke="#73BDA8" stroke-width="6" stroke-linecap="round"/>
+  <path d="M58 52L70 60L58 68" fill="#73BDA8"/>
+</svg>

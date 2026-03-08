@@ -1,0 +1,15 @@
+{
+  "completed": [
+    "helm",
+    "brace",
+    "repair-kit",
+    "cargo",
+    "salvage",
+    "gold",
+    "extraction",
+    "reinforced-hull",
+    "twin-engine",
+    "stabilizer"
+  ],
+  "failed": []
+}

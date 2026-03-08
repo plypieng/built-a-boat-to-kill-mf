@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <title>Extraction icon</title>
+  <rect x="12" y="12" width="104" height="104" rx="22" fill="#183642"/>
+  <rect x="12" y="12" width="104" height="104" rx="22" stroke="#EFE3C2" stroke-width="4"/>
+  <circle cx="64" cy="74" r="22" fill="#3E6F73" stroke="#EFE3C2" stroke-width="5"/>
+  <circle cx="64" cy="74" r="10" fill="#183642" stroke="#73BDA8" stroke-width="5"/>
+  <path d="M64 22L80 42H70V58H58V42H48L64 22Z" fill="#D98F3D" stroke="#EFE3C2" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M40 99C46 93 54 90 64 90C74 90 82 93 88 99" stroke="#73BDA8" stroke-width="6" stroke-linecap="round"/>
+  <path d="M32 106H96" stroke="#A84E39" stroke-width="6" stroke-linecap="round"/>
+</svg>

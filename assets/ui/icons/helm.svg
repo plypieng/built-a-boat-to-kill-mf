@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <title>Helm icon</title>
+  <rect x="12" y="12" width="104" height="104" rx="22" fill="#183642"/>
+  <rect x="12" y="12" width="104" height="104" rx="22" stroke="#EFE3C2" stroke-width="4"/>
+  <path d="M28 32H100" stroke="#3E6F73" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="64" cy="64" r="24" stroke="#EFE3C2" stroke-width="6"/>
+  <circle cx="64" cy="64" r="8" fill="#73BDA8" stroke="#EFE3C2" stroke-width="4"/>
+  <path d="M64 24V40M64 88V104M24 64H40M88 64H104M36 36L47 47M81 81L92 92M92 36L81 47M36 92L47 81" stroke="#EFE3C2" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="64" cy="24" r="6" fill="#D98F3D" stroke="#EFE3C2" stroke-width="3"/>
+  <circle cx="64" cy="104" r="6" fill="#D98F3D" stroke="#EFE3C2" stroke-width="3"/>
+  <circle cx="24" cy="64" r="6" fill="#D98F3D" stroke="#EFE3C2" stroke-width="3"/>
+  <circle cx="104" cy="64" r="6" fill="#D98F3D" stroke="#EFE3C2" stroke-width="3"/>
+</svg>

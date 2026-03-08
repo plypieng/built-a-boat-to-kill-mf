@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <title>Repair kit icon</title>
+  <rect x="12" y="12" width="104" height="104" rx="22" fill="#183642"/>
+  <rect x="12" y="12" width="104" height="104" rx="22" stroke="#EFE3C2" stroke-width="4"/>
+  <rect x="30" y="45" width="68" height="44" rx="10" fill="#3E6F73" stroke="#EFE3C2" stroke-width="5"/>
+  <path d="M48 45V39C48 31 54 26 62 26H66C74 26 80 31 80 39V45" stroke="#EFE3C2" stroke-width="5" stroke-linecap="round"/>
+  <rect x="57" y="54" width="14" height="26" rx="2" fill="#73BDA8"/>
+  <rect x="51" y="60" width="26" height="14" rx="2" fill="#73BDA8"/>
+  <path d="M92 78L102 88" stroke="#D98F3D" stroke-width="7" stroke-linecap="round"/>
+  <path d="M84 70L92 78" stroke="#EFE3C2" stroke-width="7" stroke-linecap="round"/>
+  <path d="M79 89L89 79" stroke="#A84E39" stroke-width="5" stroke-linecap="round"/>
+</svg>
