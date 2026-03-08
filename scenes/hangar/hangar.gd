@@ -21,7 +21,10 @@ const HANGAR_AIR_ACCELERATION := 10.0
 const HANGAR_JUMP_VELOCITY := 6.2
 const HANGAR_CAMERA_HEIGHT := 2.45
 const HANGAR_CAMERA_DISTANCE := 6.4
-const HANGAR_CAMERA_LAG := 5.6
+const HANGAR_CAMERA_SIDE_OFFSET := 0.9
+const HANGAR_CAMERA_LOOK_HEIGHT := 1.38
+const HANGAR_CAMERA_LOOK_AHEAD := 1.9
+const HANGAR_CAMERA_LAG := 8.2
 const HANGAR_AVATAR_SYNC_INTERVAL := 0.05
 const HANGAR_AVATAR_NAME_HEIGHT := 1.4
 
@@ -1236,17 +1239,13 @@ func _update_camera(delta: float) -> void:
 	if local_avatar_body == null:
 		return
 	if not camera.current:
+		camera.current = true
 		camera.make_current()
 	var avatar_position := local_avatar_body.global_position
-	var focus_point := _get_blueprint_focus_point()
-	var boat_span := _get_blueprint_focus_span()
-	var focus_weight := clampf(1.0 - avatar_position.distance_to(focus_point) / 14.0, 0.18, 0.62)
-	var anchor_position := avatar_position.lerp(focus_point, focus_weight)
-	var camera_height := HANGAR_CAMERA_HEIGHT + clampf((boat_span - 4.0) * 0.08, 0.0, 0.95)
-	var camera_distance := HANGAR_CAMERA_DISTANCE + clampf((boat_span - 4.0) * 0.14, 0.0, 1.6)
-	var camera_offset := Vector3(1.25, camera_height, camera_distance).rotated(Vector3.UP, local_avatar_facing_y)
-	var desired_position := anchor_position + camera_offset + local_camera_jolt
-	var look_target := (avatar_position + Vector3(0.25, 1.38, -1.85).rotated(Vector3.UP, local_avatar_facing_y)).lerp(focus_point + Vector3(0.0, 0.95, 0.0), 0.68)
+	var avatar_forward := Vector3(0.0, 0.0, -1.0).rotated(Vector3.UP, local_avatar_facing_y)
+	var camera_offset := Vector3(HANGAR_CAMERA_SIDE_OFFSET, HANGAR_CAMERA_HEIGHT, HANGAR_CAMERA_DISTANCE).rotated(Vector3.UP, local_avatar_facing_y)
+	var desired_position := avatar_position + camera_offset + local_camera_jolt
+	var look_target := avatar_position + Vector3(0.0, HANGAR_CAMERA_LOOK_HEIGHT, 0.0) + avatar_forward * HANGAR_CAMERA_LOOK_AHEAD
 	look_target += local_camera_jolt * 0.35
 	camera.position = camera.position.lerp(desired_position, minf(1.0, delta * HANGAR_CAMERA_LAG))
 	camera.look_at(look_target, Vector3.UP)

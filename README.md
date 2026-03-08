@@ -303,6 +303,7 @@ bash tools/package_windows_playtest.sh \
 - The current hangar and run scenes now include lightweight contextual onboarding text so first-time players can understand building, rescue pressure, squalls, and extraction without live coaching.
 - The current run scene now uses the first `Expedition Board` HUD pass: a centered objective strip, top-right extraction board, bottom-left crew deck, bottom-right boat plate, and short event callouts for impacts and run-state changes.
 - The current hangar presentation now frames the shared boat more deliberately with an over-shoulder camera, lighter dock dressing, and simplified crew roster text.
+- The current hangar camera now behaves like a pure third-person avatar chase camera, so local movement follows the builder avatar instead of blending back toward the boat focus.
 - The current hangar now supports hard builder-to-builder bump reactions, and the new `--autohangar-role=bumper_left|bumper_right` helpers give a repeatable smoke path for that behavior.
 - The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.
 - The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.

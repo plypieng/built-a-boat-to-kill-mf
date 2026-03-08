@@ -767,6 +767,21 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - refined local GUI autorun capture at `/tmp/builtaboat-run-hud-pass-v2.png`
 - The second capture confirms the new run HUD hierarchy reads cleanly, though the gameplay camera still keeps the boat smaller in frame than ideal and can be tuned separately from the HUD.
 
+## 2026-03-08 Hangar Avatar Chase Camera
+
+- Wrote the short design note to `docs/plans/2026-03-08-hangar-avatar-chase-camera-design.md`.
+- Replaced the hangar camera blend-to-boat behavior with a pure third-person avatar chase camera in `scenes/hangar/hangar.gd`.
+- The hangar camera now:
+  - follows the local avatar position and facing directly
+  - keeps a simple over-the-shoulder offset
+  - preserves the existing reaction jolt
+  - no longer recenters itself around the shared boat while walking
+- Tightened the hangar camera follow response so movement feels less like a scene camera and more like a builder avatar camera.
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - local hangar capture with `--autohangar-role=bumper_left` at `/tmp/builtaboat-hangar-chase.png`
+- The hangar capture confirms the camera is now sitting behind the avatar instead of sticking to the shared boat framing.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
