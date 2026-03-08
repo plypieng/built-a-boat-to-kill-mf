@@ -585,6 +585,17 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
     - `active_block_count=6`
     - `phase=success`
 
+## 2026-03-08 Week 3 Procedural Encounter And Onboarding Design
+
+- Approved the Week 3 MVP slice as:
+  - one seed-driven procedural distress rescue encounter
+  - one seed-driven procedural squall-front hazard family
+  - lightweight contextual onboarding prompts
+- Confirmed that the game stays extraction-loop first rather than switching to an endless roguelite voyage.
+- Confirmed that the future weak-raft-to-better-controls progression arc is a follow-up, not part of Week 3 implementation.
+- Wrote the approved design doc to `docs/plans/2026-03-08-week-3-procedural-encounter-and-onboarding-design.md`.
+- Wrote the fallback implementation plan to `docs/plans/2026-03-08-week-3-procedural-encounter-and-onboarding-implementation-plan.md`.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
