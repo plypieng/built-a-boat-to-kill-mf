@@ -96,9 +96,9 @@ Start a client:
 ./tools/run_client.sh
 ```
 
-The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `Q / E` to cycle blocks, `R` to rotate, `F` to place, `X` to remove, `Z / C` to browse unlocks, `V` to buy the selected part, `Tab` or `H` to toggle the detailed hangar overlay, then press `Launch Run`.
+The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `1 / 2 / 3` to switch between `Build`, `Remove`, and `Yard`, `Q / E` to cycle blocks, `R` to rotate, `F` to use the active builder tool, `X` to remove, `Z / C` to browse unlocks, `V` to buy the selected part, `I` to open the shared inventory panel, `Tab` or `H` to toggle the detailed hangar overlay, then press `Launch Run`.
 
-In runs, use mouse aim plus `W A S D` to move on deck or swim in the sea, `Q / E` to select `helm` or `grapple`, `F` to claim or release the selected station, `Space` to brace from anywhere on the boat, `G` to fire the grapple while on the crane, and `R` to patch nearby damaged hull when you are close enough. If you get knocked overboard, swim to a ladder or stern line marker and press `F` to climb back aboard.
+In runs, use mouse aim plus `W A S D` to move on deck or swim in the sea, `1 / 2 / 3 / 4 / 5` to switch between `Helm`, `Brace`, `Grapple`, `Repair`, and `Recover`, `Q / E` to cycle the claimable stations, `F` to use the active tool or claim/release the selected station, `Space` to brace from anywhere on the boat, `G` to fire the grapple while on the crane, `R` to patch nearby damaged hull when you are close enough, and `I` to open the ship inventory panel. If you get knocked overboard, swim to a ladder or stern line marker and press `F` to climb back aboard.
 
 Optional client overrides:
 

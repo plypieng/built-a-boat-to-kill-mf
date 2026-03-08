@@ -50,11 +50,15 @@ var profile_label: Label
 var store_label: Label
 var controls_label: Label
 var last_run_label: Label
+var toolbelt_label: Label
+var inventory_label: Label
 var launch_button: Button
 var unlock_button: Button
 var detail_toggle_button: Button
 var crosshair_label: Label
 var detail_panel: PanelContainer
+var tool_panel: PanelContainer
+var inventory_panel: PanelContainer
 var dock_body: StaticBody3D
 var boat_root: Node3D
 var block_container: Node3D
@@ -88,6 +92,8 @@ var local_camera_jolt := Vector3.ZERO
 var last_local_reaction_id := 0
 var selected_store_index := 0
 var hud_details_visible := false
+var inventory_panel_visible := false
+var selected_hangar_tool_index := 0
 var hud_icons := HudIconLibrary.new()
 var selection_icon: TextureRect
 var launch_readiness_icon: TextureRect
@@ -166,6 +172,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	match key_event.keycode:
 		KEY_TAB, KEY_H:
 			_toggle_hud_details()
+		KEY_I:
+			_toggle_inventory_panel()
+		KEY_1, KEY_KP_1:
+			_select_hangar_tool(0)
+		KEY_2, KEY_KP_2:
+			_select_hangar_tool(1)
+		KEY_3, KEY_KP_3:
+			_select_hangar_tool(2)
 		KEY_Q:
 			_cycle_block(-1)
 		KEY_E:
@@ -179,7 +193,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_R:
 			_rotate_selected_block()
 		KEY_F:
-			_place_selected_block()
+			_use_active_hangar_tool()
 		KEY_X, KEY_BACKSPACE, KEY_DELETE:
 			_remove_selected_block()
 		KEY_ENTER, KEY_KP_ENTER:
@@ -574,6 +588,10 @@ func _build_hud() -> void:
 	detail_toggle_button = hud.get_node("RightPanel/Margin/Layout/DetailToggleButton") as Button
 	roster_label = hud.get_node("BottomLeftPanel/Margin/Layout/RosterLabel") as Label
 	controls_label = hud.get_node("BottomLeftPanel/Margin/Layout/ControlsLabel") as Label
+	tool_panel = hud.get_node("ToolPanel") as PanelContainer
+	toolbelt_label = hud.get_node("ToolPanel/Margin/Layout/ToolLabel") as Label
+	inventory_panel = hud.get_node("InventoryPanel") as PanelContainer
+	inventory_label = hud.get_node("InventoryPanel/Margin/Layout/InventoryLabel") as Label
 	detail_panel = hud.get_node("DetailPanel") as PanelContainer
 	builder_icon = hud.get_node("DetailPanel/Margin/Layout/BuilderHeader/BuilderIcon") as TextureRect
 	builder_label = hud.get_node("DetailPanel/Margin/Layout/BuilderLabel") as Label
@@ -784,7 +802,10 @@ func _refresh_hud() -> void:
 	onboarding_label.text = _build_onboarding_text()
 	hud_icons.set_icon(selection_icon, hud_icons.get_block_icon_id(block_id))
 	hud_icons.set_icon(builder_icon, hud_icons.get_block_icon_id(block_id))
-	selection_label.text = "Palette %d/%d\n%s | Rot %d deg\nHP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
+	var active_tool_id := _get_selected_hangar_tool_id()
+	var active_tool_label := _get_hangar_tool_label(active_tool_id)
+	selection_label.text = "Tool %s | Palette %d/%d\n%s | Rot %d deg\nHP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
+		active_tool_label,
 		selected_block_index + 1,
 		maxi(1, palette_entries.size()),
 		str(block_def.get("label", block_id.capitalize())),
@@ -797,7 +818,8 @@ func _refresh_hud() -> void:
 		float(block_def.get("brace", 0.0)),
 	]
 
-	target_label.text = "Build Target\n%s\n%s" % [
+	target_label.text = "%s Target\n%s\n%s" % [
+		active_tool_label,
 		_get_feedback_heading(cursor_feedback_state),
 		_get_local_target_compact_text(),
 	]
@@ -921,7 +943,9 @@ func _refresh_hud() -> void:
 			int(last_unlock.get("cost_salvage", 0)),
 		]
 
-	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\nQ / E parts | R rotate | F place | X remove\nZ / C unlocks | V buy | Enter launch\nEsc cursor toggle | RMB recapture aim"
+	toolbelt_label.text = _build_hangar_toolbelt_text()
+	inventory_label.text = _build_hangar_inventory_text()
+	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\n1 Build | 2 Remove | 3 Yard | I inventory\nQ / E parts | R rotate | F use tool | X remove\nZ / C unlocks | V buy | Enter launch\nEsc cursor toggle | RMB recapture aim"
 	_apply_hud_visibility()
 
 func _build_onboarding_text() -> String:
@@ -938,6 +962,68 @@ func _build_onboarding_text() -> String:
 	if Array(NetworkRuntime.get_builder_store_entries()).size() > 0:
 		return "Onboarding: Z/C browses the unlock yard and V buys new parts for the whole crew."
 	return "Onboarding: Build something weird, keep the main chunk floaty, and launch when the crew likes the shape."
+
+func _get_hangar_tool_label(tool_id: String) -> String:
+	for tool_variant in _get_hangar_toolbelt_entries():
+		var tool: Dictionary = tool_variant
+		if str(tool.get("id", "")) == tool_id:
+			return str(tool.get("label", tool_id.capitalize()))
+	return tool_id.capitalize()
+
+func _build_hangar_toolbelt_text() -> String:
+	var entries := _get_hangar_toolbelt_entries()
+	if not entries.is_empty():
+		selected_hangar_tool_index = wrapi(selected_hangar_tool_index, 0, entries.size())
+	var tokens := PackedStringArray()
+	for entry_index in range(entries.size()):
+		var entry: Dictionary = entries[entry_index]
+		var token := "%d %s" % [entry_index + 1, str(entry.get("label", "Tool"))]
+		if entry_index == selected_hangar_tool_index:
+			token = "[%s]" % token
+		tokens.append(token)
+	var selected_entry: Dictionary = entries[selected_hangar_tool_index] if not entries.is_empty() else {}
+	return "%s\n%s" % [
+		"  ".join(tokens),
+		str(selected_entry.get("hint", "Use the shared builder tools from here.")),
+	]
+
+func _build_hangar_inventory_text() -> String:
+	var snapshot := NetworkRuntime.get_hangar_inventory_snapshot()
+	var manifest_lines := PackedStringArray()
+	for entry_variant in Array(snapshot.get("blueprint_manifest", [])):
+		var entry: Dictionary = entry_variant
+		manifest_lines.append("- %s x%d" % [
+			str(entry.get("label", "Part")),
+			int(entry.get("quantity", 0)),
+		])
+	if manifest_lines.is_empty():
+		manifest_lines.append("- No parts mounted yet.")
+	var unlocked_parts := PackedStringArray()
+	for unlocked_part_variant in snapshot.get("unlocked_parts", PackedStringArray()):
+		unlocked_parts.append(str(unlocked_part_variant))
+	if unlocked_parts.is_empty():
+		unlocked_parts.append("Core set only")
+	var store_entries := Array(snapshot.get("store_entries", []))
+	var next_unlock_text := "All current prototype parts unlocked."
+	if not store_entries.is_empty():
+		var next_entry: Dictionary = store_entries[selected_store_index % store_entries.size()]
+		next_unlock_text = "%s for %d gold / %d salvage" % [
+			str(next_entry.get("label", "Part")),
+			int(next_entry.get("unlock_cost_gold", 0)),
+			int(next_entry.get("unlock_cost_salvage", 0)),
+		]
+	var stats: Dictionary = snapshot.get("stats", {})
+	return "Dock Totals: %d gold | %d salvage\nMounted Parts\n%s\nUnlocked: %s\nNext Yard Pick: %s\nBlueprint: Cargo %d | Patch Kits %d | Main %d | Loose %d" % [
+		int(snapshot.get("gold", 0)),
+		int(snapshot.get("salvage", 0)),
+		"\n".join(manifest_lines),
+		", ".join(unlocked_parts),
+		next_unlock_text,
+		int(stats.get("cargo_capacity", 0)),
+		int(stats.get("repair_capacity", 0)),
+		int(stats.get("main_chunk_blocks", 0)),
+		int(stats.get("loose_blocks", 0)),
+	]
 
 func _get_launch_readiness_snapshot(stats: Dictionary, warnings: Array) -> Dictionary:
 	var loose_blocks := int(stats.get("loose_blocks", 0))
@@ -1194,6 +1280,37 @@ func _apply_avatar_reaction_pose(avatar_node: Node3D, peer_id: int, delta: float
 	visual_root.rotation.x = lerp_angle(visual_root.rotation.x, target_pitch, minf(1.0, delta * 12.0))
 	visual_root.rotation.z = lerp_angle(visual_root.rotation.z, target_roll, minf(1.0, delta * 12.0))
 	visual_root.position.y = lerpf(visual_root.position.y, target_height, minf(1.0, delta * 10.0))
+
+func _get_hangar_toolbelt_entries() -> Array:
+	return NetworkRuntime.get_toolbelt_entries(NetworkRuntime.SESSION_PHASE_HANGAR)
+
+func _get_selected_hangar_tool_id() -> String:
+	var tool_entries := _get_hangar_toolbelt_entries()
+	if tool_entries.is_empty():
+		return "build"
+	selected_hangar_tool_index = wrapi(selected_hangar_tool_index, 0, tool_entries.size())
+	return str(Dictionary(tool_entries[selected_hangar_tool_index]).get("id", "build"))
+
+func _select_hangar_tool(slot_index: int) -> void:
+	var tool_entries := _get_hangar_toolbelt_entries()
+	if slot_index < 0 or slot_index >= tool_entries.size():
+		return
+	selected_hangar_tool_index = slot_index
+	_refresh_hud()
+
+func _toggle_inventory_panel() -> void:
+	inventory_panel_visible = not inventory_panel_visible
+	_apply_hud_visibility()
+	_refresh_hud()
+
+func _use_active_hangar_tool() -> void:
+	match _get_selected_hangar_tool_id():
+		"remove":
+			_remove_selected_block()
+		"yard":
+			_purchase_selected_unlock()
+		_:
+			_place_selected_block()
 
 func _cycle_block(direction: int) -> void:
 	var block_ids := NetworkRuntime.get_builder_block_ids()
@@ -1469,6 +1586,8 @@ func _apply_hud_visibility() -> void:
 		detail_panel.visible = hud_details_visible
 	if detail_toggle_button != null:
 		detail_toggle_button.text = "Hide Details (Tab)" if hud_details_visible else "Show Details (Tab)"
+	if inventory_panel != null:
+		inventory_panel.visible = inventory_panel_visible
 
 func _refresh_hangar_avatar_visuals() -> void:
 	var local_peer_id := _get_local_peer_id()

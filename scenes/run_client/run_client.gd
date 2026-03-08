@@ -54,6 +54,9 @@ var interaction_label: Label
 var roster_label: Label
 var boat_label: Label
 var event_callout_label: Label
+var toolbelt_label: Label
+var inventory_label: Label
+var footer_label: Label
 var boat_root: Node3D
 var hull_mesh_instance: MeshInstance3D
 var hull_material: StandardMaterial3D
@@ -90,6 +93,8 @@ var result_title_label: Label
 var result_body_label: Label
 var result_continue_button: Button
 var crosshair_label: Label
+var tool_panel: PanelContainer
+var inventory_panel: PanelContainer
 var launch_overrides: Dictionary = {}
 var connect_time_seconds := 0.0
 var autopilot_remaining_seconds := 0.0
@@ -134,6 +139,8 @@ var last_hud_cache_recovered := false
 var last_hud_overboard_count := 0
 var last_hud_phase := "running"
 var last_local_overboard := false
+var selected_run_tool_index := 0
+var inventory_panel_visible := false
 var hud_icons := HudIconLibrary.new()
 var objective_icon: TextureRect
 var extraction_panel_icon: TextureRect
@@ -800,6 +807,8 @@ func _build_hud() -> void:
 	var extraction_panel := hud.get_node("ExtractionPanel") as PanelContainer
 	var crew_panel := hud.get_node("CrewPanel") as PanelContainer
 	var survival_panel := hud.get_node("SurvivalPanel") as PanelContainer
+	tool_panel = hud.get_node("ToolPanel") as PanelContainer
+	inventory_panel = hud.get_node("InventoryPanel") as PanelContainer
 
 	objective_icon = hud.get_node("ObjectivePanel/Margin/Layout/HeadingRow/ObjectiveIcon") as TextureRect
 	objective_label = hud.get_node("ObjectivePanel/Margin/Layout/ObjectiveLabel") as Label
@@ -814,6 +823,8 @@ func _build_hud() -> void:
 	boat_label = hud.get_node("SurvivalPanel/Margin/Layout/BoatLabel") as Label
 	interaction_label = hud.get_node("SurvivalPanel/Margin/Layout/InteractionLabel") as Label
 	status_label = hud.get_node("SurvivalPanel/Margin/Layout/StatusLabel") as Label
+	toolbelt_label = hud.get_node("ToolPanel/Margin/Layout/ToolLabel") as Label
+	inventory_label = hud.get_node("InventoryPanel/Margin/Layout/InventoryLabel") as Label
 	crosshair_label = hud.get_node("CrosshairLabel") as Label
 	event_callout_label = hud.get_node("EventCalloutLabel") as Label
 
@@ -826,11 +837,13 @@ func _build_hud() -> void:
 	_apply_hud_panel_style(extraction_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG_SOFT)
 	_apply_hud_panel_style(crew_panel, HUD_BORDER_BLUE, HUD_PANEL_BG_SOFT)
 	_apply_hud_panel_style(survival_panel, HUD_BORDER_GREEN, HUD_PANEL_BG)
+	_apply_hud_panel_style(tool_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG_SOFT)
+	_apply_hud_panel_style(inventory_panel, HUD_BORDER_BLUE, HUD_PANEL_BG_SOFT)
 
 	var objective_heading := hud.get_node("ObjectivePanel/Margin/Layout/HeadingRow/ObjectiveHeading") as Label
 	var extraction_heading := hud.get_node("ExtractionPanel/Margin/Layout/Header/ExtractionHeading") as Label
 	var crew_heading := hud.get_node("CrewPanel/Margin/Layout/Header/CrewHeading") as Label
-	var footer := hud.get_node("CrewPanel/Margin/Layout/FooterLabel") as Label
+	footer_label = hud.get_node("CrewPanel/Margin/Layout/FooterLabel") as Label
 	var survival_heading := hud.get_node("SurvivalPanel/Margin/Layout/Header/SurvivalHeading") as Label
 	objective_heading.modulate = HUD_TEXT_WARNING
 	objective_label.modulate = HUD_TEXT_PRIMARY
@@ -841,11 +854,13 @@ func _build_hud() -> void:
 	station_label.modulate = HUD_TEXT_PRIMARY
 	roster_label.modulate = HUD_TEXT_MUTED
 	onboarding_label.modulate = HUD_TEXT_PRIMARY
-	footer.modulate = HUD_TEXT_MUTED
+	footer_label.modulate = HUD_TEXT_MUTED
 	survival_heading.modulate = HUD_TEXT_SUCCESS
 	boat_label.modulate = HUD_TEXT_PRIMARY
 	interaction_label.modulate = HUD_TEXT_MUTED
 	status_label.modulate = HUD_TEXT_MUTED
+	toolbelt_label.modulate = HUD_TEXT_PRIMARY
+	inventory_label.modulate = HUD_TEXT_PRIMARY
 
 func _apply_hud_panel_style(panel: PanelContainer, border_color: Color, background_color: Color) -> void:
 	var style := StyleBoxFlat.new()
@@ -872,6 +887,93 @@ func _build_result_overlay() -> void:
 		result_continue_button.pressed.connect(_continue_to_dock)
 	result_layer.visible = false
 
+func _get_run_toolbelt_entries() -> Array:
+	return NetworkRuntime.get_toolbelt_entries(NetworkRuntime.SESSION_PHASE_RUN)
+
+func _get_selected_run_tool_id() -> String:
+	var entries := _get_run_toolbelt_entries()
+	if entries.is_empty():
+		return "helm"
+	selected_run_tool_index = wrapi(selected_run_tool_index, 0, entries.size())
+	return str(Dictionary(entries[selected_run_tool_index]).get("id", "helm"))
+
+func _select_run_tool(slot_index: int) -> void:
+	var entries := _get_run_toolbelt_entries()
+	if slot_index < 0 or slot_index >= entries.size():
+		return
+	selected_run_tool_index = slot_index
+	_sync_selected_station_with_tool()
+	_refresh_hud()
+
+func _toggle_inventory_panel() -> void:
+	inventory_panel_visible = not inventory_panel_visible
+	if inventory_panel != null:
+		inventory_panel.visible = inventory_panel_visible
+	_refresh_hud()
+
+func _sync_selected_station_with_tool() -> void:
+	var active_tool_id := _get_selected_run_tool_id()
+	if active_tool_id == "helm":
+		selected_station_index = maxi(0, NetworkRuntime.get_claimable_station_ids().find("helm"))
+	elif active_tool_id == "grapple":
+		selected_station_index = maxi(0, NetworkRuntime.get_claimable_station_ids().find("grapple"))
+
+func _build_run_toolbelt_text() -> String:
+	var entries := _get_run_toolbelt_entries()
+	if not entries.is_empty():
+		selected_run_tool_index = wrapi(selected_run_tool_index, 0, entries.size())
+	var tokens := PackedStringArray()
+	for entry_index in range(entries.size()):
+		var entry: Dictionary = entries[entry_index]
+		var token := "%d %s" % [entry_index + 1, str(entry.get("label", "Tool"))]
+		if entry_index == selected_run_tool_index:
+			token = "[%s]" % token
+		tokens.append(token)
+	var selected_entry: Dictionary = entries[selected_run_tool_index] if not entries.is_empty() else {}
+	return "%s\n%s" % [
+		"  ".join(tokens),
+		str(selected_entry.get("hint", "Use the selected deck tool.")),
+	]
+
+func _build_run_inventory_text() -> String:
+	var snapshot := NetworkRuntime.get_run_inventory_snapshot()
+	var manifest_lines := PackedStringArray()
+	for entry_variant in Array(snapshot.get("cargo_manifest", [])):
+		var entry: Dictionary = entry_variant
+		manifest_lines.append("- %s x%d" % [
+			str(entry.get("label", "Cargo")),
+			int(entry.get("quantity", 0)),
+		])
+	if manifest_lines.is_empty():
+		manifest_lines.append("- No cargo aboard.")
+	var bonus_lines := PackedStringArray()
+	for entry_variant in Array(snapshot.get("bonus_manifest", [])):
+		var entry: Dictionary = entry_variant
+		bonus_lines.append("- %s: %s" % [
+			str(entry.get("label", "Bonus")),
+			str(entry.get("detail", "")),
+		])
+	if bonus_lines.is_empty():
+		bonus_lines.append("- No support bonuses secured yet.")
+	return "Cargo Hold %d/%d | Patch Kits %d/%d\nAboard\n%s\nSupport\n%s\nCargo Lost To Sea %d | Bonus Bank %dg / %ds" % [
+		int(snapshot.get("cargo_count", 0)),
+		int(snapshot.get("cargo_capacity", 0)),
+		int(snapshot.get("patch_kits", 0)),
+		int(snapshot.get("patch_kits_max", 0)),
+		"\n".join(manifest_lines),
+		"\n".join(bonus_lines),
+		int(snapshot.get("cargo_lost_to_sea", 0)),
+		int(snapshot.get("bonus_gold_bank", 0)),
+		int(snapshot.get("bonus_salvage_bank", 0)),
+	]
+
+func _get_run_tool_label(tool_id: String) -> String:
+	for tool_variant in _get_run_toolbelt_entries():
+		var tool: Dictionary = tool_variant
+		if str(tool.get("id", "")) == tool_id:
+			return str(tool.get("label", tool_id.capitalize()))
+	return tool_id.capitalize()
+
 func _refresh_world() -> void:
 	_refresh_runtime_block_visuals()
 	_refresh_sinking_chunk_visuals()
@@ -893,6 +995,7 @@ func _refresh_hud() -> void:
 	var local_overboard := str(local_avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
 	var local_station_id := NetworkRuntime.get_peer_station_id(local_peer_id)
 	var selected_station_id := _get_selected_station_id()
+	var active_tool_id := _get_selected_run_tool_id()
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
 	var extraction_progress: float = float(NetworkRuntime.run_state.get("extraction_progress", 0.0))
@@ -994,7 +1097,7 @@ func _refresh_hud() -> void:
 	station_lines.append("  Patch Nearby Hull")
 	if local_overboard:
 		station_lines.append("  Swim To Ladder")
-	station_label.text = "Deck Jobs\n%s" % ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")
+	station_label.text = "Deck Jobs | Tool %s\n%s" % [_get_run_tool_label(active_tool_id), ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")]
 
 	var local_hint := _build_onboarding_text(selected_station_id, local_station_id).trim_prefix("Onboarding: ").strip_edges()
 	onboarding_label.text = "Local Tip\n%s" % local_hint
@@ -1076,6 +1179,12 @@ func _refresh_hud() -> void:
 		NetworkRuntime.status_message,
 	]
 	status_label.modulate = HUD_TEXT_MUTED
+	if footer_label != null:
+		footer_label.text = "Mouse aim | 1-5 tools | I inventory | Q/E stations | F use/claim | Space brace | G grapple | R patch"
+	toolbelt_label.text = _build_run_toolbelt_text()
+	inventory_label.text = _build_run_inventory_text()
+	if inventory_panel != null:
+		inventory_panel.visible = inventory_panel_visible
 
 func _build_interaction_text(selected_station_id: String, local_station_id: String) -> String:
 	if selected_station_id.is_empty():
@@ -2015,10 +2124,20 @@ func _collect_station_selection_input() -> void:
 func _collect_station_interaction_input(input_state: Dictionary) -> void:
 	var interact_pressed := Input.is_key_pressed(KEY_F)
 	if interact_pressed and not interact_latched:
+		var active_tool_id := _get_selected_run_tool_id()
 		if _is_local_overboard():
 			input_state["request_recover"] = true
 			interact_latched = interact_pressed
 			return
+		match active_tool_id:
+			"brace":
+				input_state["request_brace"] = true
+				interact_latched = interact_pressed
+				return
+			"repair":
+				input_state["request_repair"] = true
+				interact_latched = interact_pressed
+				return
 		var selected_station_id := _get_selected_station_id()
 		var selected_station: Dictionary = NetworkRuntime.station_state.get(selected_station_id, {})
 		var occupant_peer_id := int(selected_station.get("occupant_peer_id", 0))
@@ -2807,6 +2926,26 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
 			_set_mouse_capture(not _is_mouse_captured())
 			return
+		if event is InputEventKey and event.pressed and not event.echo:
+			match event.keycode:
+				KEY_I:
+					_toggle_inventory_panel()
+					return
+				KEY_1, KEY_KP_1:
+					_select_run_tool(0)
+					return
+				KEY_2, KEY_KP_2:
+					_select_run_tool(1)
+					return
+				KEY_3, KEY_KP_3:
+					_select_run_tool(2)
+					return
+				KEY_4, KEY_KP_4:
+					_select_run_tool(3)
+					return
+				KEY_5, KEY_KP_5:
+					_select_run_tool(4)
+					return
 		return
 	if event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER):
 		_continue_to_dock()

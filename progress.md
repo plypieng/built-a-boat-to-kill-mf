@@ -920,3 +920,31 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Start from Milestone B’s runtime block model rather than the old aggregate-only boat assumptions.
 - Use a fresh temporary Godot `HOME` for deterministic smoke tests so local saved blueprints do not affect verification.
 - Treat the hangar as a social third-person builder baseline now, and keep future polish focused on readability rather than replacing the control model again.
+
+## 2026-03-09 - Inventory system and tool HUD pass
+
+- Added shared toolbelt definitions in `autoload/network_runtime.gd` for both phases:
+  - hangar: `Build`, `Remove`, `Yard`
+  - run: `Helm`, `Brace`, `Grapple`, `Repair`, `Recover`
+- Added a real shared run cargo manifest in `run_state`:
+  - wreck salvage now appends to `cargo_manifest`
+  - cargo lost from chunk loss trims the manifest instead of only changing the count
+  - successful extraction snapshots the secured manifest for the results/UI path
+- Added inventory snapshot helpers in `autoload/network_runtime.gd`:
+  - hangar inventory now summarizes dock totals, unlocked parts, mounted blueprint parts, and the next yard purchase
+  - run inventory now summarizes cargo aboard, patch kits, support bonuses, and cargo lost to sea
+- Updated the hangar HUD:
+  - new bottom-center `Build Tools` belt
+  - new toggleable `Shared Inventory` panel
+  - `1 / 2 / 3` selects builder tools
+  - `F` now uses the active builder tool while the older direct shortcuts still work
+- Updated the run HUD:
+  - new bottom-center `Tool Belt`
+  - new toggleable `Ship Inventory` panel
+  - `1 / 2 / 3 / 4 / 5` selects run tools
+  - `F` now acts contextually for `Brace` and `Repair`, while still claiming/releasing stations for `Helm` and `Grapple`
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - fresh temp-`HOME` end-to-end autohost regression on port `7195`
+  - the run still completed `hangar -> run -> extraction -> hangar`
+  - the server banked `82 gold / 5 salvage` on return with the new inventory/toolbelt code active

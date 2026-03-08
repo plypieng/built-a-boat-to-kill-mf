@@ -48,6 +48,58 @@ const STATION_LAYOUT := {
 		"position": Vector3(-0.95, 0.92, 1.05),
 	},
 }
+const HANGAR_TOOLBELT := [
+	{
+		"id": "build",
+		"label": "Build",
+		"icon": "reinforced-hull",
+		"hint": "Place the selected part into the aimed cell.",
+	},
+	{
+		"id": "remove",
+		"label": "Remove",
+		"icon": "salvage",
+		"hint": "Scrap the targeted block from the shared blueprint.",
+	},
+	{
+		"id": "yard",
+		"label": "Yard",
+		"icon": "gold",
+		"hint": "Review shared stock and buy unlocks for the whole crew.",
+	},
+]
+const RUN_TOOLBELT := [
+	{
+		"id": "helm",
+		"label": "Helm",
+		"icon": "helm",
+		"hint": "Claim the wheel when you are inside the helm zone.",
+	},
+	{
+		"id": "brace",
+		"label": "Brace",
+		"icon": "brace",
+		"hint": "Brace anywhere on deck to resist impacts and surges.",
+	},
+	{
+		"id": "grapple",
+		"label": "Grapple",
+		"icon": "salvage",
+		"hint": "Work the crane to recover salvage, rescue lines, and cache pulls.",
+	},
+	{
+		"id": "repair",
+		"label": "Repair",
+		"icon": "repair-kit",
+		"hint": "Patch nearby damaged hull sections using shared kits.",
+	},
+	{
+		"id": "recover",
+		"label": "Recover",
+		"icon": "extraction",
+		"hint": "Climb back aboard from a ladder or stern line when overboard.",
+	},
+]
 const BUILDER_CELL_SIZE := 1.25
 const BUILDER_WORLD_ORIGIN := Vector3(0.0, 0.1, 0.0)
 const BUILDER_BOUNDS_MIN := Vector3i(-5, 0, -6)
@@ -507,6 +559,144 @@ func get_builder_store_entries() -> Array:
 			"definition": block_def.duplicate(true),
 		})
 	return store_entries
+
+func get_toolbelt_entries(phase_name: String = session_phase) -> Array:
+	if phase_name == SESSION_PHASE_RUN:
+		return RUN_TOOLBELT.duplicate(true)
+	return HANGAR_TOOLBELT.duplicate(true)
+
+func get_hangar_inventory_snapshot() -> Dictionary:
+	var snapshot := progression_state.duplicate(true)
+	if snapshot.is_empty():
+		snapshot = DockState.get_profile_snapshot()
+	var blueprint_manifest: Array = []
+	var block_counts: Dictionary = {}
+	for block_variant in Array(boat_blueprint.get("blocks", [])):
+		var block: Dictionary = block_variant
+		var block_id := str(block.get("type", "structure"))
+		block_counts[block_id] = int(block_counts.get(block_id, 0)) + 1
+	for block_id_variant in block_counts.keys():
+		var block_id := str(block_id_variant)
+		var block_def := get_builder_block_definition(block_id)
+		blueprint_manifest.append(_make_inventory_entry(
+			str(block_def.get("label", block_id.capitalize())),
+			int(block_counts.get(block_id, 0)),
+			_get_inventory_icon_for_block(block_id),
+			"Mounted on the shared blueprint."
+		))
+	blueprint_manifest.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return str(a.get("label", "")) < str(b.get("label", ""))
+	)
+	var unlocked_labels := PackedStringArray()
+	for block_id_variant in Array(snapshot.get("unlocked_blocks", [])):
+		var block_id := str(block_id_variant)
+		var block_def := get_builder_block_definition(block_id)
+		unlocked_labels.append(str(block_def.get("label", block_id.capitalize())))
+	unlocked_labels.sort()
+	return {
+		"gold": int(snapshot.get("total_gold", 0)),
+		"salvage": int(snapshot.get("total_salvage", 0)),
+		"unlocked_parts": unlocked_labels,
+		"blueprint_manifest": blueprint_manifest,
+		"store_entries": get_builder_store_entries(),
+		"stats": get_blueprint_stats(),
+	}
+
+func get_run_inventory_snapshot() -> Dictionary:
+	var bonus_manifest: Array = []
+	if bool(run_state.get("rescue_completed", false)):
+		bonus_manifest.append(_make_inventory_entry(
+			str(run_state.get("rescue_label", "Rescue Package")),
+			1,
+			"salvage",
+			"+%d gold / +%d salvage / +%d patch kit." % [
+				int(run_state.get("rescue_bonus_gold", 0)),
+				int(run_state.get("rescue_bonus_salvage", 0)),
+				int(run_state.get("rescue_patch_kit_bonus", 0)),
+			]
+		))
+	if bool(run_state.get("cache_recovered", false)):
+		bonus_manifest.append(_make_inventory_entry(
+			str(run_state.get("cache_label", "Resupply Cache")),
+			1,
+			"repair-kit",
+			"+%d gold / +%d salvage / +%d patch kit." % [
+				RESUPPLY_CACHE_GOLD_BONUS,
+				RESUPPLY_CACHE_SALVAGE_BONUS,
+				RESUPPLY_CACHE_SUPPLY_GRANT,
+			]
+		))
+	return {
+		"cargo_manifest": Array(run_state.get("cargo_manifest", [])).duplicate(true),
+		"secured_manifest": Array(run_state.get("secured_manifest", [])).duplicate(true),
+		"bonus_manifest": bonus_manifest,
+		"cargo_count": int(run_state.get("cargo_count", 0)),
+		"cargo_capacity": int(run_state.get("cargo_capacity", int(boat_state.get("cargo_capacity", 0)))),
+		"cargo_lost_to_sea": int(run_state.get("cargo_lost_to_sea", 0)),
+		"patch_kits": int(run_state.get("repair_supplies", 0)),
+		"patch_kits_max": int(run_state.get("repair_supplies_max", 0)),
+		"bonus_gold_bank": int(run_state.get("bonus_gold_bank", 0)),
+		"bonus_salvage_bank": int(run_state.get("bonus_salvage_bank", 0)),
+	}
+
+func _get_inventory_icon_for_block(block_id: String) -> String:
+	match block_id.strip_edges().to_lower():
+		"core", "hull", "reinforced_hull", "structure":
+			return "reinforced-hull"
+		"engine", "twin_engine":
+			return "twin-engine"
+		"cargo":
+			return "cargo"
+		"utility":
+			return "repair-kit"
+		"stabilizer":
+			return "stabilizer"
+		_:
+			return "cargo"
+
+func _make_inventory_entry(label: String, quantity: int, icon_id: String, detail: String = "") -> Dictionary:
+	return {
+		"label": label,
+		"quantity": maxi(1, quantity),
+		"icon_id": icon_id,
+		"detail": detail,
+	}
+
+func _append_inventory_entry(state_key: String, label: String, quantity: int, icon_id: String, detail: String = "") -> void:
+	if quantity <= 0:
+		return
+	var manifest: Array = Array(run_state.get(state_key, [])).duplicate(true)
+	for entry_index in range(manifest.size()):
+		var entry: Dictionary = manifest[entry_index]
+		if str(entry.get("label", "")) != label:
+			continue
+		if str(entry.get("detail", "")) != detail:
+			continue
+		entry["quantity"] = int(entry.get("quantity", 0)) + quantity
+		manifest[entry_index] = entry
+		run_state[state_key] = manifest
+		return
+	manifest.append(_make_inventory_entry(label, quantity, icon_id, detail))
+	run_state[state_key] = manifest
+
+func _spill_inventory_quantity(state_key: String, quantity: int) -> void:
+	if quantity <= 0:
+		return
+	var manifest: Array = Array(run_state.get(state_key, [])).duplicate(true)
+	var remaining := quantity
+	for entry_index in range(manifest.size() - 1, -1, -1):
+		if remaining <= 0:
+			break
+		var entry: Dictionary = manifest[entry_index]
+		var entry_quantity := int(entry.get("quantity", 0))
+		if entry_quantity <= remaining:
+			remaining -= entry_quantity
+			manifest.remove_at(entry_index)
+			continue
+		entry["quantity"] = entry_quantity - remaining
+		remaining = 0
+		manifest[entry_index] = entry
+	run_state[state_key] = manifest
 
 func get_hangar_avatar_state() -> Dictionary:
 	return hangar_avatar_state.duplicate(true)
@@ -1664,6 +1854,8 @@ func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_war
 	run_state = {
 		"phase": "running",
 		"cargo_count": 0,
+		"cargo_manifest": [],
+		"secured_manifest": [],
 		"cargo_secured": 0,
 		"loot_collected": 0,
 		"loot_total": loot_state.size(),
@@ -2028,6 +2220,7 @@ func _apply_runtime_stats_from_main_blocks(runtime_blocks: Array, main_block_ids
 	if overflow > 0:
 		run_state["cargo_count"] = new_cargo_capacity
 		run_state["cargo_lost_to_sea"] = int(run_state.get("cargo_lost_to_sea", 0)) + overflow
+		_spill_inventory_quantity("cargo_manifest", overflow)
 
 	var new_max_hull := float(stats.get("max_hull_integrity", BOAT_MAX_INTEGRITY))
 	boat_state["max_hull_integrity"] = new_max_hull
@@ -2961,6 +3154,13 @@ func _process_grapple(peer_id: int) -> void:
 	var requires_brace := bool(loot_target.get("requires_brace", true))
 	var was_braced := float(boat_state.get("brace_timer", 0.0)) > 0.0
 	run_state["cargo_count"] = int(run_state.get("cargo_count", 0)) + cargo_value
+	_append_inventory_entry(
+		"cargo_manifest",
+		str(loot_target.get("label", "Recovered Cargo")),
+		cargo_value,
+		"cargo",
+		"Wreck salvage"
+	)
 	run_state["loot_collected"] = int(run_state.get("loot_collected", 0)) + 1
 	loot_state.remove_at(closest_index)
 	run_state["loot_remaining"] = loot_state.size()
@@ -3277,6 +3477,7 @@ func _resolve_run_success() -> void:
 	var reward_salvage := cargo_secured * REWARD_SALVAGE_PER_CARGO + int(run_state.get("bonus_salvage_bank", 0))
 	run_state["phase"] = "success"
 	run_state["cargo_secured"] = cargo_secured
+	run_state["secured_manifest"] = Array(run_state.get("cargo_manifest", [])).duplicate(true)
 	run_state["reward_gold"] = reward_gold
 	run_state["reward_salvage"] = reward_salvage
 	run_state["result_title"] = "Extraction Successful"
@@ -3298,6 +3499,7 @@ func _resolve_run_failure(reason: String) -> void:
 	_freeze_boat()
 	run_state["phase"] = "failed"
 	run_state["cargo_secured"] = 0
+	run_state["secured_manifest"] = []
 	run_state["reward_gold"] = 0
 	run_state["reward_salvage"] = 0
 	run_state["failure_reason"] = reason

@@ -188,6 +188,72 @@ layout_mode = 2
 theme_override_font_sizes/font_size = 11
 autowrap_mode = 3
 
+[node name="ToolPanel" type="PanelContainer" parent="."]
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -260.0
+offset_top = -112.0
+offset_right = 260.0
+offset_bottom = -18.0
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 10
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="Heading" type="Label" parent="ToolPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "TOOL BELT"
+horizontal_alignment = 1
+
+[node name="ToolLabel" type="Label" parent="ToolPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 3
+horizontal_alignment = 1
+
+[node name="InventoryPanel" type="PanelContainer" parent="."]
+visible = false
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -290.0
+offset_top = -304.0
+offset_right = 290.0
+offset_bottom = -126.0
+
+[node name="Margin" type="MarginContainer" parent="InventoryPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 12
+
+[node name="Layout" type="VBoxContainer" parent="InventoryPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="Heading" type="Label" parent="InventoryPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "SHIP INVENTORY"
+horizontal_alignment = 1
+
+[node name="InventoryLabel" type="Label" parent="InventoryPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 3
+
 [node name="CrosshairLabel" type="Label" parent="."]
 anchor_left = 0.5
 anchor_top = 0.5
