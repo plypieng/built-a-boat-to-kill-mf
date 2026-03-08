@@ -301,6 +301,7 @@ bash tools/package_windows_playtest.sh \
 - The current hangar now shows a clearer build-tool panel, placement-state feedback, and launch-readiness summary so the crew can read the boat status faster before launching.
 - The current hangar also shows an unlock yard with shared team totals, selected-part descriptions, and immediate palette updates after server-approved purchases.
 - The current hangar and run scenes now include lightweight contextual onboarding text so first-time players can understand building, rescue pressure, squalls, and extraction without live coaching.
+- The current run scene now uses the first `Expedition Board` HUD pass: a centered objective strip, top-right extraction board, bottom-left crew deck, bottom-right boat plate, and short event callouts for impacts and run-state changes.
 - The current hangar presentation now frames the shared boat more deliberately with an over-shoulder camera, lighter dock dressing, and simplified crew roster text.
 - The current hangar now supports hard builder-to-builder bump reactions, and the new `--autohangar-role=bumper_left|bumper_right` helpers give a repeatable smoke path for that behavior.
 - The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.

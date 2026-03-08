@@ -743,6 +743,30 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Wrote the approved design doc to `docs/plans/2026-03-08-full-hud-expedition-board-design.md`.
 - Wrote the fallback implementation plan to `docs/plans/2026-03-08-full-hud-expedition-board-implementation-plan.md` because the `writing-plans` skill is not available in this session.
 
+## 2026-03-08 Run HUD First Pass
+
+- Implemented the first `Expedition Board` gameplay HUD pass in `scenes/run_client/run_client.gd`.
+- Replaced the old run overlay layout with:
+  - top-center `Current Order` objective strip
+  - top-right `Extraction Board`
+  - bottom-left `Crew Deck`
+  - bottom-right `Boat Plate`
+  - centered short-lived event callouts for impacts and run events
+- Tightened the wording in the run objective and onboarding text so it reads more like actionable crew direction and less like debug/tutorial copy.
+- Added HUD event callouts for:
+  - impacts
+  - brace mitigation
+  - chunk loss
+  - cargo washed overboard
+  - rescue/cache completion
+  - extraction success
+  - run failure
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - local GUI autorun capture at `/tmp/builtaboat-run-hud-pass.png`
+  - refined local GUI autorun capture at `/tmp/builtaboat-run-hud-pass-v2.png`
+- The second capture confirms the new run HUD hierarchy reads cleanly, though the gameplay camera still keeps the boat smaller in frame than ideal and can be tuned separately from the HUD.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:

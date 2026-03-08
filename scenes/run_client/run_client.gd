@@ -15,6 +15,16 @@ const STATION_LOCAL_COLOR := Color(0.30, 0.82, 0.52)
 const EXTRACTION_IDLE_COLOR := Color(0.30, 0.62, 0.86)
 const EXTRACTION_READY_COLOR := Color(0.21, 0.82, 0.57)
 const EXTRACTION_FAILED_COLOR := Color(0.84, 0.25, 0.24)
+const HUD_PANEL_BG := Color(0.05, 0.09, 0.13, 0.78)
+const HUD_PANEL_BG_SOFT := Color(0.07, 0.12, 0.17, 0.70)
+const HUD_BORDER_BLUE := Color(0.30, 0.53, 0.66, 0.92)
+const HUD_BORDER_ORANGE := Color(0.83, 0.59, 0.28, 0.95)
+const HUD_BORDER_GREEN := Color(0.28, 0.71, 0.54, 0.95)
+const HUD_TEXT_PRIMARY := Color(0.96, 0.95, 0.90)
+const HUD_TEXT_MUTED := Color(0.78, 0.84, 0.88)
+const HUD_TEXT_WARNING := Color(0.95, 0.80, 0.43)
+const HUD_TEXT_DANGER := Color(0.95, 0.55, 0.48)
+const HUD_TEXT_SUCCESS := Color(0.76, 0.95, 0.82)
 
 var status_label: Label
 var objective_label: Label
@@ -25,6 +35,7 @@ var station_label: Label
 var interaction_label: Label
 var roster_label: Label
 var boat_label: Label
+var event_callout_label: Label
 var boat_root: Node3D
 var hull_mesh_instance: MeshInstance3D
 var hull_material: StandardMaterial3D
@@ -84,6 +95,14 @@ var auto_continue_queued := false
 var reaction_visual_state: Dictionary = {}
 var last_local_reaction_id := 0
 var local_camera_jolt := Vector3.ZERO
+var event_callout_timer := 0.0
+var event_callout_color := HUD_TEXT_PRIMARY
+var last_hud_collision_count := 0
+var last_hud_detached_chunk_count := 0
+var last_hud_cargo_lost_to_sea := 0
+var last_hud_rescue_completed := false
+var last_hud_cache_recovered := false
+var last_hud_phase := "running"
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -95,6 +114,7 @@ func _ready() -> void:
 	_schedule_frame_capture()
 	_schedule_optional_quit()
 	_initialize_autopilot()
+	_prime_run_hud_event_state()
 	print("Run client ready with seed %d and peer id %d." % [NetworkRuntime.run_seed, _get_local_peer_id()])
 
 	NetworkRuntime.status_changed.connect(_on_status_changed)
@@ -126,6 +146,7 @@ func _process(delta: float) -> void:
 	_update_squall_visuals()
 	_update_extraction_visual(delta)
 	_update_camera(delta)
+	_update_event_callout(delta)
 
 func _physics_process(delta: float) -> void:
 	station_request_cooldown = maxf(0.0, station_request_cooldown - delta)
@@ -478,72 +499,198 @@ func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 
-	var margin := MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
-	margin.offset_left = 20.0
-	margin.offset_top = 20.0
-	layer.add_child(margin)
+	var objective_panel := PanelContainer.new()
+	objective_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	objective_panel.offset_left = 360.0
+	objective_panel.offset_top = 18.0
+	objective_panel.offset_right = -360.0
+	objective_panel.offset_bottom = 96.0
+	_apply_hud_panel_style(objective_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG)
+	layer.add_child(objective_panel)
 
-	var panel := PanelContainer.new()
-	margin.add_child(panel)
+	var objective_margin := MarginContainer.new()
+	objective_margin.add_theme_constant_override("margin_left", 18)
+	objective_margin.add_theme_constant_override("margin_top", 12)
+	objective_margin.add_theme_constant_override("margin_right", 18)
+	objective_margin.add_theme_constant_override("margin_bottom", 12)
+	objective_panel.add_child(objective_margin)
 
-	var inner := MarginContainer.new()
-	inner.add_theme_constant_override("margin_left", 16)
-	inner.add_theme_constant_override("margin_top", 14)
-	inner.add_theme_constant_override("margin_right", 16)
-	inner.add_theme_constant_override("margin_bottom", 14)
-	panel.add_child(inner)
+	var objective_layout := VBoxContainer.new()
+	objective_layout.add_theme_constant_override("separation", 4)
+	objective_margin.add_child(objective_layout)
 
-	var layout := VBoxContainer.new()
-	layout.add_theme_constant_override("separation", 8)
-	inner.add_child(layout)
-
-	var heading := Label.new()
-	heading.text = "Shared Boat Extraction Prototype"
-	heading.add_theme_font_size_override("font_size", 22)
-	layout.add_child(heading)
+	var objective_heading := Label.new()
+	objective_heading.text = "CURRENT ORDER"
+	objective_heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	objective_heading.add_theme_font_size_override("font_size", 13)
+	objective_heading.modulate = HUD_TEXT_WARNING
+	objective_layout.add_child(objective_heading)
 
 	objective_label = Label.new()
+	objective_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	objective_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(objective_label)
+	objective_label.add_theme_font_size_override("font_size", 18)
+	objective_label.modulate = HUD_TEXT_PRIMARY
+	objective_layout.add_child(objective_label)
 
-	onboarding_label = Label.new()
-	onboarding_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	onboarding_label.modulate = Color(0.87, 0.95, 1.0)
-	layout.add_child(onboarding_label)
+	var extraction_panel := PanelContainer.new()
+	extraction_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	extraction_panel.offset_left = -326.0
+	extraction_panel.offset_top = 132.0
+	extraction_panel.offset_right = -18.0
+	extraction_panel.offset_bottom = 276.0
+	_apply_hud_panel_style(extraction_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG_SOFT)
+	layer.add_child(extraction_panel)
+
+	var extraction_margin := MarginContainer.new()
+	extraction_margin.add_theme_constant_override("margin_left", 16)
+	extraction_margin.add_theme_constant_override("margin_top", 12)
+	extraction_margin.add_theme_constant_override("margin_right", 16)
+	extraction_margin.add_theme_constant_override("margin_bottom", 12)
+	extraction_panel.add_child(extraction_margin)
+
+	var extraction_layout := VBoxContainer.new()
+	extraction_layout.add_theme_constant_override("separation", 6)
+	extraction_margin.add_child(extraction_layout)
+
+	var extraction_heading := Label.new()
+	extraction_heading.text = "EXTRACTION BOARD"
+	extraction_heading.add_theme_font_size_override("font_size", 14)
+	extraction_heading.modulate = HUD_TEXT_WARNING
+	extraction_layout.add_child(extraction_heading)
 
 	resource_label = Label.new()
 	resource_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(resource_label)
+	resource_label.add_theme_font_size_override("font_size", 14)
+	resource_label.modulate = HUD_TEXT_PRIMARY
+	extraction_layout.add_child(resource_label)
 
 	run_label = Label.new()
 	run_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(run_label)
+	run_label.add_theme_font_size_override("font_size", 13)
+	run_label.modulate = HUD_TEXT_MUTED
+	extraction_layout.add_child(run_label)
+
+	var crew_panel := PanelContainer.new()
+	crew_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	crew_panel.offset_left = 18.0
+	crew_panel.offset_top = -182.0
+	crew_panel.offset_right = 406.0
+	crew_panel.offset_bottom = -18.0
+	_apply_hud_panel_style(crew_panel, HUD_BORDER_BLUE, HUD_PANEL_BG_SOFT)
+	layer.add_child(crew_panel)
+
+	var crew_margin := MarginContainer.new()
+	crew_margin.add_theme_constant_override("margin_left", 16)
+	crew_margin.add_theme_constant_override("margin_top", 12)
+	crew_margin.add_theme_constant_override("margin_right", 16)
+	crew_margin.add_theme_constant_override("margin_bottom", 12)
+	crew_panel.add_child(crew_margin)
+
+	var crew_layout := VBoxContainer.new()
+	crew_layout.add_theme_constant_override("separation", 6)
+	crew_margin.add_child(crew_layout)
+
+	var crew_heading := Label.new()
+	crew_heading.text = "CREW DECK"
+	crew_heading.add_theme_font_size_override("font_size", 14)
+	crew_heading.modulate = HUD_TEXT_MUTED
+	crew_layout.add_child(crew_heading)
 
 	station_label = Label.new()
 	station_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(station_label)
-
-	interaction_label = Label.new()
-	interaction_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(interaction_label)
-
-	boat_label = Label.new()
-	boat_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(boat_label)
-
-	status_label = Label.new()
-	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(status_label)
+	station_label.add_theme_font_size_override("font_size", 13)
+	station_label.modulate = HUD_TEXT_PRIMARY
+	crew_layout.add_child(station_label)
 
 	roster_label = Label.new()
 	roster_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(roster_label)
+	roster_label.add_theme_font_size_override("font_size", 12)
+	roster_label.modulate = HUD_TEXT_MUTED
+	crew_layout.add_child(roster_label)
+
+	onboarding_label = Label.new()
+	onboarding_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	onboarding_label.add_theme_font_size_override("font_size", 12)
+	onboarding_label.modulate = HUD_TEXT_PRIMARY
+	crew_layout.add_child(onboarding_label)
 
 	var footer := Label.new()
-	footer.text = "Controls: Q/E cycle station | F claim/release | W/S throttle | A/D steer | Space brace | G grapple | R repair."
+	footer.text = "Q/E stations | F claim | W A S D helm | Space brace | G grapple | R repair"
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(footer)
+	footer.add_theme_font_size_override("font_size", 11)
+	footer.modulate = HUD_TEXT_MUTED
+	crew_layout.add_child(footer)
+
+	var survival_panel := PanelContainer.new()
+	survival_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	survival_panel.offset_left = -384.0
+	survival_panel.offset_top = -208.0
+	survival_panel.offset_right = -18.0
+	survival_panel.offset_bottom = -18.0
+	_apply_hud_panel_style(survival_panel, HUD_BORDER_GREEN, HUD_PANEL_BG)
+	layer.add_child(survival_panel)
+
+	var survival_margin := MarginContainer.new()
+	survival_margin.add_theme_constant_override("margin_left", 16)
+	survival_margin.add_theme_constant_override("margin_top", 12)
+	survival_margin.add_theme_constant_override("margin_right", 16)
+	survival_margin.add_theme_constant_override("margin_bottom", 12)
+	survival_panel.add_child(survival_margin)
+
+	var survival_layout := VBoxContainer.new()
+	survival_layout.add_theme_constant_override("separation", 6)
+	survival_margin.add_child(survival_layout)
+
+	var survival_heading := Label.new()
+	survival_heading.text = "BOAT PLATE"
+	survival_heading.add_theme_font_size_override("font_size", 14)
+	survival_heading.modulate = HUD_TEXT_SUCCESS
+	survival_layout.add_child(survival_heading)
+
+	boat_label = Label.new()
+	boat_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	boat_label.add_theme_font_size_override("font_size", 14)
+	boat_label.modulate = HUD_TEXT_PRIMARY
+	survival_layout.add_child(boat_label)
+
+	interaction_label = Label.new()
+	interaction_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	interaction_label.add_theme_font_size_override("font_size", 12)
+	interaction_label.modulate = HUD_TEXT_MUTED
+	survival_layout.add_child(interaction_label)
+
+	status_label = Label.new()
+	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	status_label.add_theme_font_size_override("font_size", 11)
+	status_label.modulate = HUD_TEXT_MUTED
+	survival_layout.add_child(status_label)
+
+	event_callout_label = Label.new()
+	event_callout_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	event_callout_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	event_callout_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	event_callout_label.add_theme_font_size_override("font_size", 24)
+	event_callout_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	event_callout_label.offset_left = -260.0
+	event_callout_label.offset_top = 136.0
+	event_callout_label.offset_right = 260.0
+	event_callout_label.offset_bottom = 196.0
+	event_callout_label.visible = false
+	layer.add_child(event_callout_label)
+
+func _apply_hud_panel_style(panel: PanelContainer, border_color: Color, background_color: Color) -> void:
+	var style := StyleBoxFlat.new()
+	style.bg_color = background_color
+	style.border_color = border_color
+	style.set_border_width_all(2)
+	style.corner_radius_top_left = 10
+	style.corner_radius_top_right = 10
+	style.corner_radius_bottom_left = 10
+	style.corner_radius_bottom_right = 10
+	style.shadow_color = Color(0.0, 0.0, 0.0, 0.28)
+	style.shadow_size = 4
+	panel.add_theme_stylebox_override("panel", style)
 
 func _build_result_overlay() -> void:
 	result_layer = CanvasLayer.new()
@@ -637,76 +784,106 @@ func _refresh_hud() -> void:
 	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
 	var rescue_completed := bool(NetworkRuntime.run_state.get("rescue_completed", false))
 	var squall_bands := Array(NetworkRuntime.run_state.get("squall_bands", []))
-	var progression_snapshot := _get_progression_snapshot()
+	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
+	var current_cargo := int(NetworkRuntime.run_state.get("cargo_count", 0))
+	var cargo_capacity := int(NetworkRuntime.run_state.get("cargo_capacity", int(NetworkRuntime.boat_state.get("cargo_capacity", 1))))
+	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
+	var layout_label := str(NetworkRuntime.run_state.get("layout_label", "Wreck Push"))
+	var brace_timer := float(NetworkRuntime.boat_state.get("brace_timer", 0.0))
+	var brace_cooldown := float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0))
+	var brace_state := "Ready"
+	if brace_timer > 0.0:
+		brace_state = "Holding %.1fs" % brace_timer
+	elif brace_cooldown > 0.0:
+		brace_state = "Recharging %.1fs" % brace_cooldown
 
-	objective_label.text = _build_objective_text()
-	onboarding_label.text = _build_onboarding_text(selected_station_id, local_station_id)
-	resource_label.text = "Resources: Patch Kits %d/%d | Bonus Bank %d gold / %d salvage | Cargo Lost To Sea %d | Dock %d gold / %d salvage" % [
+	var objective_text := _build_objective_text().trim_prefix("Objective: ").strip_edges()
+	objective_label.text = objective_text
+	if phase == "success":
+		objective_label.modulate = HUD_TEXT_SUCCESS
+	elif phase == "failed":
+		objective_label.modulate = HUD_TEXT_DANGER
+	else:
+		objective_label.modulate = HUD_TEXT_PRIMARY
+
+	resource_label.text = "Cargo %d/%d | Extract %.1f/%.1fs | Dist %.1fm\nPatch Kits %d/%d | Bonus %dg / %ds" % [
+		current_cargo,
+		cargo_capacity,
+		extraction_progress,
+		extraction_duration,
+		extraction_distance,
 		repair_supplies,
 		repair_supplies_max,
 		int(NetworkRuntime.run_state.get("bonus_gold_bank", 0)),
 		int(NetworkRuntime.run_state.get("bonus_salvage_bank", 0)),
-		cargo_lost_to_sea,
-		int(progression_snapshot.get("total_gold", 0)),
-		int(progression_snapshot.get("total_salvage", 0)),
 	]
-	run_label.text = "Phase: %s | Seed: %d | Layout: %s | Cargo: %d | Loot Remaining: %d | Blocks: %d active / %d destroyed | Chunks Lost: %d | Breaches: %d | Wreck Dist: %.1f | Rescue Dist: %.1f | Extract: %.1f/%.1fs | Dist: %.1f" % [
-		str(NetworkRuntime.run_state.get("phase", "running")),
-		NetworkRuntime.run_seed,
-		str(NetworkRuntime.run_state.get("layout_label", "Wreck Push")),
-		int(NetworkRuntime.run_state.get("cargo_count", 0)),
-		int(NetworkRuntime.run_state.get("loot_remaining", 0)),
-		active_block_count,
-		destroyed_block_count,
-		detached_chunk_count,
-		breach_stacks,
-		wreck_distance,
-		rescue_distance,
-		extraction_progress,
-		extraction_duration,
-		extraction_distance,
-	]
+
+	var pressure_lines := PackedStringArray()
+	pressure_lines.append("%s | Loot %d left | Wreck %.1fm" % [layout_label, loot_remaining, wreck_distance])
 	if rescue_available:
-		run_label.text += " | Rescue: %.1f/%.1fs" % [rescue_progress, rescue_duration]
+		pressure_lines.append("Rescue %.1fm | Window %.1f/%.1fs" % [rescue_distance, rescue_progress, rescue_duration])
 	elif rescue_completed:
-		run_label.text += " | Rescue: secured"
+		pressure_lines.append("Rescue secured")
 	if bool(NetworkRuntime.run_state.get("cache_available", false)):
-		run_label.text += " | Cache Dist: %.1f" % cache_distance
+		pressure_lines.append("Cache %.1fm | Quick bonus lane" % cache_distance)
 	if not squall_bands.is_empty():
-		run_label.text += " | Squalls: %d" % squall_bands.size()
+		pressure_lines.append("Squalls %d | %s" % [squall_bands.size(), "Inside storm band" if _boat_inside_any_squall() else "Route pressure"])
+	if cargo_lost_to_sea > 0:
+		pressure_lines.append("Cargo washed overboard: %d" % cargo_lost_to_sea)
+	run_label.text = "\n".join(pressure_lines)
 
 	var station_lines := PackedStringArray()
 	for station_id in NetworkRuntime.get_station_ids():
-		var prefix := ">" if station_id == selected_station_id else " "
 		var occupant_name := NetworkRuntime.get_station_occupant_name(station_id)
-		station_lines.append("%s %s: %s" % [
-			prefix,
+		var marker := ">" if station_id == selected_station_id else " "
+		station_lines.append("%s %s %s" % [
+			marker,
 			NetworkRuntime.get_station_label(station_id),
 			occupant_name,
 		])
-	station_label.text = "Stations:\n%s" % ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")
+	station_label.text = "Stations\n%s" % ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")
 
-	interaction_label.text = _build_interaction_text(selected_station_id, local_station_id)
-	boat_label.text = "Boat: hp=%.1f/%.1f speed=%.2f/%.2f cargo=%d/%d pos=(%.2f, %.2f, %.2f) heading=%.2f breaches=%d repairCd=%.2f collisions=%d lastImpact=%.1f braced=%s blueprint=v%d mainChunk=%d" % [
+	var local_hint := _build_onboarding_text(selected_station_id, local_station_id).trim_prefix("Onboarding: ").strip_edges()
+	onboarding_label.text = "Local Tip\n%s" % local_hint
+
+	boat_label.text = "Hull %.0f/%.0f | Speed %.1f/%.1f\nBreaches %d | Patch Kits %d/%d | Blocks %d active / %d lost\nBrace %s | Cargo %d/%d | Collisions %d" % [
 		hull_integrity,
 		max_hull_integrity,
 		float(NetworkRuntime.boat_state.get("speed", 0.0)),
 		float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED)),
-		int(NetworkRuntime.run_state.get("cargo_count", 0)),
-		int(NetworkRuntime.run_state.get("cargo_capacity", int(NetworkRuntime.boat_state.get("cargo_capacity", 1)))),
-		boat_position.x,
-		boat_position.y,
-		boat_position.z,
-		float(NetworkRuntime.boat_state.get("rotation_y", 0.0)),
 		breach_stacks,
-		float(NetworkRuntime.boat_state.get("repair_cooldown", 0.0)),
+		repair_supplies,
+		repair_supplies_max,
+		active_block_count,
+		destroyed_block_count,
+		brace_state,
+		current_cargo,
+		cargo_capacity,
 		int(NetworkRuntime.boat_state.get("collision_count", 0)),
-		float(NetworkRuntime.boat_state.get("last_impact_damage", 0.0)),
-		"yes" if bool(NetworkRuntime.boat_state.get("last_impact_braced", false)) else "no",
-		int(NetworkRuntime.run_state.get("blueprint_version", 1)),
-		int(NetworkRuntime.boat_state.get("main_chunk_id", 0)),
 	]
-	status_label.text = "Status: %s" % NetworkRuntime.status_message
+	var hull_ratio := hull_integrity / maxf(1.0, max_hull_integrity)
+	if hull_ratio <= 0.3 or detached_chunk_count > 0:
+		boat_label.modulate = HUD_TEXT_DANGER
+	elif hull_ratio <= 0.6 or breach_stacks > 0:
+		boat_label.modulate = HUD_TEXT_WARNING
+	else:
+		boat_label.modulate = HUD_TEXT_PRIMARY
+
+	var interaction_lines := PackedStringArray()
+	var selected_label := NetworkRuntime.get_station_label(selected_station_id) if not selected_station_id.is_empty() else "No station"
+	var local_label := NetworkRuntime.get_station_label(local_station_id) if not local_station_id.is_empty() else "Free Roam"
+	interaction_lines.append("Selected %s | You %s" % [selected_label, local_label])
+	if local_station_id == "helm":
+		interaction_lines.append("Hold a calm line for grapple windows and extraction.")
+	elif local_station_id == "brace":
+		interaction_lines.append("Time Space against impacts, surges, and squalls.")
+	elif local_station_id == "grapple":
+		interaction_lines.append("Recover loot only when the helm has settled the boat.")
+	elif local_station_id == "repair":
+		interaction_lines.append("Patch only when the risk is worth the kit spend.")
+	else:
+		interaction_lines.append("Claim a station and support the shared boat.")
+	interaction_label.text = "\n".join(interaction_lines)
 
 	var crew_lines := PackedStringArray()
 	for peer_id in NetworkRuntime.get_player_peer_ids():
@@ -716,13 +893,19 @@ func _refresh_hud() -> void:
 		var reaction_text := ""
 		if not peer_reaction.is_empty():
 			reaction_text = " | %s" % str(peer_reaction.get("type", "reacting")).capitalize()
-		crew_lines.append("%s - %s [%s]%s" % [
-			str(peer_id),
+		crew_lines.append("%s - %s%s" % [
 			str(peer_data.get("name", "Unknown")),
-			NetworkRuntime.get_station_label(crew_station) if not crew_station.is_empty() else "Free Roam",
+			NetworkRuntime.get_station_label(crew_station) if not crew_station.is_empty() else "Free",
 			reaction_text,
 		])
-	roster_label.text = "Crew Snapshot:\n%s" % ("\n".join(crew_lines) if not crew_lines.is_empty() else "No crew connected yet.")
+	roster_label.text = "Crew Snapshot\n%s" % ("\n".join(crew_lines) if not crew_lines.is_empty() else "No crew connected yet.")
+
+	status_label.text = "Seed %d | %s | %s" % [
+		NetworkRuntime.run_seed,
+		phase.capitalize(),
+		NetworkRuntime.status_message,
+	]
+	status_label.modulate = HUD_TEXT_MUTED
 
 func _build_interaction_text(selected_station_id: String, local_station_id: String) -> String:
 	if selected_station_id.is_empty():
@@ -1366,6 +1549,34 @@ func _refresh_result_overlay() -> void:
 	]
 	result_panel.modulate = Color(0.98, 1.0, 0.98) if phase == "success" else Color(1.0, 0.94, 0.94)
 	result_continue_button.disabled = false
+
+func _prime_run_hud_event_state() -> void:
+	last_hud_collision_count = int(NetworkRuntime.boat_state.get("collision_count", 0))
+	last_hud_detached_chunk_count = int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
+	last_hud_cargo_lost_to_sea = int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
+	last_hud_rescue_completed = bool(NetworkRuntime.run_state.get("rescue_completed", false))
+	last_hud_cache_recovered = bool(NetworkRuntime.run_state.get("cache_recovered", false))
+	last_hud_phase = str(NetworkRuntime.run_state.get("phase", "running"))
+
+func _push_event_callout(text: String, color: Color, duration: float = 1.9) -> void:
+	if event_callout_label == null:
+		return
+	event_callout_timer = duration
+	event_callout_color = color
+	event_callout_label.text = text
+	event_callout_label.modulate = color
+	event_callout_label.visible = true
+
+func _update_event_callout(delta: float) -> void:
+	if event_callout_label == null:
+		return
+	if event_callout_timer <= 0.0:
+		event_callout_label.visible = false
+		return
+	event_callout_timer = maxf(0.0, event_callout_timer - delta)
+	var fade_ratio := clampf(event_callout_timer / 1.9, 0.0, 1.0)
+	event_callout_label.visible = true
+	event_callout_label.modulate = Color(event_callout_color.r, event_callout_color.g, event_callout_color.b, clampf(0.2 + fade_ratio, 0.0, 1.0))
 
 func _tick_reaction_visuals(delta: float) -> void:
 	var expired_peer_ids: Array = []
@@ -2172,6 +2383,13 @@ func _on_helm_changed(_driver_peer_id: int) -> void:
 	_refresh_hud()
 
 func _on_boat_state_changed(_state: Dictionary) -> void:
+	var collision_count := int(NetworkRuntime.boat_state.get("collision_count", 0))
+	if collision_count > last_hud_collision_count:
+		if bool(NetworkRuntime.boat_state.get("last_impact_braced", false)):
+			_push_event_callout("Brace Held", HUD_TEXT_SUCCESS)
+		else:
+			_push_event_callout("Hull Slammed", HUD_TEXT_DANGER)
+	last_hud_collision_count = collision_count
 	_update_runtime_block_visuals()
 	_update_sinking_chunk_visuals(0.0)
 	_update_boat_material()
@@ -2198,17 +2416,38 @@ func _on_loot_state_changed(_loot_targets: Array) -> void:
 
 func _on_run_state_changed(_state: Dictionary) -> void:
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
+	var detached_chunk_count := int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
+	var cargo_lost_to_sea := int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
+	var rescue_completed := bool(NetworkRuntime.run_state.get("rescue_completed", false))
+	var cache_recovered := bool(NetworkRuntime.run_state.get("cache_recovered", false))
+	if detached_chunk_count > last_hud_detached_chunk_count:
+		_push_event_callout("Chunk Lost", HUD_TEXT_DANGER)
+	if cargo_lost_to_sea > last_hud_cargo_lost_to_sea:
+		_push_event_callout("Cargo Washed Overboard", HUD_TEXT_WARNING)
+	if rescue_completed and not last_hud_rescue_completed:
+		_push_event_callout("Rescue Secured", HUD_TEXT_SUCCESS)
+	if cache_recovered and not last_hud_cache_recovered:
+		_push_event_callout("Cache Secured", HUD_TEXT_WARNING)
 	if phase == "running":
 		run_result_recorded = false
 		auto_continue_queued = false
 	if phase != last_known_phase:
 		print("Run phase changed: %s" % phase)
 		last_known_phase = phase
+	if phase == "success" and last_hud_phase != "success":
+		_push_event_callout("Extraction Secured", HUD_TEXT_SUCCESS, 2.3)
+	elif phase == "failed" and last_hud_phase != "failed":
+		_push_event_callout("Boat Sunk", HUD_TEXT_DANGER, 2.4)
 	if phase != "running" and not run_result_recorded:
 		run_result_recorded = true
 	if phase != "running" and bool(launch_overrides.get("autocontinue_to_dock", false)) and not auto_continue_queued:
 		auto_continue_queued = true
 		get_tree().create_timer(0.5).timeout.connect(_continue_to_dock)
+	last_hud_detached_chunk_count = detached_chunk_count
+	last_hud_cargo_lost_to_sea = cargo_lost_to_sea
+	last_hud_rescue_completed = rescue_completed
+	last_hud_cache_recovered = cache_recovered
+	last_hud_phase = phase
 	_refresh_wreck_visual()
 	_refresh_rescue_visual()
 	_refresh_cache_visual()
@@ -2229,9 +2468,9 @@ func _get_progression_snapshot() -> Dictionary:
 func _build_objective_text() -> String:
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
 	if phase == "success":
-		return "Objective: Return to the hangar to bank the run rewards."
+		return "Objective: Return to the hangar and bank the haul."
 	if phase == "failed":
-		return "Objective: Return to the hangar and review the failed extraction."
+		return "Objective: Return to the hangar and review the loss."
 
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
@@ -2244,38 +2483,38 @@ func _build_objective_text() -> String:
 	var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
 	if loot_remaining > 0:
 		if boat_position.distance_to(wreck_position) > wreck_radius:
-			return "Objective: Bring the boat into the wreck ring so the grappler can start recovery."
+			return "Objective: Bring the boat into the wreck ring."
 		if boat_speed > float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
-			return "Objective: Hold the boat inside the wreck ring below salvage speed."
-		return "Objective: Brace the salvage surge and grapple the remaining wreck loot."
+			return "Objective: Hold below salvage speed."
+		return "Objective: Brace and recover the remaining wreck loot."
 
 	if rescue_available:
 		if boat_position.distance_to(rescue_position) > rescue_radius:
-			return "Objective: Optional rescue spotted. Divert into the distress ring if the crew wants extra rewards."
+			return "Objective: Distress signal spotted. Divert if the crew wants the bonus."
 		if boat_speed > float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)):
-			return "Objective: Slow the boat down inside the rescue ring before the grappler starts recovery."
+			return "Objective: Slow down inside the rescue ring."
 		if rescue_engaged:
 			return "Objective: Hold steady until the rescue package is secured."
-		return "Objective: Let the grappler recover the rescue package while the helm holds position."
+		return "Objective: Let the grappler recover the rescue package."
 
 	if bool(NetworkRuntime.run_state.get("cache_available", false)):
-		return "Objective: Pass through the resupply cache lane and let the grappler snag the bonus crate before extraction."
+		return "Objective: Pass through the cache lane for a quick bonus."
 
 	if int(NetworkRuntime.run_state.get("cargo_count", 0)) > 0:
 		if not _boat_within_extraction_zone():
-			return "Objective: Bring the shared boat into the extraction ring."
+			return "Objective: Bring the boat into the extraction ring."
 		if boat_speed > NetworkRuntime.EXTRACTION_MAX_SPEED:
-			return "Objective: Hold the boat steady inside extraction until progress completes."
-		return "Objective: Stay slow and stable while the extraction timer finishes."
+			return "Objective: Bleed speed and hold steady."
+		return "Objective: Stay calm until extraction completes."
 
 	return "Objective: Claim stations and prepare the shared boat."
 
 func _build_onboarding_text(selected_station_id: String, local_station_id: String) -> String:
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
 	if phase == "success":
-		return "Onboarding: Press Enter or Continue to return to the hangar and spend the rewards you banked."
+		return "Onboarding: Press Enter or Continue to return to the hangar and spend the rewards."
 	if phase == "failed":
-		return "Onboarding: Failed runs lose unbanked cargo. Return to hangar, rebuild, and try a safer route."
+		return "Onboarding: Failed runs lose unbanked cargo. Rebuild and try a safer route."
 
 	if local_station_id.is_empty():
 		var selected_label := "a station"
@@ -2287,15 +2526,15 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 		return "Onboarding: Squalls drag the boat and fire surge pulses. Keep speed under control and brace through the slam."
 
 	if int(NetworkRuntime.run_state.get("loot_remaining", 0)) > 0:
-		return "Onboarding: Get inside the wreck ring, slow below salvage speed, then brace before the grappler pulls loot aboard."
+		return "Onboarding: Get inside the wreck ring, slow down, then brace before the grappler pulls."
 
 	if bool(NetworkRuntime.run_state.get("rescue_available", false)):
-		return "Onboarding: Distress rescues are optional. Hold inside the rescue ring long enough to secure the bonus package."
+		return "Onboarding: Distress rescues are optional. Hold inside the ring long enough to secure the bonus."
 
 	if bool(NetworkRuntime.run_state.get("cache_available", false)):
-		return "Onboarding: The resupply cache is a quick bonus stop for extra patch kits and currency if the route still looks safe."
+		return "Onboarding: The resupply cache is a quick bonus stop if the route still looks safe."
 
 	if int(NetworkRuntime.run_state.get("cargo_count", 0)) > 0:
-		return "Onboarding: Everything aboard is lost if the boat sinks before extraction. Cash out once the risk starts climbing."
+		return "Onboarding: Everything aboard is lost if the boat sinks before extraction. Cash out once risk climbs."
 
 	return "Onboarding: Claim stations and get the shared boat moving."
