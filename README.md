@@ -272,6 +272,14 @@ TEST_HOME="$(mktemp -d /tmp/builtaboat-week4-full-XXXXXX)"
 HOME="$TEST_HOME" godot --headless --path . --quit-after 7000 -- --name=Week4Host --port=7172 --autohost --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock --quit-after-connect-ms=28000
 ```
 
+Avatar-controller end-to-end extraction regression:
+
+```bash
+TEST_HOME="$(mktemp -d /tmp/builtaboat-avatar-e2e-XXXXXX)"
+HOME="$TEST_HOME" ./tools/run_server.sh --port=7171 --seed=9191
+HOME="$TEST_HOME" godot --headless --path . --quit-after 12000 -- --host=127.0.0.1 --port=7171 --name=Week4Bot --autoconnect --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock --quit-after-connect-ms=52000
+```
+
 Windows client export:
 
 ```bash

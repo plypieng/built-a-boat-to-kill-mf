@@ -18,16 +18,6 @@ const EXTRACTION_FAILED_COLOR := Color(0.84, 0.25, 0.24)
 const RUN_AVATAR_MOVE_SPEED := 4.9
 const RUN_AVATAR_ACCELERATION := 15.0
 const RUN_AVATAR_SYNC_INTERVAL := 0.05
-const RUN_CAMERA_SIDE_OFFSET := 0.9
-const RUN_CAMERA_HEIGHT := 2.2
-const RUN_CAMERA_DISTANCE := 5.9
-const RUN_CAMERA_LOOK_HEIGHT := 1.32
-const RUN_CAMERA_LOOK_AHEAD := 2.1
-const RUN_CAMERA_LAG := 8.0
-const RUN_MOUSE_LOOK_SENSITIVITY := 0.0035
-const RUN_CAMERA_PITCH_MIN := deg_to_rad(-58.0)
-const RUN_CAMERA_PITCH_MAX := deg_to_rad(44.0)
-const RUN_CAMERA_PITCH_DEFAULT := deg_to_rad(-10.0)
 const HUD_PANEL_BG := Color(0.05, 0.09, 0.13, 0.78)
 const HUD_PANEL_BG_SOFT := Color(0.07, 0.12, 0.17, 0.70)
 const HUD_BORDER_BLUE := Color(0.30, 0.53, 0.66, 0.92)
@@ -38,6 +28,18 @@ const HUD_TEXT_MUTED := Color(0.78, 0.84, 0.88)
 const HUD_TEXT_WARNING := Color(0.95, 0.80, 0.43)
 const HUD_TEXT_DANGER := Color(0.95, 0.55, 0.48)
 const HUD_TEXT_SUCCESS := Color(0.76, 0.95, 0.82)
+
+@export_group("Run Camera")
+@export_range(-3.0, 3.0, 0.05) var run_camera_side_offset := 0.9
+@export_range(0.5, 6.0, 0.05) var run_camera_height := 2.2
+@export_range(1.0, 14.0, 0.05) var run_camera_distance := 5.9
+@export_range(0.5, 4.0, 0.05) var run_camera_look_height := 1.32
+@export_range(0.0, 6.0, 0.05) var run_camera_look_ahead := 2.1
+@export_range(0.1, 20.0, 0.1) var run_camera_lag := 8.0
+@export_range(0.001, 0.02, 0.0001) var run_mouse_look_sensitivity := 0.0035
+@export_range(-89.0, 0.0, 0.5) var run_camera_pitch_min_degrees := -58.0
+@export_range(0.0, 89.0, 0.5) var run_camera_pitch_max_degrees := 44.0
+@export_range(-45.0, 45.0, 0.5) var run_camera_pitch_default_degrees := -10.0
 
 var status_label: Label
 var objective_label: Label
@@ -110,7 +112,7 @@ var reaction_visual_state: Dictionary = {}
 var last_local_reaction_id := 0
 var local_camera_jolt := Vector3.ZERO
 var local_avatar_facing_y := PI
-var local_camera_pitch := RUN_CAMERA_PITCH_DEFAULT
+var local_camera_pitch := deg_to_rad(-10.0)
 var local_run_avatar_position := IDLE_CREW_SLOTS[0]
 var local_run_avatar_velocity := Vector3.ZERO
 var run_avatar_sync_timer := 0.0
@@ -125,7 +127,7 @@ var last_hud_phase := "running"
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
-	local_camera_pitch = RUN_CAMERA_PITCH_DEFAULT
+	local_camera_pitch = _get_run_camera_pitch_default()
 	_build_world()
 	_build_hud()
 	_build_result_overlay()
@@ -199,20 +201,122 @@ func _physics_process(delta: float) -> void:
 		)
 
 func _build_world() -> void:
+	_ensure_world_environment()
+	if get_node_or_null("Environment/Water") == null:
+		_build_static_world_fallback()
+
+	hazard_container = _ensure_root_node3d("HazardContainer")
+	squall_container = _ensure_root_node3d("SquallContainer")
+	loot_container = _ensure_root_node3d("LootContainer")
+
+	wreck_root = _ensure_root_node3d("WreckRoot")
+	_build_wreck_visual()
+
+	rescue_root = _ensure_root_node3d("RescueRoot")
+	_build_rescue_visual()
+
+	cache_root = _ensure_root_node3d("CacheRoot")
+	_build_cache_visual()
+
+	extraction_root = _ensure_root_node3d("ExtractionRoot")
+	_build_extraction_visual()
+
+	sinking_chunk_container = _ensure_root_node3d("SinkingChunkContainer")
+
+	boat_root = _ensure_root_node3d("BoatRoot")
+
+	main_block_container = _ensure_child_node3d(boat_root, "MainBlockContainer")
+
+	hull_mesh_instance = boat_root.get_node_or_null("HullMesh") as MeshInstance3D
+	if hull_mesh_instance == null:
+		hull_mesh_instance = MeshInstance3D.new()
+		hull_mesh_instance.name = "HullMesh"
+		var hull_mesh := BoxMesh.new()
+		hull_mesh.size = Vector3(3.3, 0.72, 6.2)
+		hull_mesh_instance.mesh = hull_mesh
+		hull_mesh_instance.position = Vector3(0.0, 0.35, 0.0)
+		boat_root.add_child(hull_mesh_instance)
+	hull_material = hull_mesh_instance.material_override as StandardMaterial3D
+	if hull_material == null:
+		hull_material = StandardMaterial3D.new()
+		hull_material.albedo_color = Color(0.44, 0.27, 0.16)
+		hull_material.roughness = 0.46
+		hull_mesh_instance.material_override = hull_material
+
+	deck_mesh_instance = boat_root.get_node_or_null("DeckMesh") as MeshInstance3D
+	if deck_mesh_instance == null:
+		deck_mesh_instance = MeshInstance3D.new()
+		deck_mesh_instance.name = "DeckMesh"
+		var deck_mesh := BoxMesh.new()
+		deck_mesh.size = Vector3(2.7, 0.14, 4.6)
+		deck_mesh_instance.mesh = deck_mesh
+		deck_mesh_instance.position = Vector3(0.0, 0.78, 0.0)
+		var deck_material := StandardMaterial3D.new()
+		deck_material.albedo_color = Color(0.70, 0.56, 0.34)
+		deck_mesh_instance.material_override = deck_material
+		boat_root.add_child(deck_mesh_instance)
+
+	mast_mesh_instance = boat_root.get_node_or_null("MastMesh") as MeshInstance3D
+	if mast_mesh_instance == null:
+		mast_mesh_instance = MeshInstance3D.new()
+		mast_mesh_instance.name = "MastMesh"
+		var mast_mesh := CylinderMesh.new()
+		mast_mesh.height = 3.0
+		mast_mesh.top_radius = 0.12
+		mast_mesh.bottom_radius = 0.12
+		mast_mesh_instance.mesh = mast_mesh
+		mast_mesh_instance.position = Vector3(0.0, 2.0, -0.2)
+		var mast_material := StandardMaterial3D.new()
+		mast_material.albedo_color = Color(0.82, 0.79, 0.72)
+		mast_mesh_instance.material_override = mast_material
+		boat_root.add_child(mast_mesh_instance)
+
+	station_container = _ensure_child_node3d(boat_root, "StationContainer")
+	_build_station_visuals()
+
+	crew_container = _ensure_child_node3d(boat_root, "CrewContainer")
+
+	camera = get_node_or_null("RunCamera") as Camera3D
+	if camera == null:
+		camera = Camera3D.new()
+		camera.name = "RunCamera"
+		camera.position = Vector3(0.0, 5.5, 10.5)
+		add_child(camera)
+	camera.current = true
+	camera.look_at(Vector3(0.0, 0.6, 0.0), Vector3.UP)
+
+func _ensure_world_environment() -> void:
+	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
+	if world_environment == null:
+		world_environment = get_node_or_null("WorldEnvironment") as WorldEnvironment
+	if world_environment != null:
+		return
+	world_environment = WorldEnvironment.new()
+	world_environment.name = "WorldEnvironment"
+	world_environment.environment = _make_default_environment_resource()
+	add_child(world_environment)
+
+func _make_default_environment_resource() -> Environment:
 	var environment := Environment.new()
 	environment.background_mode = Environment.BG_COLOR
 	environment.background_color = Color(0.46, 0.71, 0.92)
+	return environment
 
-	var world_environment := WorldEnvironment.new()
-	world_environment.environment = environment
-	add_child(world_environment)
+func _build_static_world_fallback() -> void:
+	var fallback_root := get_node_or_null("EnvironmentFallback") as Node3D
+	if fallback_root == null:
+		fallback_root = Node3D.new()
+		fallback_root.name = "EnvironmentFallback"
+		add_child(fallback_root)
 
 	var light := DirectionalLight3D.new()
+	light.name = "SunLight"
 	light.light_energy = 1.2
 	light.rotation_degrees = Vector3(-48.0, 38.0, 0.0)
-	add_child(light)
+	fallback_root.add_child(light)
 
 	var water := MeshInstance3D.new()
+	water.name = "Water"
 	var water_mesh := PlaneMesh.new()
 	water_mesh.size = Vector2(220.0, 220.0)
 	water.mesh = water_mesh
@@ -220,86 +324,34 @@ func _build_world() -> void:
 	water_material.albedo_color = Color(0.08, 0.43, 0.65)
 	water_material.roughness = 0.14
 	water.material_override = water_material
-	add_child(water)
+	fallback_root.add_child(water)
 
-	hazard_container = Node3D.new()
-	add_child(hazard_container)
+func _ensure_root_node3d(node_name: String) -> Node3D:
+	var node := get_node_or_null(node_name) as Node3D
+	if node != null:
+		return node
+	node = Node3D.new()
+	node.name = node_name
+	add_child(node)
+	return node
 
-	squall_container = Node3D.new()
-	add_child(squall_container)
+func _ensure_child_node3d(parent: Node3D, node_name: String) -> Node3D:
+	var node := parent.get_node_or_null(node_name) as Node3D
+	if node != null:
+		return node
+	node = Node3D.new()
+	node.name = node_name
+	parent.add_child(node)
+	return node
 
-	loot_container = Node3D.new()
-	add_child(loot_container)
+func _get_run_camera_pitch_min() -> float:
+	return deg_to_rad(run_camera_pitch_min_degrees)
 
-	wreck_root = Node3D.new()
-	add_child(wreck_root)
-	_build_wreck_visual()
+func _get_run_camera_pitch_max() -> float:
+	return deg_to_rad(run_camera_pitch_max_degrees)
 
-	rescue_root = Node3D.new()
-	add_child(rescue_root)
-	_build_rescue_visual()
-
-	cache_root = Node3D.new()
-	add_child(cache_root)
-	_build_cache_visual()
-
-	extraction_root = Node3D.new()
-	add_child(extraction_root)
-	_build_extraction_visual()
-
-	sinking_chunk_container = Node3D.new()
-	add_child(sinking_chunk_container)
-
-	boat_root = Node3D.new()
-	add_child(boat_root)
-
-	main_block_container = Node3D.new()
-	boat_root.add_child(main_block_container)
-
-	hull_mesh_instance = MeshInstance3D.new()
-	var hull_mesh := BoxMesh.new()
-	hull_mesh.size = Vector3(3.3, 0.72, 6.2)
-	hull_mesh_instance.mesh = hull_mesh
-	hull_mesh_instance.position = Vector3(0.0, 0.35, 0.0)
-	hull_material = StandardMaterial3D.new()
-	hull_material.albedo_color = Color(0.44, 0.27, 0.16)
-	hull_material.roughness = 0.46
-	hull_mesh_instance.material_override = hull_material
-	boat_root.add_child(hull_mesh_instance)
-
-	deck_mesh_instance = MeshInstance3D.new()
-	var deck_mesh := BoxMesh.new()
-	deck_mesh.size = Vector3(2.7, 0.14, 4.6)
-	deck_mesh_instance.mesh = deck_mesh
-	deck_mesh_instance.position = Vector3(0.0, 0.78, 0.0)
-	var deck_material := StandardMaterial3D.new()
-	deck_material.albedo_color = Color(0.70, 0.56, 0.34)
-	deck_mesh_instance.material_override = deck_material
-	boat_root.add_child(deck_mesh_instance)
-
-	mast_mesh_instance = MeshInstance3D.new()
-	var mast_mesh := CylinderMesh.new()
-	mast_mesh.height = 3.0
-	mast_mesh.top_radius = 0.12
-	mast_mesh.bottom_radius = 0.12
-	mast_mesh_instance.mesh = mast_mesh
-	mast_mesh_instance.position = Vector3(0.0, 2.0, -0.2)
-	var mast_material := StandardMaterial3D.new()
-	mast_material.albedo_color = Color(0.82, 0.79, 0.72)
-	mast_mesh_instance.material_override = mast_material
-	boat_root.add_child(mast_mesh_instance)
-
-	station_container = Node3D.new()
-	boat_root.add_child(station_container)
-	_build_station_visuals()
-
-	crew_container = Node3D.new()
-	boat_root.add_child(crew_container)
-
-	camera = Camera3D.new()
-	camera.position = Vector3(0.0, 5.5, 10.5)
-	add_child(camera)
-	camera.look_at(Vector3(0.0, 0.6, 0.0), Vector3.UP)
+func _get_run_camera_pitch_default() -> float:
+	return deg_to_rad(run_camera_pitch_default_degrees)
 
 func _supports_mouse_capture() -> bool:
 	return DisplayServer.get_name() != "headless"
@@ -1976,9 +2028,9 @@ func _apply_scripted_station_input(delta: float, input_state: Dictionary) -> voi
 	if desired_station_id == "helm" and autopilot_remaining_seconds > 0.0 and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
 		input_state["throttle"] = float(launch_overrides.get("autodrive_throttle", 1.0))
 		input_state["steer"] = float(launch_overrides.get("autodrive_steer", 0.0))
-	elif desired_station_id == "brace" and bool(launch_overrides.get("autobrace", false)) and action_request_cooldown <= 0.0 and _should_autobrace():
-		input_state["request_brace"] = true
-		action_request_cooldown = 0.35
+		_maybe_request_autobrace(input_state, true)
+	elif desired_station_id == "brace":
+		_maybe_request_autobrace(input_state, true)
 	elif desired_station_id == "repair" and action_request_cooldown <= 0.0 and int(NetworkRuntime.boat_state.get("breach_stacks", 0)) > 0:
 		var repair_target := _find_local_repair_target()
 		if not repair_target.is_empty():
@@ -2031,12 +2083,14 @@ func _apply_autorun_demo(delta: float, input_state: Dictionary) -> void:
 			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
 				_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
+				_maybe_request_autobrace(input_state)
 			return
 
 		if boat_speed > float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
 			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
 				_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
+				_maybe_request_autobrace(input_state)
 			return
 
 		if brace_timer <= 0.0 and brace_cooldown <= 0.0:
@@ -2073,11 +2127,13 @@ func _apply_autorun_demo(delta: float, input_state: Dictionary) -> void:
 			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
 				_apply_drive_to_target(rescue_position + Vector3(0.0, 0.0, -0.8), input_state, 0.52)
+				_maybe_request_autobrace(input_state)
 			return
 		if boat_speed > rescue_max_speed:
 			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
 				_hold_position_over_target(rescue_position, rescue_max_speed, input_state)
+				_maybe_request_autobrace(input_state)
 			return
 		_request_station_if_needed("grapple", input_state, delta)
 		if local_station_id == "grapple" and action_request_cooldown <= 0.0:
@@ -2097,6 +2153,7 @@ func _apply_autorun_demo(delta: float, input_state: Dictionary) -> void:
 		return
 
 	_apply_coordinated_return_route(input_state)
+	_maybe_request_autobrace(input_state)
 
 func _apply_driver_role(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
@@ -2115,17 +2172,20 @@ func _apply_driver_role(delta: float, input_state: Dictionary) -> void:
 		if not _station_is_crewed("grapple"):
 			input_state["throttle"] = 0.0
 			input_state["steer"] = 0.0
+			_maybe_request_autobrace(input_state)
 			return
 		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
 			_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
 		else:
 			_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
+		_maybe_request_autobrace(input_state)
 		return
 
 	if bool(NetworkRuntime.run_state.get("rescue_available", false)):
 		if not _station_is_crewed("grapple"):
 			input_state["throttle"] = 0.0
 			input_state["steer"] = 0.0
+			_maybe_request_autobrace(input_state)
 			return
 		var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
 		var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
@@ -2133,9 +2193,11 @@ func _apply_driver_role(delta: float, input_state: Dictionary) -> void:
 			_apply_drive_to_target(rescue_position + Vector3(0.0, 0.0, -0.8), input_state, 0.52)
 		else:
 			_hold_position_over_target(rescue_position, float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)), input_state)
+		_maybe_request_autobrace(input_state)
 		return
 
 	_apply_coordinated_return_route(input_state)
+	_maybe_request_autobrace(input_state)
 
 func _apply_driver_detach_test_role(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
@@ -2154,19 +2216,23 @@ func _apply_driver_detach_test_role(delta: float, input_state: Dictionary) -> vo
 		if not _station_is_crewed("grapple"):
 			input_state["throttle"] = 0.0
 			input_state["steer"] = 0.0
+			_maybe_request_autobrace(input_state)
 			return
 		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
 			_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
 		else:
 			_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
+		_maybe_request_autobrace(input_state)
 		return
 
 	if int(NetworkRuntime.run_state.get("detached_chunk_count", 0)) > 0 or int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0)) > 0:
 		input_state["throttle"] = 0.0
 		input_state["steer"] = 0.0
+		_maybe_request_autobrace(input_state)
 		return
 
 	_apply_drive_to_target(Vector3(0.0, 0.0, 19.2), input_state, 0.84)
+	_maybe_request_autobrace(input_state)
 
 func _apply_grapple_role(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
@@ -2247,16 +2313,36 @@ func _apply_repair_role(delta: float, input_state: Dictionary) -> void:
 	input_state["request_repair"] = true
 	action_request_cooldown = 0.45
 
+func _maybe_request_autobrace(input_state: Dictionary, require_launch_override: bool = false) -> void:
+	if require_launch_override and not bool(launch_overrides.get("autobrace", false)):
+		return
+	if bool(input_state.get("request_grapple", false)) or bool(input_state.get("request_repair", false)):
+		return
+	if action_request_cooldown > 0.0:
+		return
+	if float(NetworkRuntime.boat_state.get("brace_timer", 0.0)) > 0.0:
+		return
+	if float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0)) > 0.0:
+		return
+	if not _should_autobrace():
+		return
+	input_state["request_brace"] = true
+	action_request_cooldown = 0.35
+
 func _apply_coordinated_return_route(input_state: Dictionary) -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
 	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
+	var current_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
 
 	if boat_position.x > -4.8 and boat_position.z < 17.0:
 		_apply_lane_shift(-6.2, input_state)
 		return
 	if boat_position.z < 24.0:
-		_apply_drive_to_target(Vector3(-5.1, 0.0, 24.2), input_state, 0.5)
+		var staging_target := Vector3(-5.1, 0.0, 24.8)
+		_apply_drive_to_target(staging_target, input_state, 0.5)
+		if boat_position.distance_to(staging_target) < 1.6 and current_speed < 0.32:
+			input_state["throttle"] = maxf(float(input_state.get("throttle", 0.0)), 0.18)
 		return
 	if boat_position.distance_to(extraction_position) <= extraction_radius + 0.6:
 		_hold_position_over_target(extraction_position, NetworkRuntime.EXTRACTION_MAX_SPEED, input_state)
@@ -2480,18 +2566,18 @@ func _update_camera(delta: float) -> void:
 		return
 
 	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / NetworkRuntime.BOAT_TOP_SPEED, 0.0, 1.0)
-	var pivot := boat_root.to_global(local_run_avatar_position + Vector3(0.0, RUN_CAMERA_LOOK_HEIGHT, 0.0))
+	var pivot := boat_root.to_global(local_run_avatar_position + Vector3(0.0, run_camera_look_height, 0.0))
 	var global_yaw := boat_root.rotation.y + local_avatar_facing_y
 	var yaw_basis := Basis(Vector3.UP, global_yaw)
 	var aim_basis := yaw_basis * Basis(Vector3.RIGHT, local_camera_pitch)
 	var forward := (aim_basis * Vector3.FORWARD).normalized()
 	var right := (yaw_basis * Vector3.RIGHT).normalized()
-	var desired_position := pivot - forward * (RUN_CAMERA_DISTANCE + speed_ratio * 1.4)
-	desired_position += right * RUN_CAMERA_SIDE_OFFSET
-	desired_position += Vector3.UP * RUN_CAMERA_HEIGHT
+	var desired_position := pivot - forward * (run_camera_distance + speed_ratio * 1.4)
+	desired_position += right * run_camera_side_offset
+	desired_position += Vector3.UP * run_camera_height
 	desired_position += local_camera_jolt
-	var look_target := pivot + forward * (RUN_CAMERA_LOOK_AHEAD + speed_ratio * 0.8) + local_camera_jolt * 0.42
-	var blend := minf(1.0, delta * RUN_CAMERA_LAG)
+	var look_target := pivot + forward * (run_camera_look_ahead + speed_ratio * 0.8) + local_camera_jolt * 0.42
+	var blend := minf(1.0, delta * run_camera_lag)
 	camera.position = camera.position.lerp(desired_position, blend)
 	camera.fov = lerpf(camera.fov, 69.0 + speed_ratio * 7.0, blend)
 	camera.look_at(look_target, Vector3.UP)
@@ -2623,8 +2709,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if phase == "running":
 		if event is InputEventMouseMotion and _is_mouse_captured():
 			var motion_event := event as InputEventMouseMotion
-			local_avatar_facing_y -= motion_event.relative.x * RUN_MOUSE_LOOK_SENSITIVITY
-			local_camera_pitch = clampf(local_camera_pitch - motion_event.relative.y * RUN_MOUSE_LOOK_SENSITIVITY, RUN_CAMERA_PITCH_MIN, RUN_CAMERA_PITCH_MAX)
+			local_avatar_facing_y -= motion_event.relative.x * run_mouse_look_sensitivity
+			local_camera_pitch = clampf(local_camera_pitch - motion_event.relative.y * run_mouse_look_sensitivity, _get_run_camera_pitch_min(), _get_run_camera_pitch_max())
 			return
 		if event is InputEventMouseButton:
 			var button_event := event as InputEventMouseButton

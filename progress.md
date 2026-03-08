@@ -834,6 +834,20 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - a targeted repair smoke on port `7167` showed `RepairBot patched the hull` four times, reducing breaches and consuming patch kits from deck proximity instead of a repair station
 - The current open gap is that the single-client autorun demo still does not finish a full extraction before the auto-quit timeout after this refactor, so the new control flow is verified mid-run but not yet re-signed-off end-to-end to hangar.
 
+## 2026-03-08 Run Controller Hardening
+
+- Tightened the refactored run client in `scenes/run_client/run_client.gd` so the new `brace anywhere` rule is used consistently by the autorun helmsman instead of only during salvage timing.
+- Added a shared `_maybe_request_autobrace()` helper and wired it into:
+  - scripted helm autopilot
+  - the single-client autorun demo
+  - the coordinated driver roles used for multiplayer smokes
+- Tightened the coordinated return route so the helmsman no longer stalls at the mid-lane staging point after rescue/cache recovery when the deck-avatar controller is using the new soft-station flow.
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - a fresh end-to-end extraction regression on seed `9191` with a temporary Godot `HOME`
+  - the refactored deck-avatar run now reaches `phase=success`, secures `2` cargo, banks `118 gold / 6 salvage`, and returns cleanly to the hangar
+- Added the longer-window regression command to `README.md` so the avatar-controller path can be re-run without rediscovering the new timeout budget.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
