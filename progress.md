@@ -955,3 +955,16 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Hangar inventory now shows an `On You` section for `Build`, `Remove`, and `Yard`, with the equipped tool marked
 - Run inventory now shows an `On You` section for `Helm`, `Brace`, `Grapple`, `Repair`, and `Recover`, with the equipped tool marked
 - Verified with a fresh parse smoke: `godot --headless --path . --quit-after 2`
+
+## 2026-03-09 - Runtime deck traversal follows the built boat
+
+- Replaced the old fixed run deck clamp with walkable surfaces derived from the live runtime block boat
+- Deck avatar movement now projects onto the top faces of surviving non-detached blocks, so custom hull shapes and chunk loss change where players can stand
+- Spawn points and overboard recovery now snap back onto the nearest surviving deck surface instead of the legacy deck rectangle
+- Run overboard probes now test for missing support beyond the current deck edge instead of using only the old static bounds
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - loose-chunk launch smoke on port `7190`, confirming the disconnected structure still sinks at run start under the new traversal model
+  - run-path smoke on seed `9191` up through helm, grappling, rescue, squall knockback, overboard recovery, and continued traversal on the live block boat
+- Remaining check:
+  - a full end-to-end extraction autorun under the new traversal model is still flaky in the longer headless regression, so a real manual/custom-boat feel pass is still needed before calling this fully signed off

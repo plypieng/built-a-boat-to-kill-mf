@@ -332,6 +332,7 @@ bash tools/package_windows_playtest.sh \
 - The current run scene now uses the first `Expedition Board` HUD pass: a centered objective strip, top-right extraction board, bottom-left crew deck, bottom-right boat plate, and short event callouts for impacts and run-state changes.
 - The current run scene now has the first real deck-avatar layer for the control refactor: replicated crew positions on the moving boat, a player-follow chase camera, and run-side mouse-look/crosshair-facing foundations while the old station logic still handles interactions.
 - The current run interaction layer now keeps only `helm` and `grapple` as claimable stations, lets crew brace from anywhere on deck, and lets repairs spend shared kits when a player is physically close to damaged hull blocks.
+- Run deck traversal now projects crew onto the surviving runtime block tops instead of a fixed deck rectangle, so custom builds and detached chunks change where players can stand during a run.
 - The current hangar presentation now frames the shared boat more deliberately with an over-shoulder camera, lighter dock dressing, and simplified crew roster text.
 - The current hangar camera now behaves like a pure third-person avatar chase camera, so local movement follows the builder avatar instead of blending back toward the boat focus.
 - The current hangar now supports hard builder-to-builder bump reactions, and the new `--autohangar-role=bumper_left|bumper_right` helpers give a repeatable smoke path for that behavior.

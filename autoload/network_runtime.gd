@@ -310,6 +310,10 @@ const REACTION_HOOK_ACTIVE_SECONDS := 0.42
 const REACTION_HOOK_RECOVERY_SECONDS := 0.38
 const RUN_AVATAR_MODE_DECK := "deck"
 const RUN_AVATAR_MODE_OVERBOARD := "overboard"
+const RUN_AVATAR_STAND_HEIGHT := 0.52
+const RUN_DECK_SURFACE_MARGIN := 0.08
+const RUN_DECK_SURFACE_SNAP_DISTANCE := 0.62
+const RUN_OVERBOARD_PROBE_DISTANCE := 1.05
 const RUN_OVERBOARD_WATER_HEIGHT := 0.18
 const RUN_OVERBOARD_SWIM_RADIUS := 8.8
 const RUN_OVERBOARD_RECOVERY_RANGE := 1.15
@@ -1417,27 +1421,11 @@ func _try_knock_peer_overboard(peer_id: int, knockback_velocity: Vector3, streng
 	if local_knockback.length() <= 0.01:
 		return
 	local_knockback = local_knockback.normalized()
-
-	var overboard_local_position := deck_position
-	var will_go_overboard := false
-	if deck_position.x <= RUN_DECK_BOUNDS_MIN.x + RUN_OVERBOARD_EDGE_MARGIN and local_knockback.x < -0.2:
-		overboard_local_position.x = RUN_DECK_BOUNDS_MIN.x - 1.05
-		overboard_local_position.z = clampf(deck_position.z, RUN_DECK_BOUNDS_MIN.z + 0.18, RUN_DECK_BOUNDS_MAX.z - 0.18)
-		will_go_overboard = true
-	elif deck_position.x >= RUN_DECK_BOUNDS_MAX.x - RUN_OVERBOARD_EDGE_MARGIN and local_knockback.x > 0.2:
-		overboard_local_position.x = RUN_DECK_BOUNDS_MAX.x + 1.05
-		overboard_local_position.z = clampf(deck_position.z, RUN_DECK_BOUNDS_MIN.z + 0.18, RUN_DECK_BOUNDS_MAX.z - 0.18)
-		will_go_overboard = true
-	elif deck_position.z <= RUN_DECK_BOUNDS_MIN.z + RUN_OVERBOARD_EDGE_MARGIN and local_knockback.z < -0.2:
-		overboard_local_position.z = RUN_DECK_BOUNDS_MIN.z - 0.95
-		overboard_local_position.x = clampf(deck_position.x, RUN_DECK_BOUNDS_MIN.x + 0.18, RUN_DECK_BOUNDS_MAX.x - 0.18)
-		will_go_overboard = true
-	elif deck_position.z >= RUN_DECK_BOUNDS_MAX.z - RUN_OVERBOARD_EDGE_MARGIN and local_knockback.z > 0.2:
-		overboard_local_position.z = RUN_DECK_BOUNDS_MAX.z + 0.95
-		overboard_local_position.x = clampf(deck_position.x, RUN_DECK_BOUNDS_MIN.x + 0.18, RUN_DECK_BOUNDS_MAX.x - 0.18)
-		will_go_overboard = true
-	if not will_go_overboard:
+	var overboard_probe := deck_position + local_knockback * RUN_OVERBOARD_PROBE_DISTANCE
+	var probe_result := _project_run_deck_position(overboard_probe, RUN_OVERBOARD_EDGE_MARGIN, false)
+	if bool(probe_result.get("valid", false)):
 		return
+	var overboard_local_position := overboard_probe
 	_set_peer_overboard(peer_id, overboard_local_position, knockback_velocity)
 
 func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockback_velocity: Vector3) -> void:
@@ -1485,16 +1473,22 @@ func _force_peer_overboard_for_debug(peer_id: int) -> void:
 	if avatar_state.is_empty() or _is_peer_overboard(peer_id):
 		return
 	var deck_position: Vector3 = avatar_state.get("deck_position", Vector3.ZERO)
-	var overboard_local_position := deck_position
-	var knockback_velocity := Vector3.ZERO
-	if absf(deck_position.x) >= absf(deck_position.z):
-		var starboard := deck_position.x >= 0.0
-		overboard_local_position.x = (RUN_DECK_BOUNDS_MAX.x + 1.05) if starboard else (RUN_DECK_BOUNDS_MIN.x - 1.05)
-		knockback_velocity = _run_local_to_world(Vector3(1.0 if starboard else -1.0, 0.0, 0.0)) - boat_state.get("position", Vector3.ZERO)
-	else:
-		var stern := deck_position.z >= 0.0
-		overboard_local_position.z = (RUN_DECK_BOUNDS_MAX.z + 0.95) if stern else (RUN_DECK_BOUNDS_MIN.z - 0.95)
-		knockback_velocity = _run_local_to_world(Vector3(0.0, 0.0, 1.0 if stern else -1.0)) - boat_state.get("position", Vector3.ZERO)
+	var probe_directions := [
+		Vector3.RIGHT,
+		Vector3.LEFT,
+		Vector3.BACK,
+		Vector3.FORWARD,
+	]
+	var chosen_direction := Vector3.BACK
+	for direction_variant in probe_directions:
+		var direction: Vector3 = direction_variant
+		var probe_result := _project_run_deck_position(deck_position + direction * RUN_OVERBOARD_PROBE_DISTANCE, RUN_OVERBOARD_EDGE_MARGIN, false)
+		if bool(probe_result.get("valid", false)):
+			continue
+		chosen_direction = direction
+		break
+	var overboard_local_position := deck_position + chosen_direction * RUN_OVERBOARD_PROBE_DISTANCE
+	var knockback_velocity: Vector3 = _run_local_to_world(chosen_direction) - boat_state.get("position", Vector3.ZERO)
 	knockback_velocity.y = 0.0
 	_set_peer_overboard(peer_id, overboard_local_position, knockback_velocity.normalized() * 4.8)
 
@@ -1514,7 +1508,7 @@ func _attempt_overboard_recovery(peer_id: int) -> void:
 		_set_status("%s needs to reach a ladder before climbing back aboard." % _get_peer_name(peer_id))
 		return
 	avatar_state["mode"] = RUN_AVATAR_MODE_DECK
-	avatar_state["deck_position"] = _sanitize_run_avatar_deck_position(recovery_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
+	avatar_state["deck_position"] = get_nearest_run_avatar_deck_position(recovery_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
 	avatar_state["velocity"] = Vector3.ZERO
 	avatar_state["grounded"] = true
 	run_avatar_state[peer_id] = avatar_state
@@ -1607,7 +1601,7 @@ func _make_default_hangar_avatar_state(spawn_index: int) -> Dictionary:
 
 func _make_default_run_avatar_state(spawn_index: int) -> Dictionary:
 	var clamped_index := wrapi(spawn_index, 0, RUN_DECK_SPAWN_POINTS.size())
-	var spawn_position: Vector3 = RUN_DECK_SPAWN_POINTS[clamped_index]
+	var spawn_position := get_nearest_run_avatar_deck_position(RUN_DECK_SPAWN_POINTS[clamped_index])
 	var world_position := _run_local_to_world(spawn_position)
 	return {
 		"mode": RUN_AVATAR_MODE_DECK,
@@ -1631,6 +1625,124 @@ func _run_world_to_local(world_position: Vector3) -> Vector3:
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
 	return (world_position - boat_position).rotated(Vector3.UP, -rotation_y)
 
+func _get_blueprint_block_by_id(block_id: int) -> Dictionary:
+	for block_variant in Array(boat_blueprint.get("blocks", [])):
+		var block: Dictionary = block_variant
+		if int(block.get("id", 0)) == block_id:
+			return block
+	return {}
+
+func _get_runtime_block_navigation_data(block_state: Dictionary) -> Dictionary:
+	if bool(block_state.get("destroyed", false)) or bool(block_state.get("detached", false)):
+		return {}
+	var block_id := int(block_state.get("id", 0))
+	var blueprint_block := _get_blueprint_block_by_id(block_id)
+	var block_type := str(block_state.get("type", blueprint_block.get("type", "structure")))
+	var rotation_steps := wrapi(int(block_state.get("rotation_steps", blueprint_block.get("rotation_steps", 0))), 0, 4)
+	var local_position: Vector3 = block_state.get("local_position", Vector3.ZERO)
+	if not block_state.has("local_position"):
+		local_position = _block_cell_to_local_position(blueprint_block.get("cell", [0, 0, 0]))
+	var block_size: Vector3 = get_builder_block_definition(block_type).get("size", Vector3.ONE)
+	if rotation_steps % 2 != 0:
+		block_size = Vector3(block_size.z, block_size.y, block_size.x)
+	return {
+		"id": block_id,
+		"type": block_type,
+		"rotation_steps": rotation_steps,
+		"local_position": local_position,
+		"size": block_size,
+	}
+
+func get_run_walkable_surfaces() -> Array:
+	var surfaces: Array = []
+	for block_variant in Array(boat_state.get("runtime_blocks", [])):
+		var block_state: Dictionary = block_variant
+		var block := _get_runtime_block_navigation_data(block_state)
+		if block.is_empty():
+			continue
+		var local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+		var block_size: Vector3 = block.get("size", Vector3.ONE)
+		surfaces.append({
+			"block_id": int(block.get("id", 0)),
+			"block_type": str(block.get("type", "structure")),
+			"local_center": local_position,
+			"half_size_x": maxf(0.14, float(block_size.x) * 0.5 - RUN_DECK_SURFACE_MARGIN),
+			"half_size_z": maxf(0.14, float(block_size.z) * 0.5 - RUN_DECK_SURFACE_MARGIN),
+			"deck_y": local_position.y + float(block_size.y) * 0.5 + RUN_AVATAR_STAND_HEIGHT,
+		})
+	return surfaces
+
+func _project_run_deck_position(deck_position: Vector3, max_snap_distance: float = RUN_DECK_SURFACE_SNAP_DISTANCE, force_nearest: bool = false) -> Dictionary:
+	var surfaces := get_run_walkable_surfaces()
+	if surfaces.is_empty():
+		return {
+			"valid": false,
+			"deck_position": Vector3(
+				clampf(deck_position.x, RUN_DECK_BOUNDS_MIN.x, RUN_DECK_BOUNDS_MAX.x),
+				clampf(deck_position.y, RUN_DECK_BOUNDS_MIN.y, RUN_DECK_BOUNDS_MAX.y),
+				clampf(deck_position.z, RUN_DECK_BOUNDS_MIN.z, RUN_DECK_BOUNDS_MAX.z)
+			),
+			"surface": {},
+			"horizontal_distance": INF,
+		}
+
+	var best_containing: Dictionary = {}
+	var best_containing_score := INF
+	var best_snap: Dictionary = {}
+	var best_snap_score := INF
+	for surface_variant in surfaces:
+		var surface: Dictionary = surface_variant
+		var local_center: Vector3 = surface.get("local_center", Vector3.ZERO)
+		var half_size_x := float(surface.get("half_size_x", 0.4))
+		var half_size_z := float(surface.get("half_size_z", 0.4))
+		var nearest_x := clampf(deck_position.x, local_center.x - half_size_x, local_center.x + half_size_x)
+		var nearest_z := clampf(deck_position.z, local_center.z - half_size_z, local_center.z + half_size_z)
+		var horizontal_distance := Vector2(deck_position.x - nearest_x, deck_position.z - nearest_z).length()
+		var deck_y := float(surface.get("deck_y", local_center.y + RUN_AVATAR_STAND_HEIGHT))
+		var vertical_distance := absf(deck_position.y - deck_y)
+		var projected_position := Vector3(nearest_x, deck_y, nearest_z)
+		if horizontal_distance <= 0.001:
+			if vertical_distance < best_containing_score:
+				best_containing_score = vertical_distance
+				best_containing = {
+					"valid": true,
+					"deck_position": projected_position,
+					"surface": surface,
+					"horizontal_distance": 0.0,
+				}
+			continue
+		var snap_score := horizontal_distance + vertical_distance * 0.35
+		if snap_score < best_snap_score:
+			best_snap_score = snap_score
+			best_snap = {
+				"valid": horizontal_distance <= max_snap_distance or force_nearest,
+				"deck_position": projected_position,
+				"surface": surface,
+				"horizontal_distance": horizontal_distance,
+			}
+	if not best_containing.is_empty():
+		return best_containing
+	if not best_snap.is_empty():
+		return best_snap
+	return {
+		"valid": false,
+		"deck_position": deck_position,
+		"surface": {},
+		"horizontal_distance": INF,
+	}
+
+func get_nearest_run_avatar_deck_position(deck_position: Vector3) -> Vector3:
+	var projection := _project_run_deck_position(deck_position, RUN_DECK_SURFACE_SNAP_DISTANCE, true)
+	return projection.get("deck_position", deck_position)
+
+func sanitize_run_avatar_deck_position(deck_position: Vector3, fallback_position = null) -> Vector3:
+	var projection := _project_run_deck_position(deck_position)
+	if bool(projection.get("valid", false)):
+		return projection.get("deck_position", deck_position)
+	if fallback_position != null:
+		return get_nearest_run_avatar_deck_position(fallback_position)
+	return get_nearest_run_avatar_deck_position(deck_position)
+
 func _get_overboard_recovery_targets() -> Array:
 	var targets: Array = []
 	for target_variant in RUN_RECOVERY_POINTS:
@@ -1641,7 +1753,7 @@ func _get_overboard_recovery_targets() -> Array:
 			"id": str(target.get("id", "")),
 			"label": str(target.get("label", "Recovery")),
 			"water_position": world_target,
-			"deck_position": target.get("deck_position", Vector3.ZERO),
+			"deck_position": get_nearest_run_avatar_deck_position(target.get("deck_position", Vector3.ZERO)),
 		})
 	return targets
 
@@ -1682,9 +1794,9 @@ func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
 		avatar_state["recovery_target_id"] = str(recovery_target.get("id", ""))
 		avatar_state["recovery_target_label"] = str(recovery_target.get("label", ""))
 		avatar_state["recovery_ready"] = bool(recovery_target.get("ready", false))
-		avatar_state["deck_position"] = _sanitize_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
+		avatar_state["deck_position"] = get_nearest_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
 	else:
-		var deck_position := _sanitize_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
+		var deck_position := sanitize_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
 		avatar_state["mode"] = RUN_AVATAR_MODE_DECK
 		avatar_state["deck_position"] = deck_position
 		avatar_state["world_position"] = _run_local_to_world(deck_position)
@@ -3932,13 +4044,6 @@ func _receive_hangar_avatar_state(
 	}
 	_broadcast_hangar_avatar_state()
 
-func _sanitize_run_avatar_deck_position(deck_position: Vector3) -> Vector3:
-	return Vector3(
-		clampf(deck_position.x, RUN_DECK_BOUNDS_MIN.x, RUN_DECK_BOUNDS_MAX.x),
-		clampf(deck_position.y, RUN_DECK_BOUNDS_MIN.y, RUN_DECK_BOUNDS_MAX.y),
-		clampf(deck_position.z, RUN_DECK_BOUNDS_MIN.z, RUN_DECK_BOUNDS_MAX.z)
-	)
-
 func _receive_run_avatar_state(peer_id: int, deck_position: Vector3, world_position: Vector3, velocity: Vector3, facing_y: float, grounded: bool, _avatar_mode: String) -> void:
 	if not multiplayer.is_server():
 		return
@@ -3949,7 +4054,10 @@ func _receive_run_avatar_state(peer_id: int, deck_position: Vector3, world_posit
 	var existing_state: Dictionary = run_avatar_state.get(peer_id, _make_default_run_avatar_state(run_avatar_state.size()))
 	var normalized_mode := str(existing_state.get("mode", RUN_AVATAR_MODE_DECK))
 	existing_state["mode"] = normalized_mode
-	existing_state["deck_position"] = _sanitize_run_avatar_deck_position(deck_position)
+	existing_state["deck_position"] = sanitize_run_avatar_deck_position(
+		deck_position,
+		existing_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
+	)
 	existing_state["velocity"] = velocity.limit_length(9.5)
 	existing_state["facing_y"] = facing_y
 	existing_state["grounded"] = grounded

@@ -394,25 +394,22 @@ func _set_mouse_capture(captured: bool) -> void:
 func _prime_local_run_avatar_state() -> void:
 	var local_peer_id := _get_local_peer_id()
 	var snapshot: Dictionary = NetworkRuntime.get_run_avatar_state().get(local_peer_id, {})
+	var fallback_position := NetworkRuntime.get_nearest_run_avatar_deck_position(IDLE_CREW_SLOTS[0])
 	if snapshot.is_empty():
-		local_run_avatar_position = IDLE_CREW_SLOTS[0]
+		local_run_avatar_position = fallback_position
 		local_run_avatar_world_position = boat_root.to_global(local_run_avatar_position)
 		local_run_avatar_velocity = Vector3.ZERO
 		local_run_avatar_mode = NetworkRuntime.RUN_AVATAR_MODE_DECK
 		local_avatar_facing_y = PI
 		return
-	local_run_avatar_position = snapshot.get("deck_position", IDLE_CREW_SLOTS[0])
+	local_run_avatar_position = snapshot.get("deck_position", fallback_position)
 	local_run_avatar_world_position = snapshot.get("world_position", boat_root.to_global(local_run_avatar_position))
 	local_run_avatar_velocity = snapshot.get("velocity", Vector3.ZERO)
 	local_run_avatar_mode = str(snapshot.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
 	local_avatar_facing_y = float(snapshot.get("facing_y", PI))
 
-func _clamp_run_avatar_position(deck_position: Vector3) -> Vector3:
-	return Vector3(
-		clampf(deck_position.x, NetworkRuntime.RUN_DECK_BOUNDS_MIN.x, NetworkRuntime.RUN_DECK_BOUNDS_MAX.x),
-		clampf(deck_position.y, NetworkRuntime.RUN_DECK_BOUNDS_MIN.y, NetworkRuntime.RUN_DECK_BOUNDS_MAX.y),
-		clampf(deck_position.z, NetworkRuntime.RUN_DECK_BOUNDS_MIN.z, NetworkRuntime.RUN_DECK_BOUNDS_MAX.z)
-	)
+func _sanitize_local_run_avatar_position(deck_position: Vector3, fallback_position = null) -> Vector3:
+	return NetworkRuntime.sanitize_run_avatar_deck_position(deck_position, fallback_position)
 
 func _get_local_run_avatar_target() -> Vector3:
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
@@ -524,8 +521,9 @@ func _scripted_move_local_avatar_toward(target_position: Vector3, delta: float) 
 	var direction := offset.normalized()
 	local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, direction.x * RUN_AVATAR_MOVE_SPEED, RUN_AVATAR_ACCELERATION * delta)
 	local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, direction.z * RUN_AVATAR_MOVE_SPEED, RUN_AVATAR_ACCELERATION * delta)
+	var previous_position := local_run_avatar_position
 	local_run_avatar_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
-	local_run_avatar_position = _clamp_run_avatar_position(local_run_avatar_position)
+	local_run_avatar_position = _sanitize_local_run_avatar_position(local_run_avatar_position, previous_position)
 	local_avatar_facing_y = atan2(-direction.x, -direction.z)
 	local_run_avatar_world_position = _get_local_avatar_world_position()
 	NetworkRuntime.send_local_run_avatar_state(
@@ -2062,8 +2060,9 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 		local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, RUN_AVATAR_ACCELERATION * delta)
 		local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, RUN_AVATAR_ACCELERATION * delta)
 
+	var previous_position := local_run_avatar_position
 	local_run_avatar_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
-	local_run_avatar_position = _clamp_run_avatar_position(local_run_avatar_position)
+	local_run_avatar_position = _sanitize_local_run_avatar_position(local_run_avatar_position, previous_position)
 	local_run_avatar_world_position = _get_local_avatar_world_position()
 
 func _sync_local_run_avatar_state(delta: float) -> void:
@@ -2518,7 +2517,7 @@ func _apply_overboard_recovery_role(delta: float, input_state: Dictionary) -> vo
 			return
 		_scripted_move_local_avatar_toward_world(recovery_target.get("world_position", local_run_avatar_world_position), delta)
 		return
-	var stern_edge := Vector3(0.0, 0.92, 1.98)
+	var stern_edge := NetworkRuntime.get_nearest_run_avatar_deck_position(Vector3(0.0, 0.92, 1.98))
 	_scripted_move_local_avatar_toward(stern_edge, delta)
 	if bool(launch_overrides.get("autoforce_overboard", false)) and not autorun_overboard_forced and action_request_cooldown <= 0.0 and local_run_avatar_position.distance_to(stern_edge) <= 0.16:
 		NetworkRuntime.request_debug_overboard()
