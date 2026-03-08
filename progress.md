@@ -596,6 +596,41 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Wrote the approved design doc to `docs/plans/2026-03-08-week-3-procedural-encounter-and-onboarding-design.md`.
 - Wrote the fallback implementation plan to `docs/plans/2026-03-08-week-3-procedural-encounter-and-onboarding-implementation-plan.md`.
 
+## 2026-03-08 Week 3 Procedural Encounter And Onboarding Implementation
+
+- Implemented seed-driven rescue and squall generation in `autoload/network_runtime.gd`:
+  - added a procedural run-layout builder keyed from `run_seed`
+  - added three rescue archetypes:
+    - `left_detour`
+    - `right_detour`
+    - `post_wreck_lane`
+  - added one or two squall bands per run with seeded drag, pulse timing, and damage values
+  - added a timed rescue-hold flow that grants bonus gold, salvage, and a patch kit once secured
+  - added squall drag and surge pulses that locally damage the runtime block boat and trigger reaction events
+- Implemented run-side Week 3 presentation in `scenes/run_client/run_client.gd`:
+  - added rescue-ring visuals, flare beacon, and squall band markers
+  - added run HUD/objective support for rescue distance, rescue progress, layout label, and squall count
+  - added contextual onboarding text for station claiming, wreck salvage, rescue handling, squall pressure, and extraction risk
+  - updated autorun helpers so the demo route now visits rescue before cache/extraction
+- Implemented minimal hangar onboarding in `scenes/hangar/hangar.gd`:
+  - added lightweight builder prompts for move-closer, occupied-cell, loose-chunk, and unlock-yard states
+- Updated `.gitignore` to ignore generated Godot `.uid` files so editor-generated IDs do not dirty the worktree during future passes.
+- Verified:
+  - clean Godot parse smoke after the new rescue/squall/onboarding changes
+  - full `hangar -> run -> rescue -> cache -> extraction -> hangar` success on seed `101` using a fresh temporary `HOME`
+  - a second seeded success on seed `303` with:
+    - `layout_label="Left Detour + 2 squall bands"`
+    - `rescue_label="Distress Flare"`
+    - `reward_gold=117`
+    - `reward_salvage=7`
+  - a layout-variation spot check on seed `404` with:
+    - `layout_label="Post Wreck Lane + 1 squall band"`
+    - `rescue_label="Broken Skiff"`
+    - rescue completed before the smoke auto-quit
+- Observed during Week 3 verification:
+  - the autorun route can now complete the optional rescue cleanly, but unbraced squall pulses still chip the hull if no brace bot is present
+  - the extraction-loop structure still reads clearly even with the added rescue detour and weather pressure
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:

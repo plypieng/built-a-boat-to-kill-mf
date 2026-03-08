@@ -233,6 +233,22 @@ HOME="$TEST_HOME" godot --headless --path . --quit-after 6000 -- --host=127.0.0.
 HOME="$TEST_HOME" godot --headless --path . --quit-after 900 -- --host=127.0.0.1 --port=7000 --name=UnlockBot --autoconnect --autobuild-role=builder_unlock_reinforced_hull --quit-after-connect-ms=4200
 ```
 
+Week 3 procedural rescue + squall smoke sequence:
+
+```bash
+TEST_HOME="$(mktemp -d /tmp/builtaboat-week3-XXXXXX)"
+HOME="$TEST_HOME" ./tools/run_server.sh --port=7000 --seed=101
+HOME="$TEST_HOME" godot --headless --path . --quit-after 6000 -- --host=127.0.0.1 --port=7000 --name=Week3Bot --autoconnect --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock --quit-after-connect-ms=28000
+```
+
+Week 3 layout-variation spot check:
+
+```bash
+TEST_HOME="$(mktemp -d /tmp/builtaboat-week3-layout-XXXXXX)"
+HOME="$TEST_HOME" ./tools/run_server.sh --port=7000 --seed=404
+HOME="$TEST_HOME" godot --headless --path . --quit-after 4000 -- --host=127.0.0.1 --port=7000 --name=LayoutBot --autoconnect --autobuild-role=builder_launch --autorun-demo --quit-after-connect-ms=14000
+```
+
 ## Notes
 
 - For deterministic smoke tests, start the server and all clients with the same temporary `HOME` so the shared boat blueprint starts from a clean save.
@@ -248,11 +264,13 @@ HOME="$TEST_HOME" godot --headless --path . --quit-after 900 -- --host=127.0.0.1
 - The current shared-builder autobuild helpers now reposition the hangar avatar before placing or removing blocks so automated smoke tests obey the same range rule as manual builders.
 - The current hangar now shows a clearer build-tool panel, placement-state feedback, and launch-readiness summary so the crew can read the boat status faster before launching.
 - The current hangar also shows an unlock yard with shared team totals, selected-part descriptions, and immediate palette updates after server-approved purchases.
+- The current hangar and run scenes now include lightweight contextual onboarding text so first-time players can understand building, rescue pressure, squalls, and extraction without live coaching.
 - The current hangar presentation now frames the shared boat more deliberately with an over-shoulder camera, lighter dock dressing, and simplified crew roster text.
 - The current hangar now supports hard builder-to-builder bump reactions, and the new `--autohangar-role=bumper_left|bumper_right` helpers give a repeatable smoke path for that behavior.
 - The current shared builder allows disconnected chunks, warns about them, and derives run stats from the main connected chunk.
 - The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.
 - The current reaction system is a lightweight non-ragdoll layer: hard hangar bumps and run impacts briefly interrupt control, add knockback/camera jolt, and let brace reduce the severity of run-side reactions.
+- The current Week 3 run layer procedurally seeds one optional distress rescue and one or two squall bands from the run seed, so route choice and timing change between seeds without abandoning the extraction-loop structure.
 - The current networking model now sends boat motion separately from structural runtime state so large block boats do not overflow the unreliable ENet packet budget during launch.
 - Disconnect cleanup now coalesces network state flushes for a short window so quick multi-client hangar teardowns do not re-trigger the old ENet send error.
 - The current server scene logs heartbeat, progression totals, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.

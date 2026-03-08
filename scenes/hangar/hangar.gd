@@ -28,6 +28,7 @@ const HANGAR_AVATAR_NAME_HEIGHT := 1.4
 var launch_overrides: Dictionary = {}
 var connect_time_seconds := 0.0
 var status_label: Label
+var onboarding_label: Label
 var selection_label: Label
 var target_label: Label
 var launch_readiness_label: Label
@@ -440,6 +441,11 @@ func _build_hud() -> void:
 	title.add_theme_font_size_override("font_size", 26)
 	left_layout.add_child(title)
 
+	onboarding_label = Label.new()
+	onboarding_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	onboarding_label.modulate = Color(0.86, 0.95, 1.0)
+	left_layout.add_child(onboarding_label)
+
 	selection_label = Label.new()
 	selection_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	left_layout.add_child(selection_label)
@@ -665,6 +671,7 @@ func _refresh_hud() -> void:
 			palette_entries.append("[%s]" % palette_label_text)
 		else:
 			palette_entries.append(palette_label_text)
+	onboarding_label.text = _build_onboarding_text()
 	selection_label.text = "Build Tool\n%s\nSelected %s | Rot %d deg | HP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
 		" ".join(palette_entries),
 		str(block_def.get("label", block_id.capitalize())),
@@ -806,6 +813,21 @@ func _refresh_hud() -> void:
 		]
 
 	controls_label.text = "Controls\nW A S D move | Space jump\nAim the center crosshair at the boat or dock\nQ / E cycle parts | R rotate | F place | X remove\nZ / C cycle unlocks | V purchase selected part\nGreen ready | Amber occupied | Blue move closer | Red blocked\nHard collisions can knock builders around\nEnter launches the run | Esc returns to connect"
+
+func _build_onboarding_text() -> String:
+	if cursor_feedback_state == "range":
+		return "Onboarding: Walk closer to the boat or dock before placing. Position matters in this shared builder."
+	if cursor_feedback_state == "occupied":
+		return "Onboarding: That cell is already taken. Rotate, remove, or move to a fresh face on the hull."
+	if not cursor_has_target:
+		return "Onboarding: Walk, jump, and aim the center crosshair at the dock or boat to place blocks together."
+
+	var stats := NetworkRuntime.get_blueprint_stats()
+	if int(stats.get("loose_blocks", 0)) > 0:
+		return "Onboarding: Loose chunks are allowed, but they will sink as soon as the run starts. Launch only if the joke is worth it."
+	if Array(NetworkRuntime.get_builder_store_entries()).size() > 0:
+		return "Onboarding: Z/C browses the unlock yard and V buys new parts with extracted rewards for the whole crew."
+	return "Onboarding: Build something weird, keep the main chunk floaty, and launch when the crew likes the shape."
 
 func _get_launch_readiness_snapshot(stats: Dictionary, warnings: Array) -> Dictionary:
 	var loose_blocks := int(stats.get("loose_blocks", 0))

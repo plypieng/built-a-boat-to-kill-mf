@@ -18,6 +18,7 @@ const EXTRACTION_FAILED_COLOR := Color(0.84, 0.25, 0.24)
 
 var status_label: Label
 var objective_label: Label
+var onboarding_label: Label
 var resource_label: Label
 var run_label: Label
 var station_label: Label
@@ -33,12 +34,17 @@ var main_block_container: Node3D
 var sinking_chunk_container: Node3D
 var crew_container: Node3D
 var hazard_container: Node3D
+var squall_container: Node3D
 var station_container: Node3D
 var loot_container: Node3D
 var wreck_root: Node3D
 var wreck_ring_material: StandardMaterial3D
 var wreck_hull_material: StandardMaterial3D
 var wreck_label: Label3D
+var rescue_root: Node3D
+var rescue_ring_material: StandardMaterial3D
+var rescue_flare_material: StandardMaterial3D
+var rescue_label: Label3D
 var cache_root: Node3D
 var cache_ring_material: StandardMaterial3D
 var cache_crate_material: StandardMaterial3D
@@ -72,6 +78,7 @@ var loot_visuals: Dictionary = {}
 var main_block_visuals: Dictionary = {}
 var sinking_chunk_visuals: Dictionary = {}
 var crew_visuals: Dictionary = {}
+var squall_visuals: Dictionary = {}
 var run_result_recorded := false
 var auto_continue_queued := false
 var reaction_visual_state: Dictionary = {}
@@ -114,7 +121,9 @@ func _process(delta: float) -> void:
 	_update_hazard_visuals()
 	_update_loot_visuals()
 	_update_wreck_visual()
+	_update_rescue_visual()
 	_update_cache_visual()
+	_update_squall_visuals()
 	_update_extraction_visual(delta)
 	_update_camera(delta)
 
@@ -170,12 +179,19 @@ func _build_world() -> void:
 	hazard_container = Node3D.new()
 	add_child(hazard_container)
 
+	squall_container = Node3D.new()
+	add_child(squall_container)
+
 	loot_container = Node3D.new()
 	add_child(loot_container)
 
 	wreck_root = Node3D.new()
 	add_child(wreck_root)
 	_build_wreck_visual()
+
+	rescue_root = Node3D.new()
+	add_child(rescue_root)
+	_build_rescue_visual()
 
 	cache_root = Node3D.new()
 	add_child(cache_root)
@@ -323,6 +339,56 @@ func _build_wreck_visual() -> void:
 	wreck_label.position = Vector3(0.0, 2.4, 0.0)
 	wreck_root.add_child(wreck_label)
 
+func _build_rescue_visual() -> void:
+	var ring_mesh_instance := MeshInstance3D.new()
+	ring_mesh_instance.name = "RescueRing"
+	var ring_mesh := CylinderMesh.new()
+	ring_mesh.height = 0.06
+	ring_mesh.top_radius = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
+	ring_mesh.bottom_radius = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
+	ring_mesh_instance.mesh = ring_mesh
+	ring_mesh_instance.position = Vector3(0.0, 0.03, 0.0)
+	rescue_ring_material = StandardMaterial3D.new()
+	rescue_ring_material.albedo_color = Color(0.93, 0.72, 0.28)
+	rescue_ring_material.roughness = 0.18
+	ring_mesh_instance.material_override = rescue_ring_material
+	rescue_root.add_child(ring_mesh_instance)
+
+	var raft := MeshInstance3D.new()
+	raft.name = "RescueRaft"
+	var raft_mesh := BoxMesh.new()
+	raft_mesh.size = Vector3(1.4, 0.32, 1.0)
+	raft.mesh = raft_mesh
+	raft.position = Vector3(0.0, 0.38, 0.0)
+	rescue_flare_material = StandardMaterial3D.new()
+	rescue_flare_material.albedo_color = Color(0.56, 0.37, 0.18)
+	raft.material_override = rescue_flare_material
+	rescue_root.add_child(raft)
+
+	var flare := MeshInstance3D.new()
+	var flare_mesh := CylinderMesh.new()
+	flare_mesh.height = 1.6
+	flare_mesh.top_radius = 0.09
+	flare_mesh.bottom_radius = 0.11
+	flare.mesh = flare_mesh
+	flare.position = Vector3(0.0, 1.45, 0.0)
+	flare.material_override = rescue_flare_material
+	rescue_root.add_child(flare)
+
+	var beacon := OmniLight3D.new()
+	beacon.name = "RescueLight"
+	beacon.position = Vector3(0.0, 2.25, 0.0)
+	beacon.light_energy = 1.35
+	beacon.light_color = Color(1.0, 0.64, 0.28)
+	beacon.omni_range = 9.0
+	rescue_root.add_child(beacon)
+
+	rescue_label = Label3D.new()
+	rescue_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	rescue_label.font_size = 22
+	rescue_label.position = Vector3(0.0, 3.0, 0.0)
+	rescue_root.add_child(rescue_label)
+
 func _build_extraction_visual() -> void:
 	var ring_mesh_instance := MeshInstance3D.new()
 	ring_mesh_instance.name = "Ring"
@@ -441,6 +507,11 @@ func _build_hud() -> void:
 	objective_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	layout.add_child(objective_label)
 
+	onboarding_label = Label.new()
+	onboarding_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	onboarding_label.modulate = Color(0.87, 0.95, 1.0)
+	layout.add_child(onboarding_label)
+
 	resource_label = Label.new()
 	resource_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	layout.add_child(resource_label)
@@ -530,7 +601,9 @@ func _refresh_world() -> void:
 	_refresh_hazard_visuals()
 	_refresh_loot_visuals()
 	_refresh_wreck_visual()
+	_refresh_rescue_visual()
 	_refresh_cache_visual()
+	_refresh_squall_visuals()
 	_refresh_extraction_visual()
 	_refresh_result_overlay()
 	_update_boat_material()
@@ -547,9 +620,11 @@ func _refresh_hud() -> void:
 	var max_hull_integrity: float = float(NetworkRuntime.boat_state.get("max_hull_integrity", 100.0))
 	var breach_stacks := int(NetworkRuntime.boat_state.get("breach_stacks", 0))
 	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
+	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
 	var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
 	var extraction_distance := boat_position.distance_to(extraction_position)
 	var wreck_distance := boat_position.distance_to(wreck_position)
+	var rescue_distance := boat_position.distance_to(rescue_position)
 	var cache_distance := boat_position.distance_to(cache_position)
 	var repair_supplies := int(NetworkRuntime.run_state.get("repair_supplies", 0))
 	var repair_supplies_max := int(NetworkRuntime.run_state.get("repair_supplies_max", 0))
@@ -557,9 +632,15 @@ func _refresh_hud() -> void:
 	var destroyed_block_count := int(NetworkRuntime.run_state.get("destroyed_block_count", 0))
 	var detached_chunk_count := int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
 	var cargo_lost_to_sea := int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
+	var rescue_progress: float = float(NetworkRuntime.run_state.get("rescue_progress", 0.0))
+	var rescue_duration: float = float(NetworkRuntime.run_state.get("rescue_duration", 1.0))
+	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
+	var rescue_completed := bool(NetworkRuntime.run_state.get("rescue_completed", false))
+	var squall_bands := Array(NetworkRuntime.run_state.get("squall_bands", []))
 	var progression_snapshot := _get_progression_snapshot()
 
 	objective_label.text = _build_objective_text()
+	onboarding_label.text = _build_onboarding_text(selected_station_id, local_station_id)
 	resource_label.text = "Resources: Patch Kits %d/%d | Bonus Bank %d gold / %d salvage | Cargo Lost To Sea %d | Dock %d gold / %d salvage" % [
 		repair_supplies,
 		repair_supplies_max,
@@ -569,9 +650,10 @@ func _refresh_hud() -> void:
 		int(progression_snapshot.get("total_gold", 0)),
 		int(progression_snapshot.get("total_salvage", 0)),
 	]
-	run_label.text = "Phase: %s | Seed: %d | Cargo: %d | Loot Remaining: %d | Blocks: %d active / %d destroyed | Chunks Lost: %d | Breaches: %d | Wreck Dist: %.1f | Extract: %.1f/%.1fs | Dist: %.1f" % [
+	run_label.text = "Phase: %s | Seed: %d | Layout: %s | Cargo: %d | Loot Remaining: %d | Blocks: %d active / %d destroyed | Chunks Lost: %d | Breaches: %d | Wreck Dist: %.1f | Rescue Dist: %.1f | Extract: %.1f/%.1fs | Dist: %.1f" % [
 		str(NetworkRuntime.run_state.get("phase", "running")),
 		NetworkRuntime.run_seed,
+		str(NetworkRuntime.run_state.get("layout_label", "Wreck Push")),
 		int(NetworkRuntime.run_state.get("cargo_count", 0)),
 		int(NetworkRuntime.run_state.get("loot_remaining", 0)),
 		active_block_count,
@@ -579,12 +661,19 @@ func _refresh_hud() -> void:
 		detached_chunk_count,
 		breach_stacks,
 		wreck_distance,
+		rescue_distance,
 		extraction_progress,
 		extraction_duration,
 		extraction_distance,
 	]
+	if rescue_available:
+		run_label.text += " | Rescue: %.1f/%.1fs" % [rescue_progress, rescue_duration]
+	elif rescue_completed:
+		run_label.text += " | Rescue: secured"
 	if bool(NetworkRuntime.run_state.get("cache_available", false)):
 		run_label.text += " | Cache Dist: %.1f" % cache_distance
+	if not squall_bands.is_empty():
+		run_label.text += " | Squalls: %d" % squall_bands.size()
 
 	var station_lines := PackedStringArray()
 	for station_id in NetworkRuntime.get_station_ids():
@@ -656,9 +745,9 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 	if local_station_id == "helm":
 		lines.append("Hold the boat steady over wrecks and line up safe extraction approaches.")
 	elif local_station_id == "brace":
-		lines.append("Press Space to cover collisions or salvage surges for the crew.")
+		lines.append("Press Space to cover collisions, salvage surges, or squall pulses for the crew.")
 	elif local_station_id == "grapple":
-		lines.append("Press G to recover nearby wreck salvage once the helm has slowed the boat.")
+		lines.append("Press G to recover nearby wreck salvage, rescue cargo, or bonus caches once the helm has slowed the boat.")
 	elif local_station_id == "repair":
 		lines.append("Press R to patch breaches and recover some hull integrity.")
 	else:
@@ -666,6 +755,10 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 
 	lines.append("Unbraced wreck grapples add hull breaches that slow the boat until repaired.")
 	lines.append("Repairs now spend shared patch kits, so decide whether to patch now or save them for extraction.")
+	if bool(NetworkRuntime.run_state.get("rescue_available", false)):
+		lines.append("Optional distress rescue: hold slow inside the rescue ring and let the grappler secure the package.")
+	if _boat_inside_any_squall():
+		lines.append("Squall pressure: gusts drag the boat and can slam the hull if the crew fails to brace.")
 	var local_reaction := _get_reaction_visual(_get_local_peer_id())
 	if not local_reaction.is_empty():
 		lines.append("Reaction: %s (recovering in %.2fs)." % [
@@ -1083,6 +1176,107 @@ func _refresh_wreck_visual() -> void:
 	]
 	wreck_label.modulate = ready_color.lightened(0.18)
 
+func _refresh_rescue_visual() -> void:
+	if rescue_root == null:
+		return
+
+	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
+	var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
+	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
+	var rescue_engaged := bool(NetworkRuntime.run_state.get("rescue_engaged", false))
+	var rescue_completed := bool(NetworkRuntime.run_state.get("rescue_completed", false))
+	rescue_root.visible = rescue_available or rescue_completed
+	rescue_root.position = rescue_position
+
+	var ring_mesh_instance := rescue_root.get_node_or_null("RescueRing") as MeshInstance3D
+	if ring_mesh_instance != null:
+		var ring_mesh := ring_mesh_instance.mesh as CylinderMesh
+		if ring_mesh != null:
+			ring_mesh.top_radius = rescue_radius
+			ring_mesh.bottom_radius = rescue_radius
+
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
+	var in_zone := boat_position.distance_to(rescue_position) <= rescue_radius
+	var ready_color := Color(0.93, 0.72, 0.28)
+	if rescue_completed:
+		ready_color = Color(0.29, 0.82, 0.58)
+	elif rescue_engaged:
+		ready_color = Color(0.95, 0.84, 0.36)
+	elif in_zone and boat_speed <= float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)):
+		ready_color = Color(0.98, 0.86, 0.36)
+	rescue_ring_material.albedo_color = ready_color
+	rescue_flare_material.albedo_color = Color(0.56, 0.37, 0.18).lerp(Color(0.93, 0.56, 0.18), 0.7 if rescue_available else 0.2)
+	rescue_label.text = "%s\nHold %.1f/%.1fs | Max Speed %.1f" % [
+		str(NetworkRuntime.run_state.get("rescue_label", "Distress Rescue")),
+		float(NetworkRuntime.run_state.get("rescue_progress", 0.0)),
+		float(NetworkRuntime.run_state.get("rescue_duration", 1.0)),
+		float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)),
+	]
+	if rescue_completed:
+		rescue_label.text = "%s\nSecured +%d gold | +%d salvage | +%d kit" % [
+			str(NetworkRuntime.run_state.get("rescue_label", "Distress Rescue")),
+			int(NetworkRuntime.run_state.get("rescue_bonus_gold", 0)),
+			int(NetworkRuntime.run_state.get("rescue_bonus_salvage", 0)),
+			int(NetworkRuntime.run_state.get("rescue_patch_kit_bonus", 0)),
+		]
+	rescue_label.modulate = ready_color.lightened(0.16)
+
+func _refresh_squall_visuals() -> void:
+	for child in squall_container.get_children():
+		child.queue_free()
+	squall_visuals.clear()
+
+	for band_variant in Array(NetworkRuntime.run_state.get("squall_bands", [])):
+		var band: Dictionary = band_variant
+		var band_id := int(band.get("id", 0))
+		var root := Node3D.new()
+		root.name = "SquallBand%d" % band_id
+		squall_container.add_child(root)
+
+		var shell := MeshInstance3D.new()
+		shell.name = "Shell"
+		var shell_mesh := BoxMesh.new()
+		var half_extents: Vector3 = band.get("half_extents", Vector3.ONE)
+		shell_mesh.size = Vector3(half_extents.x * 2.0, 1.7, half_extents.z * 2.0)
+		shell.mesh = shell_mesh
+		shell.position = Vector3(0.0, 0.95, 0.0)
+		var shell_material := StandardMaterial3D.new()
+		shell_material.albedo_color = Color(0.20, 0.37, 0.52, 0.22)
+		shell_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		shell_material.roughness = 0.18
+		shell.material_override = shell_material
+		root.add_child(shell)
+
+		var core := MeshInstance3D.new()
+		core.name = "Core"
+		var core_mesh := CylinderMesh.new()
+		core_mesh.height = 0.12
+		core_mesh.top_radius = maxf(1.2, minf(half_extents.x, half_extents.z))
+		core_mesh.bottom_radius = core_mesh.top_radius
+		core.mesh = core_mesh
+		core.position = Vector3(0.0, 0.06, 0.0)
+		var core_material := StandardMaterial3D.new()
+		core_material.albedo_color = Color(0.30, 0.70, 0.96, 0.46)
+		core_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		core_material.roughness = 0.1
+		core.material_override = core_material
+		root.add_child(core)
+
+		var label := Label3D.new()
+		label.name = "Label"
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		label.font_size = 22
+		label.position = Vector3(0.0, 2.2, 0.0)
+		root.add_child(label)
+
+		squall_visuals[band_id] = {
+			"root": root,
+			"shell_material": shell_material,
+			"core_material": core_material,
+			"label": label,
+		}
+
 func _refresh_cache_visual() -> void:
 	if cache_root == null:
 		return
@@ -1388,6 +1582,10 @@ func _apply_autorun_demo(_delta: float, input_state: Dictionary) -> void:
 	var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
 	var cache_radius: float = float(NetworkRuntime.run_state.get("cache_radius", 2.9))
 	var cache_max_speed: float = float(NetworkRuntime.run_state.get("cache_max_speed", 1.75))
+	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
+	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
+	var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
+	var rescue_max_speed: float = float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED))
 
 	if loot_remaining > 0:
 		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
@@ -1428,6 +1626,23 @@ func _apply_autorun_demo(_delta: float, input_state: Dictionary) -> void:
 			action_request_cooldown = 0.45
 		return
 
+	if rescue_available:
+		if boat_position.distance_to(rescue_position) > rescue_radius * 0.8:
+			_request_station_if_needed("helm", input_state)
+			if local_station_id == "helm":
+				_apply_drive_to_target(rescue_position + Vector3(0.0, 0.0, -0.8), input_state, 0.52)
+			return
+		if boat_speed > rescue_max_speed:
+			_request_station_if_needed("helm", input_state)
+			if local_station_id == "helm":
+				_hold_position_over_target(rescue_position, rescue_max_speed, input_state)
+			return
+		_request_station_if_needed("grapple", input_state)
+		if local_station_id == "grapple" and action_request_cooldown <= 0.0:
+			input_state["request_grapple"] = true
+			action_request_cooldown = 0.45
+		return
+
 	if cache_available and boat_position.distance_to(cache_position) <= cache_radius and absf(boat_speed) <= cache_max_speed:
 		_request_station_if_needed("grapple", input_state)
 		if local_station_id == "grapple" and action_request_cooldown <= 0.0:
@@ -1463,6 +1678,19 @@ func _apply_driver_role(input_state: Dictionary) -> void:
 			_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
 		else:
 			_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
+		return
+
+	if bool(NetworkRuntime.run_state.get("rescue_available", false)):
+		if not _station_is_crewed("grapple"):
+			input_state["throttle"] = 0.0
+			input_state["steer"] = 0.0
+			return
+		var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
+		var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
+		if boat_position.distance_to(rescue_position) > rescue_radius * 0.8:
+			_apply_drive_to_target(rescue_position + Vector3(0.0, 0.0, -0.8), input_state, 0.52)
+		else:
+			_hold_position_over_target(rescue_position, float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)), input_state)
 		return
 
 	_apply_coordinated_return_route(input_state)
@@ -1509,6 +1737,14 @@ func _apply_grapple_role(input_state: Dictionary) -> void:
 
 	var cache_available := bool(NetworkRuntime.run_state.get("cache_available", false))
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	if bool(NetworkRuntime.run_state.get("rescue_available", false)):
+		var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
+		var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
+		if boat_position.distance_to(rescue_position) <= rescue_radius and absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) <= float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)) and action_request_cooldown <= 0.0:
+			input_state["request_grapple"] = true
+			action_request_cooldown = 0.45
+			return
+
 	if cache_available:
 		var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
 		var cache_radius: float = float(NetworkRuntime.run_state.get("cache_radius", 2.9))
@@ -1548,7 +1784,8 @@ func _apply_brace_role(input_state: Dictionary) -> void:
 	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
 	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
 	var salvage_ready := int(NetworkRuntime.run_state.get("loot_remaining", 0)) > 0 and boat_position.distance_to(wreck_position) <= wreck_radius + 0.55 and absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) <= float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)) + 0.45
-	if not salvage_ready and not _should_autobrace():
+	var squall_ready := _boat_inside_any_squall()
+	if not salvage_ready and not squall_ready and not _should_autobrace():
 		return
 
 	input_state["request_brace"] = true
@@ -1662,6 +1899,9 @@ func _should_autobrace() -> bool:
 	if float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0)) > 0.0:
 		return false
 
+	if _boat_inside_any_squall():
+		return true
+
 	var autobrace_distance: float = float(launch_overrides.get("autobrace_distance", 7.5))
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var rotation_y: float = float(NetworkRuntime.boat_state.get("rotation_y", 0.0))
@@ -1718,12 +1958,53 @@ func _update_wreck_visual() -> void:
 	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
 	wreck_root.position = wreck_position + Vector3(0.0, sin(connect_time_seconds * 0.72) * 0.06, 0.0)
 
+func _update_rescue_visual() -> void:
+	if rescue_root == null or not rescue_root.visible:
+		return
+
+	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
+	rescue_root.position = rescue_position + Vector3(0.0, sin(connect_time_seconds * 1.18) * 0.08, 0.0)
+	if rescue_label != null:
+		rescue_label.visible = true
+	var rescue_light := rescue_root.get_node_or_null("RescueLight") as OmniLight3D
+	if rescue_light != null:
+		var pulse := 1.15 + maxf(0.0, sin(connect_time_seconds * 4.4)) * 0.85
+		rescue_light.light_energy = pulse if bool(NetworkRuntime.run_state.get("rescue_available", false)) else 0.65
+
 func _update_cache_visual() -> void:
 	if cache_root == null:
 		return
 
 	var cache_position: Vector3 = NetworkRuntime.run_state.get("cache_position", Vector3.ZERO)
 	cache_root.position = cache_position + Vector3(0.0, sin(connect_time_seconds * 1.12 + 0.5) * 0.07, 0.0)
+
+func _update_squall_visuals() -> void:
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	for band_variant in Array(NetworkRuntime.run_state.get("squall_bands", [])):
+		var band: Dictionary = band_variant
+		var band_id := int(band.get("id", 0))
+		var visual: Dictionary = squall_visuals.get(band_id, {})
+		var root := visual.get("root") as Node3D
+		if root == null:
+			_refresh_squall_visuals()
+			return
+		var center: Vector3 = band.get("center", Vector3.ZERO)
+		root.position = center + Vector3(0.0, sin(connect_time_seconds * 0.8 + float(band_id)) * 0.08, 0.0)
+		var shell_material := visual.get("shell_material") as StandardMaterial3D
+		var core_material := visual.get("core_material") as StandardMaterial3D
+		var label := visual.get("label") as Label3D
+		var inside := _position_inside_squall(boat_position, band)
+		if shell_material != null:
+			shell_material.albedo_color = Color(0.20, 0.37, 0.52, 0.22).lerp(Color(0.33, 0.62, 0.88, 0.34), 1.0 if inside else 0.0)
+		if core_material != null:
+			core_material.albedo_color = Color(0.30, 0.70, 0.96, 0.46).lerp(Color(0.92, 0.95, 1.0, 0.64), 1.0 if inside else 0.0)
+		if label != null:
+			label.text = "%s\nDrag x%.2f | Surge %.1f" % [
+				str(band.get("label", "Squall Front")),
+				float(band.get("drag_multiplier", 1.0)),
+				float(band.get("pulse_damage", 0.0)),
+			]
+			label.modulate = Color(0.90, 0.97, 1.0) if inside else Color(0.70, 0.84, 0.96)
 
 func _update_extraction_visual(_delta: float) -> void:
 	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
@@ -1760,6 +2041,19 @@ func _boat_within_extraction_zone() -> bool:
 	var extraction_position: Vector3 = NetworkRuntime.run_state.get("extraction_position", Vector3.ZERO)
 	var extraction_radius: float = float(NetworkRuntime.run_state.get("extraction_radius", 3.7))
 	return boat_position.distance_to(extraction_position) <= extraction_radius
+
+func _boat_inside_any_squall() -> bool:
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	for band_variant in Array(NetworkRuntime.run_state.get("squall_bands", [])):
+		var band: Dictionary = band_variant
+		if _position_inside_squall(boat_position, band):
+			return true
+	return false
+
+func _position_inside_squall(position: Vector3, band: Dictionary) -> bool:
+	var center: Vector3 = band.get("center", Vector3.ZERO)
+	var half_extents: Vector3 = band.get("half_extents", Vector3.ZERO)
+	return absf(position.x - center.x) <= half_extents.x and absf(position.z - center.z) <= half_extents.z
 
 func _get_local_peer_id() -> int:
 	if NetworkRuntime.multiplayer == null:
@@ -1870,6 +2164,7 @@ func _on_reaction_state_changed(snapshot: Dictionary) -> void:
 	_refresh_hud()
 
 func _on_run_seed_changed(_seed: int) -> void:
+	_refresh_world()
 	_refresh_hud()
 
 func _on_helm_changed(_driver_peer_id: int) -> void:
@@ -1915,7 +2210,9 @@ func _on_run_state_changed(_state: Dictionary) -> void:
 		auto_continue_queued = true
 		get_tree().create_timer(0.5).timeout.connect(_continue_to_dock)
 	_refresh_wreck_visual()
+	_refresh_rescue_visual()
 	_refresh_cache_visual()
+	_refresh_squall_visuals()
 	_refresh_extraction_visual()
 	_refresh_result_overlay()
 	_refresh_hud()
@@ -1941,12 +2238,25 @@ func _build_objective_text() -> String:
 	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
 	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
 	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
+	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
+	var rescue_engaged := bool(NetworkRuntime.run_state.get("rescue_engaged", false))
+	var rescue_position: Vector3 = NetworkRuntime.run_state.get("rescue_position", Vector3.ZERO)
+	var rescue_radius: float = float(NetworkRuntime.run_state.get("rescue_radius", 3.4))
 	if loot_remaining > 0:
 		if boat_position.distance_to(wreck_position) > wreck_radius:
 			return "Objective: Bring the boat into the wreck ring so the grappler can start recovery."
 		if boat_speed > float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
 			return "Objective: Hold the boat inside the wreck ring below salvage speed."
 		return "Objective: Brace the salvage surge and grapple the remaining wreck loot."
+
+	if rescue_available:
+		if boat_position.distance_to(rescue_position) > rescue_radius:
+			return "Objective: Optional rescue spotted. Divert into the distress ring if the crew wants extra rewards."
+		if boat_speed > float(NetworkRuntime.run_state.get("rescue_max_speed", NetworkRuntime.RESCUE_MAX_SPEED)):
+			return "Objective: Slow the boat down inside the rescue ring before the grappler starts recovery."
+		if rescue_engaged:
+			return "Objective: Hold steady until the rescue package is secured."
+		return "Objective: Let the grappler recover the rescue package while the helm holds position."
 
 	if bool(NetworkRuntime.run_state.get("cache_available", false)):
 		return "Objective: Pass through the resupply cache lane and let the grappler snag the bonus crate before extraction."
@@ -1959,3 +2269,33 @@ func _build_objective_text() -> String:
 		return "Objective: Stay slow and stable while the extraction timer finishes."
 
 	return "Objective: Claim stations and prepare the shared boat."
+
+func _build_onboarding_text(selected_station_id: String, local_station_id: String) -> String:
+	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
+	if phase == "success":
+		return "Onboarding: Press Enter or Continue to return to the hangar and spend the rewards you banked."
+	if phase == "failed":
+		return "Onboarding: Failed runs lose unbanked cargo. Return to hangar, rebuild, and try a safer route."
+
+	if local_station_id.is_empty():
+		var selected_label := "a station"
+		if not selected_station_id.is_empty():
+			selected_label = NetworkRuntime.get_station_label(selected_station_id)
+		return "Onboarding: Q/E chooses %s, F claims it, and the whole crew shares one boat." % selected_label
+
+	if _boat_inside_any_squall():
+		return "Onboarding: Squalls drag the boat and fire surge pulses. Keep speed under control and brace through the slam."
+
+	if int(NetworkRuntime.run_state.get("loot_remaining", 0)) > 0:
+		return "Onboarding: Get inside the wreck ring, slow below salvage speed, then brace before the grappler pulls loot aboard."
+
+	if bool(NetworkRuntime.run_state.get("rescue_available", false)):
+		return "Onboarding: Distress rescues are optional. Hold inside the rescue ring long enough to secure the bonus package."
+
+	if bool(NetworkRuntime.run_state.get("cache_available", false)):
+		return "Onboarding: The resupply cache is a quick bonus stop for extra patch kits and currency if the route still looks safe."
+
+	if int(NetworkRuntime.run_state.get("cargo_count", 0)) > 0:
+		return "Onboarding: Everything aboard is lost if the boat sinks before extraction. Cash out once the risk starts climbing."
+
+	return "Onboarding: Claim stations and get the shared boat moving."

@@ -257,6 +257,13 @@ const GRAPPLE_RANGE := 7.8
 const SALVAGE_MAX_SPEED := 1.55
 const SALVAGE_BACKLASH_DAMAGE := 6.0
 const SALVAGE_BACKLASH_BREACHES := 1
+const RESCUE_MAX_SPEED := 1.25
+const RESCUE_DURATION := 1.85
+const RESCUE_PATCH_KIT_GRANT := 1
+const RESCUE_GOLD_BONUS_MIN := 22
+const RESCUE_GOLD_BONUS_MAX := 34
+const RESCUE_SALVAGE_BONUS_MIN := 1
+const RESCUE_SALVAGE_BONUS_MAX := 2
 const BREACH_SPEED_PENALTY := 0.16
 const MAX_BREACH_STACKS := 4
 const HULL_LEAK_DAMAGE_PER_BREACH := 0.55
@@ -272,6 +279,12 @@ const RESUPPLY_CACHE_MAX_SPEED := 8.0
 const RESUPPLY_CACHE_SUPPLY_GRANT := 1
 const RESUPPLY_CACHE_GOLD_BONUS := 18
 const RESUPPLY_CACHE_SALVAGE_BONUS := 1
+const SQUALL_PULSE_DAMAGE_MIN := 3.4
+const SQUALL_PULSE_DAMAGE_MAX := 5.6
+const SQUALL_DRAG_MIN := 0.6
+const SQUALL_DRAG_MAX := 0.82
+const SQUALL_PULSE_INTERVAL_MIN := 2.1
+const SQUALL_PULSE_INTERVAL_MAX := 2.9
 const REWARD_GOLD_PER_CARGO := 35
 const REWARD_SALVAGE_PER_CARGO := 2
 
@@ -637,7 +650,10 @@ func server_step_shared_boat(delta: float) -> void:
 
 	var breach_stacks := int(boat_state.get("breach_stacks", 0))
 	var base_top_speed: float = float(boat_state.get("base_top_speed", BOAT_TOP_SPEED))
-	var top_speed_limit := base_top_speed * maxf(0.45, 1.0 - float(breach_stacks) * BREACH_SPEED_PENALTY)
+	var boat_position_for_drag: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var squall_drag_multiplier := _get_active_squall_drag_multiplier(boat_position_for_drag)
+	boat_state["squall_drag_multiplier"] = squall_drag_multiplier
+	var top_speed_limit := base_top_speed * maxf(0.45, 1.0 - float(breach_stacks) * BREACH_SPEED_PENALTY) * squall_drag_multiplier
 	boat_state["top_speed_limit"] = top_speed_limit
 
 	var input_state: Dictionary = _peer_inputs.get(driver_peer_id, {
@@ -679,6 +695,12 @@ func server_step_shared_boat(delta: float) -> void:
 			_resolve_run_failure("The hull flooded before the crew could repair it.")
 			return
 
+	_process_rescue_hold(delta)
+	if str(run_state.get("phase", "running")) != "running":
+		return
+	_process_squall_pressure(delta)
+	if str(run_state.get("phase", "running")) != "running":
+		return
 	_process_hazard_collisions()
 	_process_extraction(delta)
 
@@ -1143,6 +1165,7 @@ func _initialize_loot() -> void:
 
 func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_warning_text: String) -> void:
 	var blueprint_stats := Dictionary(boat_blueprint.get("stats", {}))
+	var seeded_layout := _build_seeded_run_layout()
 	run_state = {
 		"phase": "running",
 		"cargo_count": 0,
@@ -1153,16 +1176,31 @@ func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_war
 		"wreck_position": Vector3(0.0, 0.0, 10.6),
 		"wreck_radius": 4.1,
 		"salvage_max_speed": SALVAGE_MAX_SPEED,
+		"layout_label": str(seeded_layout.get("layout_label", "Wreck Push")),
 		"repair_actions": 0,
 		"repair_supplies": repair_capacity,
 		"repair_supplies_max": repair_capacity,
 		"cargo_capacity": cargo_capacity,
+		"rescue_position": seeded_layout.get("rescue_position", Vector3(6.2, 0.0, 18.6)),
+		"rescue_radius": float(seeded_layout.get("rescue_radius", 3.4)),
+		"rescue_max_speed": float(seeded_layout.get("rescue_max_speed", RESCUE_MAX_SPEED)),
+		"rescue_duration": float(seeded_layout.get("rescue_duration", RESCUE_DURATION)),
+		"rescue_progress": 0.0,
+		"rescue_available": true,
+		"rescue_engaged": false,
+		"rescue_completed": false,
+		"rescue_label": str(seeded_layout.get("rescue_label", "Distress Rescue")),
+		"rescue_archetype": str(seeded_layout.get("rescue_archetype", "side_lane")),
+		"rescue_bonus_gold": int(seeded_layout.get("rescue_bonus_gold", RESCUE_GOLD_BONUS_MIN)),
+		"rescue_bonus_salvage": int(seeded_layout.get("rescue_bonus_salvage", RESCUE_SALVAGE_BONUS_MIN)),
+		"rescue_patch_kit_bonus": int(seeded_layout.get("rescue_patch_kit_bonus", RESCUE_PATCH_KIT_GRANT)),
 		"cache_position": Vector3(-5.8, 0.0, 24.8),
 		"cache_radius": RESUPPLY_CACHE_RADIUS,
 		"cache_max_speed": RESUPPLY_CACHE_MAX_SPEED,
 		"cache_available": true,
 		"cache_label": "Resupply Cache",
 		"cache_recovered": false,
+		"squall_bands": Array(seeded_layout.get("squall_bands", [])).duplicate(true),
 		"bonus_gold_bank": 0,
 		"bonus_salvage_bank": 0,
 		"extraction_position": Vector3(0.0, 0.0, 34.0),
@@ -1182,6 +1220,86 @@ func _initialize_run_state(repair_capacity: int, cargo_capacity: int, launch_war
 		"launch_loose_chunks": int(blueprint_stats.get("loose_blocks", 0)),
 	}
 	_initialize_runtime_boat_from_blueprint()
+
+func _build_seeded_run_layout() -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(run_seed) * 131 + 17
+	var rescue_archetypes := [
+		{
+			"id": "left_detour",
+			"position": Vector3(-6.4, 0.0, 18.8),
+			"label": "Distress Flare",
+		},
+		{
+			"id": "right_detour",
+			"position": Vector3(6.3, 0.0, 18.4),
+			"label": "Rescue Beacon",
+		},
+		{
+			"id": "post_wreck_lane",
+			"position": Vector3(4.6, 0.0, 24.2),
+			"label": "Broken Skiff",
+		},
+	]
+	var rescue_archetype: Dictionary = rescue_archetypes[int(rng.randi() % rescue_archetypes.size())]
+	var rescue_position: Vector3 = rescue_archetype.get("position", Vector3(6.2, 0.0, 18.6))
+	var rescue_radius := rng.randf_range(3.15, 3.8)
+	var rescue_duration := rng.randf_range(1.55, 2.15)
+	var rescue_bonus_gold := rng.randi_range(RESCUE_GOLD_BONUS_MIN, RESCUE_GOLD_BONUS_MAX)
+	var rescue_bonus_salvage := rng.randi_range(RESCUE_SALVAGE_BONUS_MIN, RESCUE_SALVAGE_BONUS_MAX)
+	var squall_bands: Array = []
+	var first_half_width := rng.randf_range(4.1, 5.2)
+	var first_half_depth := rng.randf_range(2.2, 3.1)
+	squall_bands.append(_make_squall_band(
+		1,
+		Vector3(clampf(rescue_position.x * 0.45, -3.2, 3.2), 0.0, rescue_position.z + rng.randf_range(-1.6, 1.2)),
+		Vector3(first_half_width, 0.0, first_half_depth),
+		"Squall Front",
+		rng.randf_range(SQUALL_DRAG_MIN, SQUALL_DRAG_MAX),
+		rng.randf_range(SQUALL_PULSE_INTERVAL_MIN, SQUALL_PULSE_INTERVAL_MAX),
+		rng.randf_range(SQUALL_PULSE_DAMAGE_MIN, SQUALL_PULSE_DAMAGE_MAX)
+	))
+	if bool(rng.randi() % 2):
+		squall_bands.append(_make_squall_band(
+			2,
+			Vector3(rng.randf_range(-2.4, 2.4), 0.0, rng.randf_range(27.5, 30.8)),
+			Vector3(rng.randf_range(4.0, 5.0), 0.0, rng.randf_range(2.1, 2.8)),
+			"Rear Squall",
+			rng.randf_range(SQUALL_DRAG_MIN, SQUALL_DRAG_MAX),
+			rng.randf_range(SQUALL_PULSE_INTERVAL_MIN, SQUALL_PULSE_INTERVAL_MAX),
+			rng.randf_range(SQUALL_PULSE_DAMAGE_MIN, SQUALL_PULSE_DAMAGE_MAX)
+		))
+
+	var layout_label := "%s + %d squall band%s" % [
+		str(rescue_archetype.get("id", "rescue")).replace("_", " ").capitalize(),
+		squall_bands.size(),
+		"" if squall_bands.size() == 1 else "s",
+	]
+	return {
+		"layout_label": layout_label,
+		"rescue_archetype": str(rescue_archetype.get("id", "side_lane")),
+		"rescue_position": rescue_position,
+		"rescue_radius": rescue_radius,
+		"rescue_duration": rescue_duration,
+		"rescue_max_speed": RESCUE_MAX_SPEED,
+		"rescue_label": str(rescue_archetype.get("label", "Distress Rescue")),
+		"rescue_bonus_gold": rescue_bonus_gold,
+		"rescue_bonus_salvage": rescue_bonus_salvage,
+		"rescue_patch_kit_bonus": RESCUE_PATCH_KIT_GRANT,
+		"squall_bands": squall_bands,
+	}
+
+func _make_squall_band(band_id: int, center: Vector3, half_extents: Vector3, label: String, drag_multiplier: float, pulse_interval: float, pulse_damage: float) -> Dictionary:
+	return {
+		"id": band_id,
+		"center": center,
+		"half_extents": half_extents,
+		"label": label,
+		"drag_multiplier": drag_multiplier,
+		"pulse_interval": pulse_interval,
+		"pulse_timer": pulse_interval * 0.72,
+		"pulse_damage": pulse_damage,
+	}
 
 func _initialize_runtime_boat_from_blueprint() -> void:
 	var runtime_blocks: Array = []
@@ -2233,6 +2351,8 @@ func _process_grapple(peer_id: int) -> void:
 		return
 	if get_peer_station_id(peer_id) != "grapple":
 		return
+	if _process_rescue_grapple():
+		return
 	if _process_resupply_cache_grapple():
 		return
 	if loot_state.is_empty():
@@ -2355,6 +2475,150 @@ func _process_resupply_cache_grapple() -> bool:
 		RESUPPLY_CACHE_SUPPLY_GRANT,
 	])
 	return true
+
+func _process_rescue_grapple() -> bool:
+	if not bool(run_state.get("rescue_available", false)):
+		return false
+
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var rescue_position: Vector3 = run_state.get("rescue_position", Vector3.ZERO)
+	var rescue_radius: float = float(run_state.get("rescue_radius", 3.4))
+	var rescue_max_speed: float = float(run_state.get("rescue_max_speed", RESCUE_MAX_SPEED))
+	if boat_position.distance_to(rescue_position) > rescue_radius:
+		return false
+	if absf(float(boat_state.get("speed", 0.0))) > rescue_max_speed:
+		_set_status("Slow the boat down before attempting the rescue.")
+		return true
+
+	var grapple_position := _get_station_world_position("grapple")
+	if grapple_position.distance_to(rescue_position) > GRAPPLE_RANGE:
+		return false
+
+	if bool(run_state.get("rescue_engaged", false)):
+		_set_status("Hold the boat steady while the rescue line stays tight.")
+		return true
+
+	run_state["rescue_engaged"] = true
+	run_state["rescue_progress"] = maxf(float(run_state.get("rescue_progress", 0.0)), 0.08)
+	_broadcast_run_state()
+	_set_status("Rescue line secured. Hold steady until the evac completes.")
+	return true
+
+func _process_rescue_hold(delta: float) -> void:
+	if not bool(run_state.get("rescue_available", false)):
+		return
+	if not bool(run_state.get("rescue_engaged", false)):
+		return
+
+	var rescue_position: Vector3 = run_state.get("rescue_position", Vector3.ZERO)
+	var rescue_radius: float = float(run_state.get("rescue_radius", 3.4))
+	var rescue_max_speed: float = float(run_state.get("rescue_max_speed", RESCUE_MAX_SPEED))
+	var rescue_duration: float = float(run_state.get("rescue_duration", RESCUE_DURATION))
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var boat_speed: float = absf(float(boat_state.get("speed", 0.0)))
+	var progress := float(run_state.get("rescue_progress", 0.0))
+	var progress_before := progress
+	if boat_position.distance_to(rescue_position) <= rescue_radius and boat_speed <= rescue_max_speed:
+		progress = minf(rescue_duration, progress + delta)
+	else:
+		progress = maxf(0.0, progress - delta * 1.5)
+
+	run_state["rescue_progress"] = progress
+	if not is_equal_approx(progress_before, progress):
+		_broadcast_run_state()
+
+	if progress >= rescue_duration:
+		run_state["rescue_available"] = false
+		run_state["rescue_engaged"] = false
+		run_state["rescue_completed"] = true
+		run_state["repair_supplies"] = mini(
+			int(run_state.get("repair_supplies_max", REPAIR_SUPPLIES_MAX)),
+			int(run_state.get("repair_supplies", 0)) + int(run_state.get("rescue_patch_kit_bonus", RESCUE_PATCH_KIT_GRANT))
+		)
+		run_state["bonus_gold_bank"] = int(run_state.get("bonus_gold_bank", 0)) + int(run_state.get("rescue_bonus_gold", RESCUE_GOLD_BONUS_MIN))
+		run_state["bonus_salvage_bank"] = int(run_state.get("bonus_salvage_bank", 0)) + int(run_state.get("rescue_bonus_salvage", RESCUE_SALVAGE_BONUS_MIN))
+		_broadcast_run_state()
+		_set_status("%s completed: +%d gold, +%d salvage, +%d patch kit." % [
+			str(run_state.get("rescue_label", "Rescue")),
+			int(run_state.get("rescue_bonus_gold", RESCUE_GOLD_BONUS_MIN)),
+			int(run_state.get("rescue_bonus_salvage", RESCUE_SALVAGE_BONUS_MIN)),
+			int(run_state.get("rescue_patch_kit_bonus", RESCUE_PATCH_KIT_GRANT)),
+		])
+
+func _get_active_squall_drag_multiplier(position: Vector3) -> float:
+	var drag_multiplier := 1.0
+	for band_variant in Array(run_state.get("squall_bands", [])):
+		var band: Dictionary = band_variant
+		if not _position_inside_squall(position, band):
+			continue
+		drag_multiplier = minf(drag_multiplier, float(band.get("drag_multiplier", 1.0)))
+	return drag_multiplier
+
+func _process_squall_pressure(delta: float) -> void:
+	var bands: Array = Array(run_state.get("squall_bands", [])).duplicate(true)
+	if bands.is_empty():
+		return
+
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var updated_bands := false
+	for band_index in range(bands.size()):
+		var band: Dictionary = bands[band_index]
+		var pulse_timer := float(band.get("pulse_timer", float(band.get("pulse_interval", SQUALL_PULSE_INTERVAL_MIN))))
+		pulse_timer = maxf(0.0, pulse_timer - delta)
+		if _position_inside_squall(boat_position, band) and pulse_timer <= 0.0:
+			var pulse_interval: float = float(band.get("pulse_interval", SQUALL_PULSE_INTERVAL_MIN))
+			pulse_timer = pulse_interval
+			_resolve_squall_pulse(band)
+			if str(run_state.get("phase", "running")) != "running":
+				return
+		band["pulse_timer"] = pulse_timer
+		bands[band_index] = band
+		updated_bands = true
+
+	if updated_bands:
+		run_state["squall_bands"] = bands
+
+func _resolve_squall_pulse(band: Dictionary) -> void:
+	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var band_center: Vector3 = band.get("center", Vector3.ZERO)
+	var pulse_damage := float(band.get("pulse_damage", SQUALL_PULSE_DAMAGE_MIN))
+	var was_braced := float(boat_state.get("brace_timer", 0.0)) > 0.0
+	var brace_multiplier: float = float(boat_state.get("brace_multiplier", 1.0))
+	if was_braced:
+		pulse_damage = maxf(1.5, pulse_damage / maxf(1.0, brace_multiplier))
+		boat_state["brace_timer"] = 0.0
+
+	var pulse_sign := 1.0 if boat_position.x <= band_center.x else -1.0
+	var impact_local := Vector3(0.7 * pulse_sign, 0.0, 0.45)
+	var survives := _apply_localized_block_damage(pulse_damage, impact_local, "squall_pulse")
+	_broadcast_runtime_boat_state()
+	if not survives:
+		_broadcast_run_state()
+		_broadcast_boat_state()
+		return
+
+	boat_state["hull_integrity"] = maxf(0.0, float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) - pulse_damage)
+	boat_state["last_impact_damage"] = pulse_damage
+	boat_state["last_impact_braced"] = was_braced
+	var reaction_direction := Vector3.RIGHT.rotated(Vector3.UP, float(boat_state.get("rotation_y", 0.0))) * pulse_sign
+	_apply_run_impact_reactions(
+		reaction_direction,
+		clampf(pulse_damage / SQUALL_PULSE_DAMAGE_MAX, 0.26, 0.62),
+		was_braced,
+		false,
+		"squall"
+	)
+	_broadcast_run_state()
+	_broadcast_boat_state()
+	if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
+		_resolve_run_failure("A squall surge smashed the hull apart before the crew could extract.")
+		return
+	_set_status("Braced through the squall surge." if was_braced else "A squall surge slammed the hull.")
+
+func _position_inside_squall(position: Vector3, band: Dictionary) -> bool:
+	var center: Vector3 = band.get("center", Vector3.ZERO)
+	var half_extents: Vector3 = band.get("half_extents", Vector3(4.0, 0.0, 2.4))
+	return absf(position.x - center.x) <= half_extents.x and absf(position.z - center.z) <= half_extents.z
 
 func _process_hazard_collisions() -> void:
 	if session_phase != SESSION_PHASE_RUN:
