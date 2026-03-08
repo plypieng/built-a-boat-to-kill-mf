@@ -480,6 +480,29 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - `BumperLeft` and `BumperRight` collided in hangar and triggered the new bump reaction
   - both clients disconnected cleanly afterward without the old ENet send error returning
 
+## 2026-03-08 Friends MVP Roadmap
+
+- Approved a fun-first friends MVP target with manual server launch and manual join flow.
+- Locked the MVP definition around:
+  - shared social hangar building
+  - shared extraction runs
+  - meaningful reward feedback into future boat choices
+  - stability for repeated two-to-four-player tests
+- Explicitly cut from MVP:
+  - public matchmaking
+  - PvP
+  - true ragdolls
+  - deep crafting trees
+  - seamless world expansion
+  - art-first production asset work
+- Wrote the approved roadmap to `docs/plans/2026-03-08-friends-mvp-roadmap-design.md`.
+- Wrote the fallback implementation plan to `docs/plans/2026-03-08-friends-mvp-roadmap-implementation-plan.md`.
+- Approved the first delivery slice as `Week 1: social builder feel`, focused on:
+  - hangar camera framing
+  - stronger selected-block and placement feedback
+  - better remote builder readability
+  - clearer launch readiness and seaworthiness warnings
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
