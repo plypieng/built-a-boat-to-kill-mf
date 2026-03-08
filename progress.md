@@ -724,6 +724,25 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - local GUI host-flow capture at `/tmp/builtaboat-hangar-host-fix.png`
   - both captures show the hangar loading through the avatar-follow camera with the slimmer overlay instead of the old full-height builder panels
 
+## 2026-03-08 Full HUD Expedition Board Design
+
+- Approved the full HUD redesign direction for the entire game:
+  - `hangar`
+  - `run`
+  - `results`
+- Locked the visual direction to:
+  - `Expedition Board`
+  - hybrid playful/co-op tone in hangar
+  - tighter extraction pressure during runs
+  - mixed screen-HUD + world-marker presentation
+  - `scrappy nautical expedition` visual world
+- Approved the layout principles:
+  - hangar as a dock planning board
+  - run HUD centered on objective strip, survival cluster, crew strip, and event callouts
+  - results as a salvage manifest plus incident report
+- Wrote the approved design doc to `docs/plans/2026-03-08-full-hud-expedition-board-design.md`.
+- Wrote the fallback implementation plan to `docs/plans/2026-03-08-full-hud-expedition-board-implementation-plan.md` because the `writing-plans` skill is not available in this session.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
