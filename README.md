@@ -323,8 +323,10 @@ bash tools/package_windows_playtest.sh \
 - The current connect flow now lands in a shared 3D hangar builder where the crew can edit one live blueprint together before launching.
 - The current connect flow now supports `Host Game` and `Join By IP`, with host mode launching a local authoritative server process before connecting the client to `127.0.0.1`.
 - The current hangar now uses a short-range camera-crosshair build ghost tied to the third-person builder avatar, so moving around the boat matters while building.
+- The current authoritative `hangar_avatar_state` now carries each builder's selected part, rotation, target cell, and placement state so teammates render from the same shared build-intent snapshot.
 - The current shared-builder autobuild helpers now reposition the hangar avatar before placing or removing blocks so automated smoke tests obey the same range rule as manual builders.
 - The current hangar now shows a clearer build-tool panel, placement-state feedback, and launch-readiness summary so the crew can read the boat status faster before launching.
+- The current hangar now renders remote builders with colored tool cues, a translucent target ghost, and a tighter crew roster so co-build coordination is easier without voice callouts.
 - The current hangar also shows an unlock yard with shared team totals, selected-part descriptions, and immediate palette updates after server-approved purchases.
 - The current hangar and run scenes now include lightweight contextual onboarding text so first-time players can understand building, rescue pressure, squalls, and extraction without live coaching.
 - The current run scene now uses the first `Expedition Board` HUD pass: a centered objective strip, top-right extraction board, bottom-left crew deck, bottom-right boat plate, and short event callouts for impacts and run-state changes.

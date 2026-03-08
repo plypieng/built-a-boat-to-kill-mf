@@ -1405,6 +1405,10 @@ func _refresh_station_visuals() -> void:
 		label.modulate = color.lightened(0.22)
 
 func _refresh_crew_visuals() -> void:
+	if crew_container == null or not is_instance_valid(crew_container) or not crew_container.is_inside_tree():
+		return
+	if boat_root == null or not is_instance_valid(boat_root) or not boat_root.is_inside_tree():
+		return
 	for child in crew_container.get_children():
 		child.queue_free()
 	crew_visuals.clear()
@@ -1418,6 +1422,7 @@ func _refresh_crew_visuals() -> void:
 		var overboard := str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
 		if overboard:
 			crew_member.top_level = true
+			crew_container.add_child(crew_member)
 			crew_member.global_position = avatar_state.get("world_position", boat_root.global_position)
 			crew_member.rotation.y = float(avatar_state.get("facing_y", PI))
 		elif not station_id.is_empty() and _station_anchors_avatar(station_id):
@@ -1430,7 +1435,9 @@ func _refresh_crew_visuals() -> void:
 			crew_member.position = IDLE_CREW_SLOTS[idle_slot_index % IDLE_CREW_SLOTS.size()]
 			crew_member.rotation.y = PI
 			idle_slot_index += 1
-		crew_container.add_child(crew_member)
+			crew_container.add_child(crew_member)
+		if not overboard and crew_member.get_parent() == null:
+			crew_container.add_child(crew_member)
 
 		var body := MeshInstance3D.new()
 		var body_mesh := CapsuleMesh.new()
@@ -2093,6 +2100,9 @@ func _apply_scripted_station_input(delta: float, input_state: Dictionary) -> voi
 				_scripted_move_local_avatar_toward(damage_target.get("local_position", local_run_avatar_position), delta)
 
 func _apply_autorun_role(delta: float, autorun_role: String, input_state: Dictionary) -> void:
+	if _is_local_overboard():
+		_apply_overboard_recovery_role(delta, input_state)
+		return
 	match autorun_role:
 		"driver":
 			_apply_driver_role(delta, input_state)
@@ -2111,6 +2121,9 @@ func _apply_autorun_role(delta: float, autorun_role: String, input_state: Dictio
 
 func _apply_autorun_demo(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
+		return
+	if _is_local_overboard():
+		_apply_overboard_recovery_role(delta, input_state)
 		return
 
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())

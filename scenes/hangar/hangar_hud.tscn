@@ -5,8 +5,8 @@
 [node name="LeftPanel" type="PanelContainer" parent="."]
 offset_left = 18.0
 offset_top = 18.0
-offset_right = 398.0
-offset_bottom = 342.0
+offset_right = 368.0
+offset_bottom = 314.0
 
 [node name="Margin" type="MarginContainer" parent="LeftPanel"]
 layout_mode = 2
@@ -22,7 +22,7 @@ theme_override_constants/separation = 6
 [node name="Title" type="Label" parent="LeftPanel/Margin/Layout"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 22
-text = "Shared Boat Hangar"
+text = "Shared Build Yard"
 
 [node name="OnboardingLabel" type="Label" parent="LeftPanel/Margin/Layout"]
 layout_mode = 2
@@ -92,10 +92,10 @@ text = "Quit"
 [node name="RightPanel" type="PanelContainer" parent="."]
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -328.0
+offset_left = -300.0
 offset_top = 18.0
 offset_right = -18.0
-offset_bottom = 250.0
+offset_bottom = 238.0
 
 [node name="Margin" type="MarginContainer" parent="RightPanel"]
 layout_mode = 2
@@ -156,8 +156,8 @@ text = "Show Details"
 anchor_top = 1.0
 anchor_bottom = 1.0
 offset_left = 18.0
-offset_top = -142.0
-offset_right = 454.0
+offset_top = -118.0
+offset_right = 404.0
 offset_bottom = -18.0
 
 [node name="Margin" type="MarginContainer" parent="BottomLeftPanel"]

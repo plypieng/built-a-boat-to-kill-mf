@@ -390,12 +390,7 @@ func _build_local_avatar() -> void:
 		local_avatar_facing_y = 0.0
 	_apply_autohangar_spawn_override()
 	local_avatar_body.rotation.y = local_avatar_facing_y
-	NetworkRuntime.send_local_hangar_avatar_state(
-		local_avatar_body.global_position,
-		Vector3.ZERO,
-		local_avatar_facing_y,
-		true
-	)
+	_send_local_hangar_presence(local_avatar_body.global_position, Vector3.ZERO, true)
 
 func _create_avatar_visual(display_name: String, body_color: Color, is_local: bool) -> Node3D:
 	var root := Node3D.new()
@@ -464,6 +459,40 @@ func _create_avatar_visual(display_name: String, body_color: Color, is_local: bo
 
 	return root
 
+func _create_remote_presence_entry(peer_id: int, display_name: String, body_color: Color) -> Dictionary:
+	var avatar_root := Node3D.new()
+	avatar_root.name = "RemoteAvatar%d" % peer_id
+	avatar_root.add_child(_create_avatar_visual(display_name, body_color, false))
+	avatar_container.add_child(avatar_root)
+
+	var ghost_root := Node3D.new()
+	ghost_root.name = "RemoteGhost%d" % peer_id
+	ghost_root.visible = false
+	boat_root.add_child(ghost_root)
+
+	var ghost_mesh := MeshInstance3D.new()
+	ghost_mesh.name = "GhostMesh"
+	var ghost_box := BoxMesh.new()
+	ghost_box.size = Vector3.ONE * BLOCK_CELL_SIZE
+	ghost_mesh.mesh = ghost_box
+	ghost_root.add_child(ghost_mesh)
+
+	var ring_mesh := MeshInstance3D.new()
+	ring_mesh.name = "GhostRing"
+	var ring_shape := CylinderMesh.new()
+	ring_shape.top_radius = 0.52 * BLOCK_CELL_SIZE
+	ring_shape.bottom_radius = 0.58 * BLOCK_CELL_SIZE
+	ring_shape.height = 0.05
+	ring_mesh.mesh = ring_shape
+	ghost_root.add_child(ring_mesh)
+
+	return {
+		"avatar_root": avatar_root,
+		"ghost_root": ghost_root,
+		"ghost_mesh": ghost_mesh,
+		"ghost_ring": ring_mesh,
+	}
+
 func _build_cursor_visual() -> void:
 	cursor_mesh = MeshInstance3D.new()
 	var box := BoxMesh.new()
@@ -477,6 +506,31 @@ func _build_cursor_visual() -> void:
 	cursor_label.position = Vector3(0.0, 1.1 * BLOCK_CELL_SIZE, 0.0)
 	cursor_label.outline_size = 8
 	cursor_root.add_child(cursor_label)
+
+func _build_local_hangar_presence_snapshot() -> Dictionary:
+	return {
+		"selected_block_id": _get_selected_block_id(),
+		"rotation_steps": selected_rotation_steps,
+		"target_cell": [cursor_cell.x, cursor_cell.y, cursor_cell.z],
+		"remove_cell": [remove_cursor_cell.x, remove_cursor_cell.y, remove_cursor_cell.z],
+		"has_target": cursor_has_target,
+		"target_feedback_state": cursor_feedback_state,
+	}
+
+func _send_local_hangar_presence(position: Vector3, velocity: Vector3, grounded: bool) -> void:
+	var snapshot := _build_local_hangar_presence_snapshot()
+	NetworkRuntime.send_local_hangar_avatar_presence(
+		position,
+		velocity,
+		local_avatar_facing_y,
+		grounded,
+		str(snapshot.get("selected_block_id", "structure")),
+		int(snapshot.get("rotation_steps", 0)),
+		snapshot.get("target_cell", [0, 0, 0]),
+		snapshot.get("remove_cell", [0, 0, 0]),
+		bool(snapshot.get("has_target", false)),
+		str(snapshot.get("target_feedback_state", "hidden"))
+	)
 
 func _build_build_volume() -> void:
 	var bounds_min := NetworkRuntime.get_builder_bounds_min()
@@ -625,7 +679,7 @@ func _refresh_cursor_visual() -> void:
 		box_mesh.size = block_size * BLOCK_CELL_SIZE * 1.05
 	cursor_label.text = "%s • %s" % [
 		str(block_def.get("label", block_id.capitalize())),
-		cursor_feedback_state.capitalize() if cursor_feedback_state != "hidden" else "Aim",
+		_get_feedback_heading(cursor_feedback_state),
 	]
 	cursor_label.position = Vector3(0.0, block_size.y * BLOCK_CELL_SIZE * 0.82 + 0.42, 0.0)
 	cursor_label.visible = cursor_has_target
@@ -639,6 +693,19 @@ func _refresh_cursor_visual() -> void:
 		crosshair_label.modulate = material.albedo_color.lightened(0.26)
 	_refresh_local_builder_tool_visual()
 
+func _get_feedback_heading(feedback_state: String) -> String:
+	match feedback_state:
+		"ready":
+			return "Ready"
+		"occupied":
+			return "Occupied"
+		"range":
+			return "Move Closer"
+		"blocked":
+			return "Outside Volume"
+		_:
+			return "Aim"
+
 func _get_feedback_color(feedback_state: String) -> Color:
 	match feedback_state:
 		"ready":
@@ -649,6 +716,40 @@ func _get_feedback_color(feedback_state: String) -> Color:
 			return CURSOR_RANGE_COLOR
 		_:
 			return CURSOR_BLOCKED_COLOR
+
+func _get_presence_feedback_color(base_color: Color, feedback_state: String) -> Color:
+	var state_color := _get_feedback_color(feedback_state)
+	if feedback_state == "ready":
+		return base_color.lightened(0.12)
+	return base_color.lerp(state_color, 0.72)
+
+func _get_builder_presence_summary(avatar_state: Dictionary) -> String:
+	var block_id := str(avatar_state.get("selected_block_id", "structure"))
+	var block_label := str(NetworkRuntime.get_builder_block_definition(block_id).get("label", block_id.capitalize()))
+	if bool(avatar_state.get("has_target", false)):
+		return "%s • %s" % [block_label, _get_feedback_heading(str(avatar_state.get("target_feedback_state", "hidden")))]
+	return "%s • Aiming" % block_label
+
+func _get_local_target_compact_text() -> String:
+	if not cursor_has_target:
+		return "Aim at the dock or boat."
+	var block_label := str(NetworkRuntime.get_builder_block_definition(_get_selected_block_id()).get("label", _get_selected_block_id().capitalize()))
+	var target_cell_text := "%d,%d,%d" % [cursor_cell.x, cursor_cell.y, cursor_cell.z]
+	match cursor_feedback_state:
+		"ready":
+			return "%s at %s • F place%s" % [
+				block_label,
+				target_cell_text,
+				" • X remove" if cursor_can_remove else "",
+			]
+		"occupied":
+			return "%s at %s • X remove or pick another face" % [block_label, target_cell_text]
+		"range":
+			return "%s at %s • move closer" % [block_label, target_cell_text]
+		"blocked":
+			return "%s at %s • outside build volume" % [block_label, target_cell_text]
+		_:
+			return "%s at %s" % [block_label, target_cell_text]
 
 func _refresh_local_builder_tool_visual() -> void:
 	if local_avatar_body == null:
@@ -686,8 +787,9 @@ func _refresh_hud() -> void:
 	onboarding_label.text = _build_onboarding_text()
 	hud_icons.set_icon(selection_icon, hud_icons.get_block_icon_id(block_id))
 	hud_icons.set_icon(builder_icon, hud_icons.get_block_icon_id(block_id))
-	selection_label.text = "%s\nSelected: %s | Rot %d deg | HP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
-		" ".join(palette_entries),
+	selection_label.text = "Palette %d/%d\n%s | Rot %d deg\nHP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
+		selected_block_index + 1,
+		maxi(1, palette_entries.size()),
 		str(block_def.get("label", block_id.capitalize())),
 		selected_rotation_steps * 90,
 		float(block_def.get("max_hp", 0.0)),
@@ -698,12 +800,9 @@ func _refresh_hud() -> void:
 		float(block_def.get("brace", 0.0)),
 	]
 
-	var target_summary := cursor_target_label.replace("\n", " | ")
-	if not cursor_has_target:
-		target_summary = "Aim the center crosshair at the boat or dock to place blocks."
-	target_label.text = "Placement\n%s\nState: %s" % [
-		target_summary,
-		cursor_feedback_state.capitalize() if cursor_feedback_state != "hidden" else "Searching",
+	target_label.text = "Build Target\n%s\n%s" % [
+		_get_feedback_heading(cursor_feedback_state),
+		_get_local_target_compact_text(),
 	]
 
 	builder_label.text = "Blueprint v%d | Blocks %d | Main %d | Loose %d | Components %d\nHull %.0f | Top Speed %.1f | Cargo %d | Patch Kits %d | Brace x%.2f | Margin %.1f" % [
@@ -787,13 +886,15 @@ func _refresh_hud() -> void:
 		var avatar_state: Dictionary = NetworkRuntime.get_hangar_avatar_state().get(peer_id, {})
 		var avatar_position: Vector3 = avatar_state.get("position", Vector3.ZERO)
 		var distance_text := "You" if peer_id == local_peer_id else "%.1fm away" % local_position.distance_to(avatar_position)
+		var presence_text := _get_builder_presence_summary(avatar_state)
 		var peer_reaction := _get_reaction_visual(int(peer_id))
 		var reaction_text := ""
 		if not peer_reaction.is_empty():
 			reaction_text = " | %s" % str(peer_reaction.get("type", "reacting")).capitalize()
-		crew_lines.append("%s - %s%s" % [
+		crew_lines.append("%s | %s | %s%s" % [
 			str(peer_data.get("name", "Crew")),
 			distance_text,
+			presence_text,
 			reaction_text,
 		])
 	if crew_lines.is_empty():
@@ -822,22 +923,22 @@ func _refresh_hud() -> void:
 			int(last_unlock.get("cost_salvage", 0)),
 		]
 
-	controls_label.text = "Quick Controls\nMouse aim | W A S D move | Space jump\nQ / E parts | R rotate | F place | X remove\nZ / C unlocks | V buy | Enter launch\nLMB recaptures mouse | Esc frees mouse / returns"
+	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\nQ / E parts | R rotate | F place | X remove\nZ / C unlocks | V buy | Enter launch"
 	_apply_hud_visibility()
 
 func _build_onboarding_text() -> String:
 	if cursor_feedback_state == "range":
-		return "Onboarding: Walk closer to the boat or dock before placing. Position matters in this shared builder."
+		return "Onboarding: Move closer before placing. Position matters in this shared build yard."
 	if cursor_feedback_state == "occupied":
-		return "Onboarding: That cell is already taken. Rotate, remove, or move to a fresh face on the hull."
+		return "Onboarding: That cell is taken. Rotate, remove, or pick a fresh face on the hull."
 	if not cursor_has_target:
-		return "Onboarding: Mouse look drives the crosshair. Walk, jump, and aim the center crosshair at the dock or boat to place blocks together."
+		return "Onboarding: Walk, jump, and aim the center crosshair at the dock or boat to build together."
 
 	var stats := NetworkRuntime.get_blueprint_stats()
 	if int(stats.get("loose_blocks", 0)) > 0:
-		return "Onboarding: Loose chunks are allowed, but they will sink as soon as the run starts. Launch only if the joke is worth it."
+		return "Onboarding: Loose chunks are allowed, but they will sink the moment the run starts."
 	if Array(NetworkRuntime.get_builder_store_entries()).size() > 0:
-		return "Onboarding: Z/C browses the unlock yard and V buys new parts with extracted rewards for the whole crew."
+		return "Onboarding: Z/C browses the unlock yard and V buys new parts for the whole crew."
 	return "Onboarding: Build something weird, keep the main chunk floaty, and launch when the crew likes the shape."
 
 func _get_launch_readiness_snapshot(stats: Dictionary, warnings: Array) -> Dictionary:
@@ -895,6 +996,7 @@ func _update_build_target_from_camera() -> void:
 	cursor_target_label = next_cursor_target_label
 	_refresh_cursor_visual()
 	_refresh_hud()
+	avatar_sync_timer = 0.0
 
 func _query_build_target_from_camera() -> Dictionary:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
@@ -950,22 +1052,19 @@ func _query_build_target_from_camera() -> Dictionary:
 	var can_place := within_bounds and in_range and not occupied
 	var feedback_state := "ready"
 	var selected_block_label := str(NetworkRuntime.get_builder_block_definition(_get_selected_block_id()).get("label", _get_selected_block_id().capitalize()))
-	var label := "Place %s\nCell %s" % [selected_block_label, str(place_cell)]
+	var cell_text := "%d,%d,%d" % [place_cell.x, place_cell.y, place_cell.z]
+	var label := "%s at %s" % [selected_block_label, cell_text]
 	if surface_label != "Dock":
-		label = "Place %s next to %s\nCell %s" % [selected_block_label, surface_label, str(place_cell)]
+		label = "%s next to %s at %s" % [selected_block_label, surface_label, cell_text]
 	if not within_bounds:
 		feedback_state = "blocked"
-		label += "\nOutside build volume"
+		label += " • outside build volume"
 	elif not in_range:
 		feedback_state = "range"
-		label += "\nMove closer (%.1fm / %.1fm)" % [target_distance, NetworkRuntime.get_hangar_build_range()]
+		label += " • %.1fm / %.1fm" % [target_distance, NetworkRuntime.get_hangar_build_range()]
 	elif occupied:
 		feedback_state = "occupied"
-		label += "\nCell occupied"
-	else:
-		label += "\nF place"
-	if can_remove:
-		label += " | X remove"
+		label += " • occupied"
 	return {
 		"has_target": true,
 		"place_cell": place_cell,
@@ -1105,6 +1204,7 @@ func _cycle_block(direction: int) -> void:
 	selected_block_index = wrapi(selected_block_index + direction, 0, block_ids.size())
 	_refresh_cursor_visual()
 	_refresh_hud()
+	avatar_sync_timer = 0.0
 
 func _cycle_store_selection(direction: int) -> void:
 	var store_entries := NetworkRuntime.get_builder_store_entries()
@@ -1131,6 +1231,7 @@ func _rotate_selected_block() -> void:
 	selected_rotation_steps = wrapi(selected_rotation_steps + 1, 0, 4)
 	_refresh_cursor_visual()
 	_refresh_hud()
+	avatar_sync_timer = 0.0
 
 func _place_selected_block() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
@@ -1355,10 +1456,9 @@ func _sync_local_avatar_state(delta: float) -> void:
 	if avatar_sync_timer > 0.0:
 		return
 	avatar_sync_timer = HANGAR_AVATAR_SYNC_INTERVAL
-	NetworkRuntime.send_local_hangar_avatar_state(
+	_send_local_hangar_presence(
 		local_avatar_body.global_position,
 		local_avatar_body.velocity,
-		local_avatar_facing_y,
 		local_avatar_body.is_on_floor()
 	)
 
@@ -1384,19 +1484,23 @@ func _refresh_hangar_avatar_visuals() -> void:
 		if remote_avatar_visuals.has(peer_id):
 			continue
 		var peer_data: Dictionary = NetworkRuntime.peer_snapshot.get(peer_id, {})
-		var avatar_root := Node3D.new()
-		avatar_root.name = "RemoteAvatar%d" % peer_id
-		avatar_root.add_child(_create_avatar_visual(str(peer_data.get("name", "Crew")), _get_remote_avatar_color(peer_id), false))
-		avatar_container.add_child(avatar_root)
-		remote_avatar_visuals[peer_id] = avatar_root
+		remote_avatar_visuals[peer_id] = _create_remote_presence_entry(
+			peer_id,
+			str(peer_data.get("name", "Crew")),
+			_get_remote_avatar_color(peer_id)
+		)
 
 	for peer_id_variant in remote_avatar_visuals.keys():
 		var peer_id := int(peer_id_variant)
 		if remote_peer_ids.has(peer_id):
 			continue
-		var avatar_root: Node3D = remote_avatar_visuals[peer_id]
+		var remote_entry: Dictionary = remote_avatar_visuals[peer_id]
+		var avatar_root := remote_entry.get("avatar_root") as Node3D
+		var ghost_root := remote_entry.get("ghost_root") as Node3D
 		if avatar_root != null:
 			avatar_root.queue_free()
+		if ghost_root != null:
+			ghost_root.queue_free()
 		remote_avatar_visuals.erase(peer_id)
 
 	if local_avatar_body != null:
@@ -1410,21 +1514,71 @@ func _update_remote_avatar_visuals(delta: float) -> void:
 	var avatar_state_snapshot := NetworkRuntime.get_hangar_avatar_state()
 	for peer_id_variant in remote_avatar_visuals.keys():
 		var peer_id := int(peer_id_variant)
-		var avatar_root: Node3D = remote_avatar_visuals[peer_id]
+		var remote_entry: Dictionary = remote_avatar_visuals[peer_id]
+		var avatar_root := remote_entry.get("avatar_root") as Node3D
+		var ghost_root := remote_entry.get("ghost_root") as Node3D
+		var ghost_mesh := remote_entry.get("ghost_mesh") as MeshInstance3D
+		var ghost_ring := remote_entry.get("ghost_ring") as MeshInstance3D
 		if avatar_root == null:
 			continue
 		var avatar_state: Dictionary = avatar_state_snapshot.get(peer_id, {})
 		if avatar_state.is_empty():
+			if ghost_root != null:
+				ghost_root.visible = false
 			continue
 		var target_position: Vector3 = avatar_state.get("position", avatar_root.global_position)
 		avatar_root.global_position = avatar_root.global_position.lerp(target_position, minf(1.0, delta * 10.0))
 		avatar_root.rotation.y = lerp_angle(avatar_root.rotation.y, float(avatar_state.get("facing_y", avatar_root.rotation.y)), minf(1.0, delta * 10.0))
 		var peer_data: Dictionary = NetworkRuntime.peer_snapshot.get(peer_id, {})
+		var peer_color := _get_remote_avatar_color(peer_id)
+		var selected_block_id := str(avatar_state.get("selected_block_id", "structure"))
+		var selected_block_def := NetworkRuntime.get_builder_block_definition(selected_block_id)
+		var selected_block_color: Color = selected_block_def.get("color", peer_color)
+		var presence_state := str(avatar_state.get("target_feedback_state", "hidden"))
+		var presence_text := _get_builder_presence_summary(avatar_state)
 		var nameplate := avatar_root.get_node_or_null("Nameplate") as Label3D
 		if nameplate == null:
 			nameplate = avatar_root.find_child("Nameplate", true, false) as Label3D
 		if nameplate != null:
-			nameplate.text = str(peer_data.get("name", "Crew"))
+			nameplate.text = "%s\n%s" % [str(peer_data.get("name", "Crew")), presence_text]
+			nameplate.modulate = _get_presence_feedback_color(peer_color, presence_state).lightened(0.12)
+		var tool := avatar_root.find_child("Tool", true, false) as MeshInstance3D
+		if tool != null:
+			var tool_material := StandardMaterial3D.new()
+			tool_material.albedo_color = selected_block_color.lightened(0.14)
+			tool_material.roughness = 0.24
+			tool.material_override = tool_material
+		if ghost_root != null and ghost_mesh != null and ghost_ring != null:
+			var has_target := bool(avatar_state.get("has_target", false))
+			ghost_root.visible = has_target
+			if has_target:
+				var target_cell := _variant_to_cell_vector(avatar_state.get("target_cell", [0, 0, 0]))
+				var block_size: Vector3 = selected_block_def.get("size", Vector3.ONE)
+				ghost_root.position = _cell_to_local_position(target_cell)
+				ghost_root.rotation_degrees.y = float(int(avatar_state.get("rotation_steps", 0)) * 90)
+				var ghost_box := ghost_mesh.mesh as BoxMesh
+				if ghost_box != null:
+					ghost_box.size = block_size * BLOCK_CELL_SIZE * 1.02
+				var ghost_material := StandardMaterial3D.new()
+				var ghost_color := _get_presence_feedback_color(peer_color, presence_state).darkened(0.04)
+				ghost_color.a = 0.24 if presence_state == "ready" else 0.18
+				ghost_material.albedo_color = ghost_color
+				ghost_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+				ghost_material.roughness = 0.16
+				ghost_mesh.material_override = ghost_material
+				var ring_shape := ghost_ring.mesh as CylinderMesh
+				if ring_shape != null:
+					var ring_radius := maxf(block_size.x, block_size.z) * BLOCK_CELL_SIZE * 0.58
+					ring_shape.top_radius = ring_radius
+					ring_shape.bottom_radius = ring_radius + 0.08
+				ghost_ring.position.y = -(block_size.y * BLOCK_CELL_SIZE * 0.49)
+				var ring_material := StandardMaterial3D.new()
+				var ring_color := _get_presence_feedback_color(peer_color, presence_state).lightened(0.08)
+				ring_color.a = 0.36 if presence_state == "ready" else 0.28
+				ring_material.albedo_color = ring_color
+				ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+				ring_material.roughness = 0.1
+				ghost_ring.material_override = ring_material
 		_apply_avatar_reaction_pose(avatar_root, peer_id, delta)
 
 func _get_remote_avatar_color(peer_id: int) -> Color:
@@ -1583,12 +1737,7 @@ func _position_local_avatar_for_autobuild_cell(cell: Array) -> void:
 	local_avatar_body.velocity = Vector3.ZERO
 	local_avatar_facing_y = atan2(target_position.x - cell_world.x, target_position.z - cell_world.z)
 	local_avatar_body.rotation.y = local_avatar_facing_y
-	NetworkRuntime.send_local_hangar_avatar_state(
-		local_avatar_body.global_position,
-		Vector3.ZERO,
-		local_avatar_facing_y,
-		true
-	)
+	_send_local_hangar_presence(local_avatar_body.global_position, Vector3.ZERO, true)
 
 func _on_status_changed(_message: String) -> void:
 	_refresh_hud()

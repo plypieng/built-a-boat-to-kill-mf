@@ -872,11 +872,41 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
     - `OverboardBot climbed back aboard via the Stern Line.`
   - the run remained live after recovery, proving the boat and crew state did not soft-lock after the overboard transition.
 
+## 2026-03-08 Social Builder Completion Pass
+
+- Implemented the next hangar milestone in `autoload/network_runtime.gd`, `scenes/hangar/hangar.gd`, and `scenes/hangar/hangar_hud.tscn`.
+- Extended the authoritative `hangar_avatar_state` snapshot so every builder now replicates:
+  - selected block id
+  - rotation steps
+  - target cell
+  - remove cell
+  - whether a target is active
+  - placement feedback state
+- Kept the existing authoritative builder edit model intact:
+  - place/remove rules are unchanged
+  - the new snapshot is visual-only builder presence, not a lock or reservation mechanic
+- Updated the hangar scene so remote builders now show:
+  - avatar
+  - nameplate with current build intent
+  - tool color matching the selected block
+  - a translucent target ghost and ring at the teammate's active build cell
+- Tightened the local hangar readability pass:
+  - shorter target wording
+  - clearer `Ready / Occupied / Move Closer / Outside Volume` feedback hierarchy
+  - more compact selection and controls text
+  - roster lines that include each crewmate's current build intent
+  - lighter HUD framing so the boat remains the hero
+- Hardened the run client while verifying the milestone:
+  - autorun now recovers if the demo bot goes overboard mid-run
+  - overboard crew visuals no longer try to set global transforms before entering the tree
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - dedicated-server two-client hangar capture at `/tmp/builtaboat-social-builder-dedicated-v2.png`
+  - the capture shows `VisualHost` plus `BuilderBuddy` with shared build presence and the tighter hangar HUD
+  - fresh end-to-end extraction regression on seed `9191` still returned to hangar and banked `118 gold / 6 salvage` after an overboard recovery during the run
+
 ## TODOs
 
-- Implement the Roblox-style social builder hangar:
-  - better local co-op readability once multiple avatars build on the same section
-- Finish multiplayer visual verification for the new hangar avatars with a clearer shared-frame or hands-on local co-op pass.
 - Return to narrower readability polish after the new social builder baseline exists.
 - Re-verify the full `hangar -> successful run -> dock/hangar` handoff after the hangar builder changes land.
 - Add a hooked/dragged reaction state for future harpoon pulls before attempting any true ragdoll work.
@@ -889,4 +919,4 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 
 - Start from Milestone B’s runtime block model rather than the old aggregate-only boat assumptions.
 - Use a fresh temporary Godot `HOME` for deterministic smoke tests so local saved blueprints do not affect verification.
-- Treat the next hangar milestone as a social third-person builder, not a static editor polish pass.
+- Treat the hangar as a social third-person builder baseline now, and keep future polish focused on readability rather than replacing the control model again.

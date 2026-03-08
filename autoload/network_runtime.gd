@@ -680,9 +680,78 @@ func send_local_hangar_avatar_state(position: Vector3, velocity: Vector3, facing
 	if session_phase != SESSION_PHASE_HANGAR:
 		return
 	if multiplayer.is_server():
-		_receive_hangar_avatar_state(multiplayer.get_unique_id(), position, velocity, facing_y, grounded)
+		_receive_hangar_avatar_state(
+			multiplayer.get_unique_id(),
+			position,
+			velocity,
+			facing_y,
+			grounded,
+			"",
+			0,
+			[0, 0, 0],
+			[0, 0, 0],
+			false,
+			"hidden"
+		)
 		return
-	server_receive_hangar_avatar_state.rpc_id(1, position, velocity, facing_y, grounded)
+	server_receive_hangar_avatar_state.rpc_id(
+		1,
+		position,
+		velocity,
+		facing_y,
+		grounded,
+		"",
+		0,
+		[0, 0, 0],
+		[0, 0, 0],
+		false,
+		"hidden"
+	)
+
+func send_local_hangar_avatar_presence(
+	position: Vector3,
+	velocity: Vector3,
+	facing_y: float,
+	grounded: bool,
+	selected_block_id: String,
+	rotation_steps: int,
+	target_cell_value: Variant,
+	remove_cell_value: Variant,
+	has_target: bool,
+	target_feedback_state: String
+) -> void:
+	if session_phase != SESSION_PHASE_HANGAR:
+		return
+	var normalized_target_cell := _normalize_blueprint_cell(target_cell_value)
+	var normalized_remove_cell := _normalize_blueprint_cell(remove_cell_value)
+	if multiplayer.is_server():
+		_receive_hangar_avatar_state(
+			multiplayer.get_unique_id(),
+			position,
+			velocity,
+			facing_y,
+			grounded,
+			selected_block_id,
+			rotation_steps,
+			normalized_target_cell,
+			normalized_remove_cell,
+			has_target,
+			target_feedback_state
+		)
+		return
+	server_receive_hangar_avatar_state.rpc_id(
+		1,
+		position,
+		velocity,
+		facing_y,
+		grounded,
+		selected_block_id,
+		rotation_steps,
+		normalized_target_cell,
+		normalized_remove_cell,
+		has_target,
+		target_feedback_state
+	)
 
 func send_local_run_avatar_state(deck_position: Vector3, world_position: Vector3, velocity: Vector3, facing_y: float, grounded: bool, avatar_mode: String = RUN_AVATAR_MODE_DECK) -> void:
 	if session_phase != SESSION_PHASE_RUN:
@@ -1313,11 +1382,21 @@ func _reset_connected_run_avatars() -> void:
 func _make_default_hangar_avatar_state(spawn_index: int) -> Dictionary:
 	var clamped_index := wrapi(spawn_index, 0, HANGAR_SPAWN_POINTS.size())
 	var spawn_position: Vector3 = HANGAR_SPAWN_POINTS[clamped_index]
+	var default_block_id := "structure"
+	var unlocked_block_ids := get_builder_block_ids()
+	if not unlocked_block_ids.is_empty():
+		default_block_id = str(unlocked_block_ids[0])
 	return {
 		"position": spawn_position,
 		"velocity": Vector3.ZERO,
 		"facing_y": 0.0,
 		"grounded": true,
+		"selected_block_id": default_block_id,
+		"rotation_steps": 0,
+		"target_cell": [0, 0, 0],
+		"remove_cell": [0, 0, 0],
+		"has_target": false,
+		"target_feedback_state": "hidden",
 	}
 
 func _make_default_run_avatar_state(spawn_index: int) -> Dictionary:
@@ -3454,14 +3533,37 @@ func server_request_return_to_hangar() -> void:
 	_return_to_hangar_session(peer_id)
 
 @rpc("any_peer", "call_remote", "unreliable")
-func server_receive_hangar_avatar_state(position: Vector3, velocity: Vector3, facing_y: float, grounded: bool) -> void:
+func server_receive_hangar_avatar_state(
+	position: Vector3,
+	velocity: Vector3,
+	facing_y: float,
+	grounded: bool,
+	selected_block_id: String,
+	rotation_steps: int,
+	target_cell: Array,
+	remove_cell: Array,
+	has_target: bool,
+	target_feedback_state: String
+) -> void:
 	if not multiplayer.is_server():
 		return
 	if session_phase != SESSION_PHASE_HANGAR:
 		return
 
 	var peer_id := multiplayer.get_remote_sender_id()
-	_receive_hangar_avatar_state(peer_id, position, velocity, facing_y, grounded)
+	_receive_hangar_avatar_state(
+		peer_id,
+		position,
+		velocity,
+		facing_y,
+		grounded,
+		selected_block_id,
+		rotation_steps,
+		target_cell,
+		remove_cell,
+		has_target,
+		target_feedback_state
+	)
 
 @rpc("any_peer", "call_remote", "unreliable")
 func server_receive_run_avatar_state(deck_position: Vector3, world_position: Vector3, velocity: Vector3, facing_y: float, grounded: bool, avatar_mode: String) -> void:
@@ -3530,17 +3632,85 @@ func client_receive_peer_snapshot(snapshot: Dictionary) -> void:
 	peer_snapshot = snapshot.duplicate(true)
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
 
-func _receive_hangar_avatar_state(peer_id: int, position: Vector3, velocity: Vector3, facing_y: float, grounded: bool) -> void:
+func _normalize_hangar_feedback_state(feedback_state: String) -> String:
+	match feedback_state.strip_edges().to_lower():
+		"ready":
+			return "ready"
+		"occupied":
+			return "occupied"
+		"range":
+			return "range"
+		"blocked":
+			return "blocked"
+		_:
+			return "hidden"
+
+func _normalize_hangar_selected_block_id(block_type: String) -> String:
+	var normalized := block_type.strip_edges().to_lower()
+	if BUILDER_BLOCK_LIBRARY.has(normalized):
+		return normalized
+	return "structure"
+
+func _build_hangar_avatar_presence_snapshot(
+	selected_block_id: String,
+	rotation_steps: int,
+	target_cell_value: Variant,
+	remove_cell_value: Variant,
+	has_target: bool,
+	target_feedback_state: String
+) -> Dictionary:
+	var normalized_presence := {
+		"selected_block_id": _normalize_hangar_selected_block_id(selected_block_id),
+		"rotation_steps": wrapi(rotation_steps, 0, 4),
+		"target_cell": _normalize_blueprint_cell(target_cell_value),
+		"remove_cell": _normalize_blueprint_cell(remove_cell_value),
+		"has_target": has_target,
+		"target_feedback_state": _normalize_hangar_feedback_state(target_feedback_state),
+	}
+	if not bool(normalized_presence.get("has_target", false)):
+		normalized_presence["target_feedback_state"] = "hidden"
+		normalized_presence["target_cell"] = [0, 0, 0]
+		normalized_presence["remove_cell"] = [0, 0, 0]
+	return normalized_presence
+
+func _receive_hangar_avatar_state(
+	peer_id: int,
+	position: Vector3,
+	velocity: Vector3,
+	facing_y: float,
+	grounded: bool,
+	selected_block_id: String,
+	rotation_steps: int,
+	target_cell_value: Variant,
+	remove_cell_value: Variant,
+	has_target: bool,
+	target_feedback_state: String
+) -> void:
 	if not multiplayer.is_server():
 		return
 	if not peer_snapshot.has(peer_id):
 		return
 
+	var existing_state: Dictionary = hangar_avatar_state.get(peer_id, _make_default_hangar_avatar_state(hangar_avatar_state.size()))
+	var normalized_presence := _build_hangar_avatar_presence_snapshot(
+		selected_block_id if not selected_block_id.is_empty() else str(existing_state.get("selected_block_id", "structure")),
+		rotation_steps,
+		target_cell_value,
+		remove_cell_value,
+		has_target,
+		target_feedback_state
+	)
 	hangar_avatar_state[peer_id] = {
 		"position": position,
 		"velocity": velocity,
 		"facing_y": facing_y,
 		"grounded": grounded,
+		"selected_block_id": str(normalized_presence.get("selected_block_id", "structure")),
+		"rotation_steps": int(normalized_presence.get("rotation_steps", 0)),
+		"target_cell": normalized_presence.get("target_cell", [0, 0, 0]),
+		"remove_cell": normalized_presence.get("remove_cell", [0, 0, 0]),
+		"has_target": bool(normalized_presence.get("has_target", false)),
+		"target_feedback_state": str(normalized_presence.get("target_feedback_state", "hidden")),
 	}
 	_broadcast_hangar_avatar_state()
 
