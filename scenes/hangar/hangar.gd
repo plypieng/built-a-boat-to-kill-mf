@@ -1260,6 +1260,7 @@ func _launch_run() -> void:
 func _return_to_connect() -> void:
 	_set_mouse_capture(false)
 	NetworkRuntime.shutdown()
+	GameConfig.shutdown_hosted_server()
 	get_tree().change_scene_to_file(CLIENT_BOOT_SCENE)
 
 func _quit() -> void:

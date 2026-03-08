@@ -7,6 +7,7 @@ const DEFAULT_PLAYER_NAME := "Captain"
 const DEFAULT_RUN_SEED := 424242
 
 var _one_shot_flags := {}
+var _hosted_server_pid := -1
 
 func is_server_mode() -> bool:
 	if OS.has_feature("dedicated_server"):
@@ -94,3 +95,18 @@ func claim_one_shot_flag(flag_name: String) -> bool:
 		return false
 	_one_shot_flags[flag_name] = true
 	return true
+
+func register_hosted_server_pid(pid: int) -> void:
+	_hosted_server_pid = pid
+
+func clear_hosted_server_pid() -> void:
+	_hosted_server_pid = -1
+
+func shutdown_hosted_server() -> void:
+	if _hosted_server_pid <= 0:
+		return
+	OS.kill(_hosted_server_pid)
+	_hosted_server_pid = -1
+
+func _exit_tree() -> void:
+	shutdown_hosted_server()

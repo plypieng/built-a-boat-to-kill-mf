@@ -4,6 +4,8 @@ const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HOST_CONNECT_RETRY_DELAY := 0.8
 const MAX_HOST_CONNECT_RETRIES := 40
+const HOST_SERVER_LAUNCH_SETTLE_MS := 300
+const HOST_SERVER_LAUNCH_POLL_INTERVAL_MS := 50
 
 @onready var host_input: LineEdit = $Center/Panel/Margin/Layout/FieldsGrid/HostInput
 @onready var port_input: LineEdit = $Center/Panel/Margin/Layout/FieldsGrid/PortInput
@@ -79,11 +81,13 @@ func _on_host_pressed() -> void:
 	hosted_lan_ip = _get_preferred_local_ip()
 	_refresh_host_help()
 	_refresh_buttons()
+	GameConfig.shutdown_hosted_server()
 
 	var launch_error := _launch_local_server(_get_port(), _generate_host_seed())
 	if launch_error != OK:
 		host_start_in_progress = false
 		_refresh_buttons()
+		GameConfig.clear_hosted_server_pid()
 		status_label.text = "Could not launch a local authoritative server from this build. Start the server manually and use Join By IP."
 		return
 
@@ -131,11 +135,58 @@ func _generate_host_seed() -> int:
 		return configured_seed
 	return int(Time.get_unix_time_from_system()) % 1000000
 
+func _make_server_runtime_args(port: int, seed: int) -> PackedStringArray:
+	var args := PackedStringArray([
+		"--server",
+		"--port=%d" % port,
+		"--seed=%d" % seed,
+	])
+	return args
+
+func _make_godot_project_server_args(project_path: String, port: int, seed: int) -> PackedStringArray:
+	var args := PackedStringArray([
+		"--path",
+		project_path,
+		"--headless",
+		"--",
+	])
+	args.append_array(_make_server_runtime_args(port, seed))
+	return args
+
+func _make_exported_host_server_args(port: int, seed: int) -> PackedStringArray:
+	var args := PackedStringArray(["--headless"])
+	args.append_array(_make_server_runtime_args(port, seed))
+	return args
+
+func _launch_server_candidate(candidate: Dictionary) -> int:
+	var launch_mode := str(candidate.get("mode", "process"))
+	var args: PackedStringArray = candidate.get("args", PackedStringArray())
+	if launch_mode == "instance":
+		return OS.create_instance(args)
+	return OS.create_process(
+		str(candidate.get("path", "")),
+		args,
+		bool(candidate.get("open_console", false))
+	)
+
+func _did_spawned_server_survive_startup(pid: int) -> bool:
+	if pid <= 0:
+		return false
+	var waited_ms := 0
+	while waited_ms < HOST_SERVER_LAUNCH_SETTLE_MS:
+		OS.delay_msec(HOST_SERVER_LAUNCH_POLL_INTERVAL_MS)
+		waited_ms += HOST_SERVER_LAUNCH_POLL_INTERVAL_MS
+		if not OS.is_process_running(pid):
+			return false
+	return OS.is_process_running(pid)
+
 func _launch_local_server(port: int, seed: int) -> int:
 	var executable_path := OS.get_executable_path()
 	var executable_name := executable_path.get_file().to_lower()
 	var project_path := ProjectSettings.globalize_path("res://")
 	var candidate_launches: Array = []
+	var editor_server_args := _make_godot_project_server_args(project_path, port, seed)
+	var exported_server_args := _make_exported_host_server_args(port, seed)
 
 	var candidate_server_paths := [
 		executable_path.get_base_dir().path_join("BuiltaBoatServer.exe"),
@@ -161,13 +212,15 @@ func _launch_local_server(port: int, seed: int) -> int:
 				"open_console": true,
 			})
 
-	var my_pid := OS.get_process_id()
-	
 	if executable_name.contains("godot"):
 		candidate_launches.push_front({
 			"path": executable_path,
-			"args": PackedStringArray(["--path", project_path, "--headless", "--", "--server", "--port=%d" % port, "--seed=%d" % seed, "--parent-pid=%d" % my_pid]),
-			"open_console": false,
+			"args": editor_server_args,
+			"open_console": OS.get_name() == "Windows",
+		})
+		candidate_launches.insert(1, {
+			"mode": "instance",
+			"args": _make_godot_project_server_args(project_path, port, seed),
 		})
 		var script_path := ProjectSettings.globalize_path("res://tools/run_server.sh")
 		if FileAccess.file_exists(script_path):
@@ -179,20 +232,21 @@ func _launch_local_server(port: int, seed: int) -> int:
 	else:
 		candidate_launches.append({
 			"path": executable_path,
-			"args": PackedStringArray(["--headless", "--server", "--port=%d" % port, "--seed=%d" % seed, "--parent-pid=%d" % my_pid]),
+			"args": exported_server_args,
 			"open_console": true,
 		})
 
+	hosted_server_pid = -1
 	for candidate_variant in candidate_launches:
 		var candidate: Dictionary = candidate_variant
-		var pid := OS.create_process(
-			str(candidate.get("path", "")),
-			PackedStringArray(candidate.get("args", PackedStringArray())),
-			bool(candidate.get("open_console", false))
-		)
-		if pid != -1:
-			hosted_server_pid = pid
-			return OK
+		var pid := _launch_server_candidate(candidate)
+		if pid == -1:
+			continue
+		if not _did_spawned_server_survive_startup(pid):
+			continue
+		hosted_server_pid = pid
+		GameConfig.register_hosted_server_pid(pid)
+		return OK
 
 	return FAILED
 
