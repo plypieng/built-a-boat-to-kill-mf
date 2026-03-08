@@ -848,6 +848,30 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - the refactored deck-avatar run now reaches `phase=success`, secures `2` cargo, banks `118 gold / 6 salvage`, and returns cleanly to the hangar
 - Added the longer-window regression command to `README.md` so the avatar-controller path can be re-run without rediscovering the new timeout budget.
 
+## 2026-03-08 Overboard And Active Recovery
+
+- Implemented the next avatar-controller milestone in `autoload/network_runtime.gd`, `autoload/game_config.gd`, and `scenes/run_client/run_client.gd`.
+- Added a server-authoritative overboard state to the run avatar model:
+  - players can now be knocked off the deck by strong unbraced impacts near the rail
+  - overboard players lose station access and boat-control actions until they recover
+  - the server validates both overboard transitions and climb-back recovery
+- Added active recovery support:
+  - overboard players enter a limited swim state around the boat
+  - ladder and stern-line recovery markers are exposed as valid climb-back points
+  - pressing `F` near a recovery target climbs the player back onto the deck
+- Updated the run client controller and HUD so:
+  - camera and movement switch cleanly between deck motion and swim motion
+  - overboard players get dedicated objective/onboarding guidance
+  - crew visuals and event callouts now show overboard and recovery state clearly
+- Added a hidden `--autoforce-overboard` smoke flag in `autoload/game_config.gd` so automated tests can deterministically force the new recovery path without depending on a lucky collision.
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - deterministic overboard recovery regression on port `7176`
+  - server log confirmed the full loop:
+    - `OverboardBot went overboard.`
+    - `OverboardBot climbed back aboard via the Stern Line.`
+  - the run remained live after recovery, proving the boat and crew state did not soft-lock after the overboard transition.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:

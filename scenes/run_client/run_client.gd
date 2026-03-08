@@ -1,6 +1,7 @@
 extends Node3D
 
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
+const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const IDLE_CREW_SLOTS := [
 	Vector3(0.0, 0.92, 1.35),
 	Vector3(-1.2, 0.92, 1.05),
@@ -17,6 +18,8 @@ const EXTRACTION_READY_COLOR := Color(0.21, 0.82, 0.57)
 const EXTRACTION_FAILED_COLOR := Color(0.84, 0.25, 0.24)
 const RUN_AVATAR_MOVE_SPEED := 4.9
 const RUN_AVATAR_ACCELERATION := 15.0
+const RUN_SWIM_MOVE_SPEED := 2.6
+const RUN_SWIM_ACCELERATION := 8.5
 const RUN_AVATAR_SYNC_INTERVAL := 0.05
 const HUD_PANEL_BG := Color(0.05, 0.09, 0.13, 0.78)
 const HUD_PANEL_BG_SOFT := Color(0.07, 0.12, 0.17, 0.70)
@@ -62,6 +65,7 @@ var crew_container: Node3D
 var hazard_container: Node3D
 var squall_container: Node3D
 var station_container: Node3D
+var recovery_container: Node3D
 var loot_container: Node3D
 var wreck_root: Node3D
 var wreck_ring_material: StandardMaterial3D
@@ -97,6 +101,7 @@ var interact_latched := false
 var brace_request_latched := false
 var grapple_request_latched := false
 var repair_request_latched := false
+var recover_request_latched := false
 var selected_station_index := 0
 var last_known_phase := "running"
 var station_visuals: Dictionary = {}
@@ -114,8 +119,11 @@ var local_camera_jolt := Vector3.ZERO
 var local_avatar_facing_y := PI
 var local_camera_pitch := deg_to_rad(-10.0)
 var local_run_avatar_position := IDLE_CREW_SLOTS[0]
+var local_run_avatar_world_position := Vector3.ZERO
 var local_run_avatar_velocity := Vector3.ZERO
+var local_run_avatar_mode := NetworkRuntime.RUN_AVATAR_MODE_DECK
 var run_avatar_sync_timer := 0.0
+var autorun_overboard_forced := false
 var event_callout_timer := 0.0
 var event_callout_color := HUD_TEXT_PRIMARY
 var last_hud_collision_count := 0
@@ -123,7 +131,15 @@ var last_hud_detached_chunk_count := 0
 var last_hud_cargo_lost_to_sea := 0
 var last_hud_rescue_completed := false
 var last_hud_cache_recovered := false
+var last_hud_overboard_count := 0
 var last_hud_phase := "running"
+var last_local_overboard := false
+var hud_icons := HudIconLibrary.new()
+var objective_icon: TextureRect
+var extraction_panel_icon: TextureRect
+var crew_panel_icon: TextureRect
+var survival_panel_icon: TextureRect
+var result_panel_icon: TextureRect
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -193,8 +209,10 @@ func _physics_process(delta: float) -> void:
 		NetworkRuntime.request_grapple()
 	if bool(input_state.get("request_repair", false)):
 		NetworkRuntime.request_repair()
+	if bool(input_state.get("request_recover", false)):
+		NetworkRuntime.request_overboard_recovery()
 
-	if NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
+	if not _is_local_overboard() and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
 		NetworkRuntime.send_local_boat_input(
 			float(input_state.get("throttle", 0.0)),
 			float(input_state.get("steer", 0.0))
@@ -273,6 +291,8 @@ func _build_world() -> void:
 
 	station_container = _ensure_child_node3d(boat_root, "StationContainer")
 	_build_station_visuals()
+	recovery_container = _ensure_child_node3d(boat_root, "RecoveryContainer")
+	_build_recovery_visuals()
 
 	crew_container = _ensure_child_node3d(boat_root, "CrewContainer")
 
@@ -369,11 +389,15 @@ func _prime_local_run_avatar_state() -> void:
 	var snapshot: Dictionary = NetworkRuntime.get_run_avatar_state().get(local_peer_id, {})
 	if snapshot.is_empty():
 		local_run_avatar_position = IDLE_CREW_SLOTS[0]
+		local_run_avatar_world_position = boat_root.to_global(local_run_avatar_position)
 		local_run_avatar_velocity = Vector3.ZERO
+		local_run_avatar_mode = NetworkRuntime.RUN_AVATAR_MODE_DECK
 		local_avatar_facing_y = PI
 		return
 	local_run_avatar_position = snapshot.get("deck_position", IDLE_CREW_SLOTS[0])
+	local_run_avatar_world_position = snapshot.get("world_position", boat_root.to_global(local_run_avatar_position))
 	local_run_avatar_velocity = snapshot.get("velocity", Vector3.ZERO)
+	local_run_avatar_mode = str(snapshot.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
 	local_avatar_facing_y = float(snapshot.get("facing_y", PI))
 
 func _clamp_run_avatar_position(deck_position: Vector3) -> Vector3:
@@ -388,6 +412,59 @@ func _get_local_run_avatar_target() -> Vector3:
 	if local_station_id.is_empty() or not _station_anchors_avatar(local_station_id):
 		return local_run_avatar_position
 	return NetworkRuntime.get_station_position(local_station_id) + Vector3(0.0, 0.18, 0.0)
+
+func _is_local_overboard() -> bool:
+	return local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+
+func _get_local_avatar_world_position() -> Vector3:
+	if _is_local_overboard():
+		return local_run_avatar_world_position
+	return boat_root.to_global(local_run_avatar_position)
+
+func _clamp_local_swim_world_position(world_position: Vector3) -> Vector3:
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var offset := world_position - boat_position
+	offset.y = 0.0
+	if offset.length() > NetworkRuntime.RUN_OVERBOARD_SWIM_RADIUS:
+		offset = offset.normalized() * NetworkRuntime.RUN_OVERBOARD_SWIM_RADIUS
+	var sanitized_position := boat_position + offset
+	sanitized_position.y = NetworkRuntime.RUN_OVERBOARD_WATER_HEIGHT
+	return sanitized_position
+
+func _get_local_recovery_target() -> Dictionary:
+	var local_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(_get_local_peer_id(), {})
+	if local_state.is_empty():
+		return {}
+	var target_id := str(local_state.get("recovery_target_id", ""))
+	if target_id.is_empty():
+		return {}
+	for target_variant in NetworkRuntime.RUN_RECOVERY_POINTS:
+		var target: Dictionary = target_variant
+		if str(target.get("id", "")) != target_id:
+			continue
+		var water_position: Vector3 = target.get("water_position", Vector3.ZERO)
+		var world_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO) + water_position.rotated(Vector3.UP, float(NetworkRuntime.boat_state.get("rotation_y", 0.0)))
+		world_position.y = NetworkRuntime.RUN_OVERBOARD_WATER_HEIGHT
+		var normalized := target.duplicate(true)
+		normalized["world_position"] = world_position
+		normalized["ready"] = bool(local_state.get("recovery_ready", false))
+		return normalized
+	return {}
+
+func _scripted_move_local_avatar_toward_world(target_world_position: Vector3, delta: float) -> void:
+	if delta <= 0.0:
+		return
+	var offset := target_world_position - local_run_avatar_world_position
+	offset.y = 0.0
+	if offset.length() <= 0.04:
+		local_run_avatar_velocity = Vector3.ZERO
+		return
+	var direction := offset.normalized()
+	local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, direction.x * RUN_SWIM_MOVE_SPEED, RUN_SWIM_ACCELERATION * delta)
+	local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, direction.z * RUN_SWIM_MOVE_SPEED, RUN_SWIM_ACCELERATION * delta)
+	local_run_avatar_world_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
+	local_run_avatar_world_position = _clamp_local_swim_world_position(local_run_avatar_world_position)
+	local_avatar_facing_y = atan2(-direction.x, -direction.z)
 
 func _get_claimable_station_ids() -> Array:
 	return NetworkRuntime.get_claimable_station_ids()
@@ -443,11 +520,14 @@ func _scripted_move_local_avatar_toward(target_position: Vector3, delta: float) 
 	local_run_avatar_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
 	local_run_avatar_position = _clamp_run_avatar_position(local_run_avatar_position)
 	local_avatar_facing_y = atan2(-direction.x, -direction.z)
+	local_run_avatar_world_position = _get_local_avatar_world_position()
 	NetworkRuntime.send_local_run_avatar_state(
 		local_run_avatar_position,
+		local_run_avatar_world_position,
 		Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z),
 		local_avatar_facing_y,
-		true
+		true,
+		local_run_avatar_mode
 	)
 
 func _build_station_visuals() -> void:
@@ -489,6 +569,51 @@ func _build_station_visuals() -> void:
 			"beacon": beacon_mesh,
 			"label": label,
 		}
+
+func _build_recovery_visuals() -> void:
+	if recovery_container == null:
+		return
+	for child in recovery_container.get_children():
+		child.queue_free()
+	for target_variant in NetworkRuntime.RUN_RECOVERY_POINTS:
+		var target: Dictionary = target_variant
+		var target_node := Node3D.new()
+		target_node.name = "%sMarker" % str(target.get("id", "Recovery"))
+		target_node.position = target.get("water_position", Vector3.ZERO)
+		recovery_container.add_child(target_node)
+
+		var ring_mesh_instance := MeshInstance3D.new()
+		var ring_mesh := CylinderMesh.new()
+		ring_mesh.height = 0.05
+		ring_mesh.top_radius = 0.34
+		ring_mesh.bottom_radius = 0.34
+		ring_mesh_instance.mesh = ring_mesh
+		ring_mesh_instance.position = Vector3(0.0, 0.03, 0.0)
+		var ring_material := StandardMaterial3D.new()
+		ring_material.albedo_color = Color(0.20, 0.70, 0.74, 0.74)
+		ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		ring_material.roughness = 0.18
+		ring_mesh_instance.material_override = ring_material
+		target_node.add_child(ring_mesh_instance)
+
+		var pole_mesh_instance := MeshInstance3D.new()
+		var pole_mesh := CylinderMesh.new()
+		pole_mesh.height = 0.95
+		pole_mesh.top_radius = 0.05
+		pole_mesh.bottom_radius = 0.05
+		pole_mesh_instance.mesh = pole_mesh
+		pole_mesh_instance.position = Vector3(0.0, 0.48, 0.0)
+		var pole_material := StandardMaterial3D.new()
+		pole_material.albedo_color = Color(0.86, 0.89, 0.92)
+		pole_mesh_instance.material_override = pole_material
+		target_node.add_child(pole_mesh_instance)
+
+		var label := Label3D.new()
+		label.text = str(target.get("label", "Recovery"))
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		label.font_size = 18
+		label.position = Vector3(0.0, 1.18, 0.0)
+		target_node.add_child(label)
 
 func _build_wreck_visual() -> void:
 	var ring_mesh_instance := MeshInstance3D.new()
@@ -670,201 +795,57 @@ func _build_cache_visual() -> void:
 	cache_root.add_child(cache_label)
 
 func _build_hud() -> void:
-	var layer := CanvasLayer.new()
-	add_child(layer)
+	var hud := get_node("HUD") as CanvasLayer
+	var objective_panel := hud.get_node("ObjectivePanel") as PanelContainer
+	var extraction_panel := hud.get_node("ExtractionPanel") as PanelContainer
+	var crew_panel := hud.get_node("CrewPanel") as PanelContainer
+	var survival_panel := hud.get_node("SurvivalPanel") as PanelContainer
 
-	var objective_panel := PanelContainer.new()
-	objective_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	objective_panel.offset_left = 360.0
-	objective_panel.offset_top = 18.0
-	objective_panel.offset_right = -360.0
-	objective_panel.offset_bottom = 96.0
+	objective_icon = hud.get_node("ObjectivePanel/Margin/Layout/HeadingRow/ObjectiveIcon") as TextureRect
+	objective_label = hud.get_node("ObjectivePanel/Margin/Layout/ObjectiveLabel") as Label
+	extraction_panel_icon = hud.get_node("ExtractionPanel/Margin/Layout/Header/ExtractionPanelIcon") as TextureRect
+	resource_label = hud.get_node("ExtractionPanel/Margin/Layout/ResourceLabel") as Label
+	run_label = hud.get_node("ExtractionPanel/Margin/Layout/RunLabel") as Label
+	crew_panel_icon = hud.get_node("CrewPanel/Margin/Layout/Header/CrewPanelIcon") as TextureRect
+	station_label = hud.get_node("CrewPanel/Margin/Layout/StationLabel") as Label
+	roster_label = hud.get_node("CrewPanel/Margin/Layout/RosterLabel") as Label
+	onboarding_label = hud.get_node("CrewPanel/Margin/Layout/OnboardingLabel") as Label
+	survival_panel_icon = hud.get_node("SurvivalPanel/Margin/Layout/Header/SurvivalPanelIcon") as TextureRect
+	boat_label = hud.get_node("SurvivalPanel/Margin/Layout/BoatLabel") as Label
+	interaction_label = hud.get_node("SurvivalPanel/Margin/Layout/InteractionLabel") as Label
+	status_label = hud.get_node("SurvivalPanel/Margin/Layout/StatusLabel") as Label
+	crosshair_label = hud.get_node("CrosshairLabel") as Label
+	event_callout_label = hud.get_node("EventCalloutLabel") as Label
+
+	hud_icons.configure_icon_rect(objective_icon, Vector2(22.0, 22.0))
+	hud_icons.configure_icon_rect(extraction_panel_icon)
+	hud_icons.configure_icon_rect(crew_panel_icon)
+	hud_icons.configure_icon_rect(survival_panel_icon)
+
 	_apply_hud_panel_style(objective_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG)
-	layer.add_child(objective_panel)
-
-	var objective_margin := MarginContainer.new()
-	objective_margin.add_theme_constant_override("margin_left", 18)
-	objective_margin.add_theme_constant_override("margin_top", 12)
-	objective_margin.add_theme_constant_override("margin_right", 18)
-	objective_margin.add_theme_constant_override("margin_bottom", 12)
-	objective_panel.add_child(objective_margin)
-
-	var objective_layout := VBoxContainer.new()
-	objective_layout.add_theme_constant_override("separation", 4)
-	objective_margin.add_child(objective_layout)
-
-	var objective_heading := Label.new()
-	objective_heading.text = "CURRENT ORDER"
-	objective_heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	objective_heading.add_theme_font_size_override("font_size", 13)
-	objective_heading.modulate = HUD_TEXT_WARNING
-	objective_layout.add_child(objective_heading)
-
-	objective_label = Label.new()
-	objective_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	objective_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	objective_label.add_theme_font_size_override("font_size", 18)
-	objective_label.modulate = HUD_TEXT_PRIMARY
-	objective_layout.add_child(objective_label)
-
-	var extraction_panel := PanelContainer.new()
-	extraction_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	extraction_panel.offset_left = -326.0
-	extraction_panel.offset_top = 132.0
-	extraction_panel.offset_right = -18.0
-	extraction_panel.offset_bottom = 276.0
 	_apply_hud_panel_style(extraction_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG_SOFT)
-	layer.add_child(extraction_panel)
-
-	var extraction_margin := MarginContainer.new()
-	extraction_margin.add_theme_constant_override("margin_left", 16)
-	extraction_margin.add_theme_constant_override("margin_top", 12)
-	extraction_margin.add_theme_constant_override("margin_right", 16)
-	extraction_margin.add_theme_constant_override("margin_bottom", 12)
-	extraction_panel.add_child(extraction_margin)
-
-	var extraction_layout := VBoxContainer.new()
-	extraction_layout.add_theme_constant_override("separation", 6)
-	extraction_margin.add_child(extraction_layout)
-
-	var extraction_heading := Label.new()
-	extraction_heading.text = "EXTRACTION BOARD"
-	extraction_heading.add_theme_font_size_override("font_size", 14)
-	extraction_heading.modulate = HUD_TEXT_WARNING
-	extraction_layout.add_child(extraction_heading)
-
-	resource_label = Label.new()
-	resource_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	resource_label.add_theme_font_size_override("font_size", 14)
-	resource_label.modulate = HUD_TEXT_PRIMARY
-	extraction_layout.add_child(resource_label)
-
-	run_label = Label.new()
-	run_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	run_label.add_theme_font_size_override("font_size", 13)
-	run_label.modulate = HUD_TEXT_MUTED
-	extraction_layout.add_child(run_label)
-
-	var crew_panel := PanelContainer.new()
-	crew_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
-	crew_panel.offset_left = 18.0
-	crew_panel.offset_top = -182.0
-	crew_panel.offset_right = 406.0
-	crew_panel.offset_bottom = -18.0
 	_apply_hud_panel_style(crew_panel, HUD_BORDER_BLUE, HUD_PANEL_BG_SOFT)
-	layer.add_child(crew_panel)
-
-	var crew_margin := MarginContainer.new()
-	crew_margin.add_theme_constant_override("margin_left", 16)
-	crew_margin.add_theme_constant_override("margin_top", 12)
-	crew_margin.add_theme_constant_override("margin_right", 16)
-	crew_margin.add_theme_constant_override("margin_bottom", 12)
-	crew_panel.add_child(crew_margin)
-
-	var crew_layout := VBoxContainer.new()
-	crew_layout.add_theme_constant_override("separation", 6)
-	crew_margin.add_child(crew_layout)
-
-	var crew_heading := Label.new()
-	crew_heading.text = "CREW DECK"
-	crew_heading.add_theme_font_size_override("font_size", 14)
-	crew_heading.modulate = HUD_TEXT_MUTED
-	crew_layout.add_child(crew_heading)
-
-	station_label = Label.new()
-	station_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	station_label.add_theme_font_size_override("font_size", 13)
-	station_label.modulate = HUD_TEXT_PRIMARY
-	crew_layout.add_child(station_label)
-
-	roster_label = Label.new()
-	roster_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	roster_label.add_theme_font_size_override("font_size", 12)
-	roster_label.modulate = HUD_TEXT_MUTED
-	crew_layout.add_child(roster_label)
-
-	onboarding_label = Label.new()
-	onboarding_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	onboarding_label.add_theme_font_size_override("font_size", 12)
-	onboarding_label.modulate = HUD_TEXT_PRIMARY
-	crew_layout.add_child(onboarding_label)
-
-	var footer := Label.new()
-	footer.text = "Mouse aim | Q/E helm/grapple | F claim | W A S D helm | Space brace anywhere | G grapple | R patch nearby hull"
-	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	footer.add_theme_font_size_override("font_size", 11)
-	footer.modulate = HUD_TEXT_MUTED
-	crew_layout.add_child(footer)
-
-	var survival_panel := PanelContainer.new()
-	survival_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
-	survival_panel.offset_left = -384.0
-	survival_panel.offset_top = -208.0
-	survival_panel.offset_right = -18.0
-	survival_panel.offset_bottom = -18.0
 	_apply_hud_panel_style(survival_panel, HUD_BORDER_GREEN, HUD_PANEL_BG)
-	layer.add_child(survival_panel)
 
-	var survival_margin := MarginContainer.new()
-	survival_margin.add_theme_constant_override("margin_left", 16)
-	survival_margin.add_theme_constant_override("margin_top", 12)
-	survival_margin.add_theme_constant_override("margin_right", 16)
-	survival_margin.add_theme_constant_override("margin_bottom", 12)
-	survival_panel.add_child(survival_margin)
-
-	var survival_layout := VBoxContainer.new()
-	survival_layout.add_theme_constant_override("separation", 6)
-	survival_margin.add_child(survival_layout)
-
-	var survival_heading := Label.new()
-	survival_heading.text = "BOAT PLATE"
-	survival_heading.add_theme_font_size_override("font_size", 14)
+	var objective_heading := hud.get_node("ObjectivePanel/Margin/Layout/HeadingRow/ObjectiveHeading") as Label
+	var extraction_heading := hud.get_node("ExtractionPanel/Margin/Layout/Header/ExtractionHeading") as Label
+	var crew_heading := hud.get_node("CrewPanel/Margin/Layout/Header/CrewHeading") as Label
+	var footer := hud.get_node("CrewPanel/Margin/Layout/FooterLabel") as Label
+	var survival_heading := hud.get_node("SurvivalPanel/Margin/Layout/Header/SurvivalHeading") as Label
+	objective_heading.modulate = HUD_TEXT_WARNING
+	objective_label.modulate = HUD_TEXT_PRIMARY
+	extraction_heading.modulate = HUD_TEXT_WARNING
+	resource_label.modulate = HUD_TEXT_PRIMARY
+	run_label.modulate = HUD_TEXT_MUTED
+	crew_heading.modulate = HUD_TEXT_MUTED
+	station_label.modulate = HUD_TEXT_PRIMARY
+	roster_label.modulate = HUD_TEXT_MUTED
+	onboarding_label.modulate = HUD_TEXT_PRIMARY
+	footer.modulate = HUD_TEXT_MUTED
 	survival_heading.modulate = HUD_TEXT_SUCCESS
-	survival_layout.add_child(survival_heading)
-
-	boat_label = Label.new()
-	boat_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	boat_label.add_theme_font_size_override("font_size", 14)
 	boat_label.modulate = HUD_TEXT_PRIMARY
-	survival_layout.add_child(boat_label)
-
-	interaction_label = Label.new()
-	interaction_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	interaction_label.add_theme_font_size_override("font_size", 12)
 	interaction_label.modulate = HUD_TEXT_MUTED
-	survival_layout.add_child(interaction_label)
-
-	status_label = Label.new()
-	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	status_label.add_theme_font_size_override("font_size", 11)
 	status_label.modulate = HUD_TEXT_MUTED
-	survival_layout.add_child(status_label)
-
-	crosshair_label = Label.new()
-	crosshair_label.text = "+"
-	crosshair_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	crosshair_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	crosshair_label.add_theme_font_size_override("font_size", 26)
-	crosshair_label.modulate = Color(0.98, 0.97, 0.92, 0.9)
-	crosshair_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	crosshair_label.offset_left = -10.0
-	crosshair_label.offset_top = -16.0
-	crosshair_label.offset_right = 10.0
-	crosshair_label.offset_bottom = 16.0
-	layer.add_child(crosshair_label)
-
-	event_callout_label = Label.new()
-	event_callout_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	event_callout_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	event_callout_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	event_callout_label.add_theme_font_size_override("font_size", 24)
-	event_callout_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	event_callout_label.offset_left = -260.0
-	event_callout_label.offset_top = 136.0
-	event_callout_label.offset_right = 260.0
-	event_callout_label.offset_bottom = 196.0
-	event_callout_label.visible = false
-	layer.add_child(event_callout_label)
 
 func _apply_hud_panel_style(panel: PanelContainer, border_color: Color, background_color: Color) -> void:
 	var style := StyleBoxFlat.new()
@@ -880,51 +861,15 @@ func _apply_hud_panel_style(panel: PanelContainer, border_color: Color, backgrou
 	panel.add_theme_stylebox_override("panel", style)
 
 func _build_result_overlay() -> void:
-	result_layer = CanvasLayer.new()
-	add_child(result_layer)
-
-	var dimmer := ColorRect.new()
-	dimmer.color = Color(0.03, 0.08, 0.14, 0.66)
-	dimmer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	result_layer.add_child(dimmer)
-
-	var center := CenterContainer.new()
-	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	result_layer.add_child(center)
-
-	result_panel = PanelContainer.new()
-	result_panel.custom_minimum_size = Vector2(420.0, 0.0)
-	center.add_child(result_panel)
-
-	var inner := MarginContainer.new()
-	inner.add_theme_constant_override("margin_left", 24)
-	inner.add_theme_constant_override("margin_top", 24)
-	inner.add_theme_constant_override("margin_right", 24)
-	inner.add_theme_constant_override("margin_bottom", 24)
-	result_panel.add_child(inner)
-
-	var layout := VBoxContainer.new()
-	layout.add_theme_constant_override("separation", 10)
-	inner.add_child(layout)
-
-	result_title_label = Label.new()
-	result_title_label.add_theme_font_size_override("font_size", 26)
-	layout.add_child(result_title_label)
-
-	result_body_label = Label.new()
-	result_body_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(result_body_label)
-
-	result_continue_button = Button.new()
-	result_continue_button.text = "Continue To Hangar"
-	result_continue_button.pressed.connect(_continue_to_dock)
-	layout.add_child(result_continue_button)
-
-	var hint_label := Label.new()
-	hint_label.text = "Press Enter to bank the result and return to the hangar."
-	hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(hint_label)
-
+	result_layer = get_node("ResultOverlay") as CanvasLayer
+	result_panel = result_layer.get_node("Center/ResultPanel") as PanelContainer
+	result_panel_icon = result_layer.get_node("Center/ResultPanel/Inner/Layout/HeadingRow/ResultPanelIcon") as TextureRect
+	result_title_label = result_layer.get_node("Center/ResultPanel/Inner/Layout/HeadingRow/ResultTitleLabel") as Label
+	result_body_label = result_layer.get_node("Center/ResultPanel/Inner/Layout/ResultBodyLabel") as Label
+	result_continue_button = result_layer.get_node("Center/ResultPanel/Inner/Layout/ResultContinueButton") as Button
+	hud_icons.configure_icon_rect(result_panel_icon, Vector2(30.0, 30.0))
+	if not result_continue_button.pressed.is_connected(_continue_to_dock):
+		result_continue_button.pressed.connect(_continue_to_dock)
 	result_layer.visible = false
 
 func _refresh_world() -> void:
@@ -944,6 +889,8 @@ func _refresh_world() -> void:
 
 func _refresh_hud() -> void:
 	var local_peer_id := _get_local_peer_id()
+	var local_avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(local_peer_id, {})
+	var local_overboard := str(local_avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
 	var local_station_id := NetworkRuntime.get_peer_station_id(local_peer_id)
 	var selected_station_id := _get_selected_station_id()
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
@@ -966,6 +913,8 @@ func _refresh_hud() -> void:
 	var destroyed_block_count := int(NetworkRuntime.run_state.get("destroyed_block_count", 0))
 	var detached_chunk_count := int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
 	var cargo_lost_to_sea := int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
+	var overboard_count := int(NetworkRuntime.run_state.get("overboard_count", 0))
+	var recoveries_completed := int(NetworkRuntime.run_state.get("recoveries_completed", 0))
 	var rescue_progress: float = float(NetworkRuntime.run_state.get("rescue_progress", 0.0))
 	var rescue_duration: float = float(NetworkRuntime.run_state.get("rescue_duration", 1.0))
 	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
@@ -984,6 +933,9 @@ func _refresh_hud() -> void:
 	elif brace_cooldown > 0.0:
 		brace_state = "Recharging %.1fs" % brace_cooldown
 
+	hud_icons.set_icon(objective_icon, _get_run_objective_icon_id(phase, local_station_id, selected_station_id, current_cargo, cargo_capacity))
+	hud_icons.set_icon(extraction_panel_icon, "extraction")
+	hud_icons.set_icon(crew_panel_icon, "helm" if local_station_id == "helm" else "brace" if brace_timer > 0.0 else "helm")
 	var objective_text := _build_objective_text().trim_prefix("Objective: ").strip_edges()
 	objective_label.text = objective_text
 	if phase == "success":
@@ -1004,6 +956,14 @@ func _refresh_hud() -> void:
 		int(NetworkRuntime.run_state.get("bonus_gold_bank", 0)),
 		int(NetworkRuntime.run_state.get("bonus_salvage_bank", 0)),
 	]
+	if local_overboard:
+		var recovery_target := _get_local_recovery_target()
+		var target_label := str(recovery_target.get("label", "Recovery Point"))
+		resource_label.text = "Overboard | Swim Radius %.1fm | Recoveries %d\nTarget %s | Press F once you grab on" % [
+			NetworkRuntime.RUN_OVERBOARD_SWIM_RADIUS,
+			recoveries_completed,
+			target_label,
+		]
 
 	var pressure_lines := PackedStringArray()
 	pressure_lines.append("%s | Loot %d left | Wreck %.1fm" % [layout_label, loot_remaining, wreck_distance])
@@ -1017,6 +977,8 @@ func _refresh_hud() -> void:
 		pressure_lines.append("Squalls %d | %s" % [squall_bands.size(), "Inside storm band" if _boat_inside_any_squall() else "Route pressure"])
 	if cargo_lost_to_sea > 0:
 		pressure_lines.append("Cargo washed overboard: %d" % cargo_lost_to_sea)
+	if overboard_count > 0:
+		pressure_lines.append("Crew overboard: %d" % overboard_count)
 	run_label.text = "\n".join(pressure_lines)
 
 	var station_lines := PackedStringArray()
@@ -1030,6 +992,8 @@ func _refresh_hud() -> void:
 		])
 	station_lines.append("  Brace Anywhere")
 	station_lines.append("  Patch Nearby Hull")
+	if local_overboard:
+		station_lines.append("  Swim To Ladder")
 	station_label.text = "Deck Jobs\n%s" % ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")
 
 	var local_hint := _build_onboarding_text(selected_station_id, local_station_id).trim_prefix("Onboarding: ").strip_edges()
@@ -1050,7 +1014,10 @@ func _refresh_hud() -> void:
 		cargo_capacity,
 		int(NetworkRuntime.boat_state.get("collision_count", 0)),
 	]
+	if overboard_count > 0:
+		boat_label.text += "\nOverboard %d | Recoveries %d" % [overboard_count, recoveries_completed]
 	var hull_ratio := hull_integrity / maxf(1.0, max_hull_integrity)
+	hud_icons.set_icon(survival_panel_icon, "brace" if hull_ratio <= 0.6 or detached_chunk_count > 0 or breach_stacks > 0 else "repair-kit")
 	if hull_ratio <= 0.3 or detached_chunk_count > 0:
 		boat_label.modulate = HUD_TEXT_DANGER
 	elif hull_ratio <= 0.6 or breach_stacks > 0:
@@ -1062,7 +1029,15 @@ func _refresh_hud() -> void:
 	var selected_label := NetworkRuntime.get_station_label(selected_station_id) if not selected_station_id.is_empty() else "No station"
 	var local_label := NetworkRuntime.get_station_label(local_station_id) if not local_station_id.is_empty() else "Free Roam"
 	interaction_lines.append("Selected %s | You %s" % [selected_label, local_label])
-	if not selected_station_id.is_empty() and local_station_id.is_empty():
+	if local_overboard:
+		var recovery_target := _get_local_recovery_target()
+		if recovery_target.is_empty():
+			interaction_lines.append("Swim toward a ladder or stern line before the boat drifts farther away.")
+		elif bool(recovery_target.get("ready", false)):
+			interaction_lines.append("Grabbed %s. Press F to climb back aboard." % str(recovery_target.get("label", "Recovery Point")))
+		else:
+			interaction_lines.append("Swim to the %s and press F once you reach it." % str(recovery_target.get("label", "Recovery Point")))
+	elif not selected_station_id.is_empty() and local_station_id.is_empty():
 		if _is_local_near_station(selected_station_id):
 			interaction_lines.append("Press F to take %s from this deck position." % selected_label)
 		else:
@@ -1082,9 +1057,12 @@ func _refresh_hud() -> void:
 		var peer_data: Dictionary = NetworkRuntime.peer_snapshot[peer_id]
 		var crew_station := NetworkRuntime.get_peer_station_id(int(peer_id))
 		var peer_reaction := _get_reaction_visual(int(peer_id))
+		var crew_avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
 		var reaction_text := ""
 		if not peer_reaction.is_empty():
 			reaction_text = " | %s" % str(peer_reaction.get("type", "reacting")).capitalize()
+		if str(crew_avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
+			reaction_text += " | Overboard"
 		crew_lines.append("%s - %s%s" % [
 			str(peer_data.get("name", "Unknown")),
 			NetworkRuntime.get_station_label(crew_station) if not crew_station.is_empty() else "Free",
@@ -1437,7 +1415,12 @@ func _refresh_crew_visuals() -> void:
 		var crew_member := Node3D.new()
 		var station_id := NetworkRuntime.get_peer_station_id(int(peer_id))
 		var avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
-		if not station_id.is_empty() and _station_anchors_avatar(station_id):
+		var overboard := str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+		if overboard:
+			crew_member.top_level = true
+			crew_member.global_position = avatar_state.get("world_position", boat_root.global_position)
+			crew_member.rotation.y = float(avatar_state.get("facing_y", PI))
+		elif not station_id.is_empty() and _station_anchors_avatar(station_id):
 			crew_member.position = NetworkRuntime.get_station_position(station_id) + Vector3(0.0, 0.18, 0.0)
 			crew_member.rotation.y = 0.0
 		elif not avatar_state.is_empty():
@@ -1457,6 +1440,8 @@ func _refresh_crew_visuals() -> void:
 		var material := StandardMaterial3D.new()
 		if int(peer_id) == _get_local_peer_id():
 			material.albedo_color = Color(0.30, 0.82, 0.52)
+		elif overboard:
+			material.albedo_color = Color(0.36, 0.74, 0.96)
 		elif station_id == "helm":
 			material.albedo_color = Color(0.94, 0.76, 0.18)
 		else:
@@ -1465,7 +1450,7 @@ func _refresh_crew_visuals() -> void:
 		crew_member.add_child(body)
 
 		var nameplate := Label3D.new()
-		var role_label := NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"
+		var role_label := "Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew")
 		nameplate.text = "%s - %s" % [str(peer_data.get("name", "Crew")), role_label]
 		nameplate.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		nameplate.font_size = 18
@@ -1734,6 +1719,7 @@ func _refresh_result_overlay() -> void:
 	if phase == "running":
 		return
 
+	hud_icons.set_icon(result_panel_icon, "extraction" if phase == "success" else "brace")
 	var cargo_count := int(NetworkRuntime.run_state.get("cargo_count", 0))
 	var cargo_secured := int(NetworkRuntime.run_state.get("cargo_secured", 0))
 	var cargo_lost: int = maxi(0, cargo_count - cargo_secured)
@@ -1755,13 +1741,34 @@ func _refresh_result_overlay() -> void:
 	result_panel.modulate = Color(0.98, 1.0, 0.98) if phase == "success" else Color(1.0, 0.94, 0.94)
 	result_continue_button.disabled = false
 
+func _get_run_objective_icon_id(
+	phase: String,
+	local_station_id: String,
+	selected_station_id: String,
+	current_cargo: int,
+	cargo_capacity: int
+) -> String:
+	if phase == "success":
+		return "extraction"
+	if phase == "failed":
+		return "brace"
+	if cargo_capacity > 0 and current_cargo >= cargo_capacity:
+		return "cargo"
+	if local_station_id == "helm" or selected_station_id == "helm":
+		return "helm"
+	if local_station_id == "grapple" or selected_station_id == "grapple":
+		return "salvage"
+	return "extraction"
+
 func _prime_run_hud_event_state() -> void:
 	last_hud_collision_count = int(NetworkRuntime.boat_state.get("collision_count", 0))
 	last_hud_detached_chunk_count = int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
 	last_hud_cargo_lost_to_sea = int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
 	last_hud_rescue_completed = bool(NetworkRuntime.run_state.get("rescue_completed", false))
 	last_hud_cache_recovered = bool(NetworkRuntime.run_state.get("cache_recovered", false))
+	last_hud_overboard_count = int(NetworkRuntime.run_state.get("overboard_count", 0))
 	last_hud_phase = str(NetworkRuntime.run_state.get("phase", "running"))
+	last_local_overboard = _is_local_overboard()
 
 func _push_event_callout(text: String, color: Color, duration: float = 1.9) -> void:
 	if event_callout_label == null:
@@ -1823,9 +1830,12 @@ func _update_crew_visuals(delta: float) -> void:
 			continue
 		var station_id := NetworkRuntime.get_peer_station_id(int(peer_id))
 		var avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
+		var overboard := str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
 		var target_position: Vector3 = IDLE_CREW_SLOTS[idle_slot_index % IDLE_CREW_SLOTS.size()]
 		var target_yaw := float(avatar_state.get("facing_y", PI))
-		if not station_id.is_empty() and _station_anchors_avatar(station_id):
+		if overboard:
+			crew_root.top_level = true
+		elif not station_id.is_empty() and _station_anchors_avatar(station_id):
 			target_position = NetworkRuntime.get_station_position(station_id) + Vector3(0.0, 0.18, 0.0)
 			target_yaw = 0.0
 		elif not avatar_state.is_empty():
@@ -1844,22 +1854,32 @@ func _update_crew_visuals(delta: float) -> void:
 			local_knockback = boat_root.global_transform.basis.inverse() * knockback
 			target_position += local_knockback * 0.08 * intensity
 			target_position.y += sin(connect_time_seconds * 22.0 + float(peer_id)) * 0.06 * intensity
-		crew_root.position = crew_root.position.lerp(target_position, minf(1.0, delta * 8.5))
-		crew_root.rotation.y = lerp_angle(crew_root.rotation.y, target_yaw, minf(1.0, delta * 10.0))
-		crew_root.rotation.x = lerp_angle(crew_root.rotation.x, clampf(local_knockback.z * -0.05 * intensity, -0.42, 0.42), minf(1.0, delta * 12.0))
-		crew_root.rotation.z = lerp_angle(crew_root.rotation.z, clampf(local_knockback.x * 0.055 * intensity, -0.48, 0.48), minf(1.0, delta * 12.0))
+		if overboard:
+			var target_world_position: Vector3 = avatar_state.get("world_position", boat_root.global_position)
+			target_world_position.y += sin(connect_time_seconds * 2.8 + float(peer_id)) * 0.05
+			crew_root.global_position = crew_root.global_position.lerp(target_world_position, minf(1.0, delta * 8.0))
+			crew_root.rotation.y = lerp_angle(crew_root.rotation.y, target_yaw, minf(1.0, delta * 10.0))
+			crew_root.rotation.x = lerp_angle(crew_root.rotation.x, 0.12 + clampf(local_knockback.z * -0.03 * intensity, -0.18, 0.18), minf(1.0, delta * 10.0))
+			crew_root.rotation.z = lerp_angle(crew_root.rotation.z, clampf(local_knockback.x * 0.04 * intensity, -0.18, 0.18), minf(1.0, delta * 10.0))
+		else:
+			crew_root.top_level = false
+			crew_root.position = crew_root.position.lerp(target_position, minf(1.0, delta * 8.5))
+			crew_root.rotation.y = lerp_angle(crew_root.rotation.y, target_yaw, minf(1.0, delta * 10.0))
+			crew_root.rotation.x = lerp_angle(crew_root.rotation.x, clampf(local_knockback.z * -0.05 * intensity, -0.42, 0.42), minf(1.0, delta * 12.0))
+			crew_root.rotation.z = lerp_angle(crew_root.rotation.z, clampf(local_knockback.x * 0.055 * intensity, -0.48, 0.48), minf(1.0, delta * 12.0))
 		var nameplate := visual.get("nameplate") as Label3D
 		if nameplate != null:
 			var peer_data: Dictionary = NetworkRuntime.peer_snapshot.get(int(peer_id), {})
-			var role_label := NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"
+			var role_label := "Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew")
 			nameplate.text = "%s - %s" % [str(peer_data.get("name", "Crew")), role_label]
 			if not peer_reaction.is_empty():
 				nameplate.text += " [%s]" % str(peer_reaction.get("type", "reacting")).capitalize()
 
 func _process_local_run_avatar_movement(delta: float) -> void:
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	if not local_station_id.is_empty() and _station_anchors_avatar(local_station_id):
+	if not _is_local_overboard() and not local_station_id.is_empty() and _station_anchors_avatar(local_station_id):
 		local_run_avatar_position = _get_local_run_avatar_target()
+		local_run_avatar_world_position = _get_local_avatar_world_position()
 		local_run_avatar_velocity = Vector3.ZERO
 		return
 
@@ -1874,7 +1894,7 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 		input_vector.y += 1.0
 	input_vector = input_vector.limit_length(1.0)
 
-	var move_direction_local := Vector3.ZERO
+	var move_direction_world := Vector3.ZERO
 	if input_vector.length() > 0.001:
 		var camera_forward := -camera.global_transform.basis.z
 		camera_forward.y = 0.0
@@ -1882,20 +1902,34 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 		var camera_right := camera.global_transform.basis.x
 		camera_right.y = 0.0
 		camera_right = camera_right.normalized()
-		var move_direction_world := (camera_right * input_vector.x) + (camera_forward * input_vector.y)
+		move_direction_world = (camera_right * input_vector.x) + (camera_forward * input_vector.y)
 		if move_direction_world.length() > 0.001:
 			move_direction_world = move_direction_world.normalized()
-			move_direction_local = boat_root.global_transform.basis.inverse() * move_direction_world
-			move_direction_local.y = 0.0
-			move_direction_local = move_direction_local.normalized()
 
 	var local_reaction := _get_reaction_visual(_get_local_peer_id())
 	var active_reaction := float(local_reaction.get("active_time", 0.0)) > 0.0
 	var recovering := float(local_reaction.get("recovery_time", 0.0)) > 0.0
 	if active_reaction:
-		move_direction_local = Vector3.ZERO
+		move_direction_world = Vector3.ZERO
 	elif recovering:
-		move_direction_local *= 0.35
+		move_direction_world *= 0.35
+
+	if _is_local_overboard():
+		if move_direction_world.length() > 0.001:
+			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_world.x * RUN_SWIM_MOVE_SPEED, RUN_SWIM_ACCELERATION * delta)
+			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_world.z * RUN_SWIM_MOVE_SPEED, RUN_SWIM_ACCELERATION * delta)
+		else:
+			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, RUN_SWIM_ACCELERATION * delta)
+			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, RUN_SWIM_ACCELERATION * delta)
+		local_run_avatar_world_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
+		local_run_avatar_world_position = _clamp_local_swim_world_position(local_run_avatar_world_position)
+		return
+
+	var move_direction_local := Vector3.ZERO
+	if move_direction_world.length() > 0.001:
+		move_direction_local = boat_root.global_transform.basis.inverse() * move_direction_world
+		move_direction_local.y = 0.0
+		move_direction_local = move_direction_local.normalized()
 
 	if move_direction_local.length() > 0.001:
 		local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_local.x * RUN_AVATAR_MOVE_SPEED, RUN_AVATAR_ACCELERATION * delta)
@@ -1906,6 +1940,7 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 
 	local_run_avatar_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
 	local_run_avatar_position = _clamp_run_avatar_position(local_run_avatar_position)
+	local_run_avatar_world_position = _get_local_avatar_world_position()
 
 func _sync_local_run_avatar_state(delta: float) -> void:
 	run_avatar_sync_timer = maxf(0.0, run_avatar_sync_timer - delta)
@@ -1914,9 +1949,11 @@ func _sync_local_run_avatar_state(delta: float) -> void:
 	run_avatar_sync_timer = RUN_AVATAR_SYNC_INTERVAL
 	NetworkRuntime.send_local_run_avatar_state(
 		local_run_avatar_position,
+		local_run_avatar_world_position,
 		Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z),
 		local_avatar_facing_y,
-		true
+		not _is_local_overboard(),
+		local_run_avatar_mode
 	)
 
 func _collect_input_state(delta: float) -> Dictionary:
@@ -1925,6 +1962,7 @@ func _collect_input_state(delta: float) -> Dictionary:
 		"request_brace": false,
 		"request_grapple": false,
 		"request_repair": false,
+		"request_recover": false,
 		"throttle": 0.0,
 		"steer": 0.0,
 	}
@@ -1953,6 +1991,10 @@ func _collect_input_state(delta: float) -> Dictionary:
 	return input_state
 
 func _collect_station_selection_input() -> void:
+	if _is_local_overboard():
+		station_prev_latched = Input.is_key_pressed(KEY_Q)
+		station_next_latched = Input.is_key_pressed(KEY_E)
+		return
 	var previous_pressed := Input.is_key_pressed(KEY_Q)
 	if previous_pressed and not station_prev_latched:
 		_cycle_selected_station(-1)
@@ -1966,6 +2008,10 @@ func _collect_station_selection_input() -> void:
 func _collect_station_interaction_input(input_state: Dictionary) -> void:
 	var interact_pressed := Input.is_key_pressed(KEY_F)
 	if interact_pressed and not interact_latched:
+		if _is_local_overboard():
+			input_state["request_recover"] = true
+			interact_latched = interact_pressed
+			return
 		var selected_station_id := _get_selected_station_id()
 		var selected_station: Dictionary = NetworkRuntime.station_state.get(selected_station_id, {})
 		var occupant_peer_id := int(selected_station.get("occupant_peer_id", 0))
@@ -1976,6 +2022,11 @@ func _collect_station_interaction_input(input_state: Dictionary) -> void:
 	interact_latched = interact_pressed
 
 func _collect_action_input(input_state: Dictionary) -> void:
+	if _is_local_overboard():
+		brace_request_latched = Input.is_key_pressed(KEY_SPACE)
+		grapple_request_latched = Input.is_key_pressed(KEY_G)
+		repair_request_latched = Input.is_key_pressed(KEY_R)
+		return
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 
 	var brace_pressed := Input.is_key_pressed(KEY_SPACE)
@@ -2047,6 +2098,8 @@ func _apply_autorun_role(delta: float, autorun_role: String, input_state: Dictio
 			_apply_driver_role(delta, input_state)
 		"driver_detach_test":
 			_apply_driver_detach_test_role(delta, input_state)
+		"overboard_recovery":
+			_apply_overboard_recovery_role(delta, input_state)
 		"grapple":
 			_apply_grapple_role(delta, input_state)
 		"brace":
@@ -2313,6 +2366,25 @@ func _apply_repair_role(delta: float, input_state: Dictionary) -> void:
 	input_state["request_repair"] = true
 	action_request_cooldown = 0.45
 
+func _apply_overboard_recovery_role(delta: float, input_state: Dictionary) -> void:
+	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
+		return
+	if _is_local_overboard():
+		var recovery_target := _get_local_recovery_target()
+		if recovery_target.is_empty():
+			return
+		if bool(recovery_target.get("ready", false)):
+			input_state["request_recover"] = true
+			return
+		_scripted_move_local_avatar_toward_world(recovery_target.get("world_position", local_run_avatar_world_position), delta)
+		return
+	var stern_edge := Vector3(0.0, 0.92, 1.98)
+	_scripted_move_local_avatar_toward(stern_edge, delta)
+	if bool(launch_overrides.get("autoforce_overboard", false)) and not autorun_overboard_forced and action_request_cooldown <= 0.0 and local_run_avatar_position.distance_to(stern_edge) <= 0.16:
+		NetworkRuntime.request_debug_overboard()
+		action_request_cooldown = 0.5
+		autorun_overboard_forced = true
+
 func _maybe_request_autobrace(input_state: Dictionary, require_launch_override: bool = false) -> void:
 	if require_launch_override and not bool(launch_overrides.get("autobrace", false)):
 		return
@@ -2417,6 +2489,8 @@ func _find_most_damaged_runtime_block() -> Dictionary:
 	return worst_block
 
 func _request_station_if_needed(station_id: String, input_state: Dictionary, delta: float = 0.0) -> void:
+	if _is_local_overboard():
+		return
 	if not _get_claimable_station_ids().has(station_id):
 		return
 	if station_request_cooldown > 0.0:
@@ -2566,15 +2640,15 @@ func _update_camera(delta: float) -> void:
 		return
 
 	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / NetworkRuntime.BOAT_TOP_SPEED, 0.0, 1.0)
-	var pivot := boat_root.to_global(local_run_avatar_position + Vector3(0.0, run_camera_look_height, 0.0))
-	var global_yaw := boat_root.rotation.y + local_avatar_facing_y
+	var pivot := _get_local_avatar_world_position() + Vector3(0.0, run_camera_look_height, 0.0)
+	var global_yaw := local_avatar_facing_y if _is_local_overboard() else boat_root.rotation.y + local_avatar_facing_y
 	var yaw_basis := Basis(Vector3.UP, global_yaw)
 	var aim_basis := yaw_basis * Basis(Vector3.RIGHT, local_camera_pitch)
 	var forward := (aim_basis * Vector3.FORWARD).normalized()
 	var right := (yaw_basis * Vector3.RIGHT).normalized()
 	var desired_position := pivot - forward * (run_camera_distance + speed_ratio * 1.4)
 	desired_position += right * run_camera_side_offset
-	desired_position += Vector3.UP * run_camera_height
+	desired_position += Vector3.UP * (run_camera_height - (0.4 if _is_local_overboard() else 0.0))
 	desired_position += local_camera_jolt
 	var look_target := pivot + forward * (run_camera_look_ahead + speed_ratio * 0.8) + local_camera_jolt * 0.42
 	var blend := minf(1.0, delta * run_camera_lag)
@@ -2740,11 +2814,38 @@ func _on_peer_snapshot_changed(_snapshot: Dictionary) -> void:
 func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 	var local_state: Dictionary = snapshot.get(_get_local_peer_id(), {})
 	if not local_state.is_empty():
+		var previous_mode := local_run_avatar_mode
+		local_run_avatar_mode = str(local_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
 		var target_position: Vector3 = local_state.get("deck_position", local_run_avatar_position)
+		var target_world_position: Vector3 = local_state.get("world_position", _get_local_avatar_world_position())
 		if local_run_avatar_position.distance_to(target_position) > 0.85:
 			local_run_avatar_position = target_position
-			local_run_avatar_velocity = local_state.get("velocity", local_run_avatar_velocity)
-		local_avatar_facing_y = float(local_state.get("facing_y", local_avatar_facing_y))
+		if local_run_avatar_world_position.distance_to(target_world_position) > 0.95:
+			local_run_avatar_world_position = target_world_position
+		local_run_avatar_velocity = local_state.get("velocity", local_run_avatar_velocity)
+		var synced_facing := float(local_state.get("facing_y", local_avatar_facing_y))
+		if previous_mode != local_run_avatar_mode:
+			if local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
+				local_avatar_facing_y = boat_root.rotation.y + synced_facing
+			elif previous_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
+				local_avatar_facing_y = synced_facing - boat_root.rotation.y
+			else:
+				local_avatar_facing_y = synced_facing
+		else:
+			local_avatar_facing_y = synced_facing
+	var local_overboard := _is_local_overboard()
+	if local_overboard and not last_local_overboard:
+		_push_event_callout("Overboard!", HUD_TEXT_DANGER, 2.4)
+	elif not local_overboard and last_local_overboard:
+		_push_event_callout("Back On Deck", HUD_TEXT_SUCCESS, 2.1)
+	last_local_overboard = local_overboard
+	var overboard_count := 0
+	for peer_id_variant in snapshot.keys():
+		if str(Dictionary(snapshot.get(peer_id_variant, {})).get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
+			overboard_count += 1
+	if overboard_count > last_hud_overboard_count:
+		_push_event_callout("Crew Overboard", HUD_TEXT_WARNING, 2.0)
+	last_hud_overboard_count = overboard_count
 	_refresh_crew_visuals()
 	_refresh_hud()
 
@@ -2849,6 +2950,8 @@ func _build_objective_text() -> String:
 		return "Objective: Return to the hangar and bank the haul."
 	if phase == "failed":
 		return "Objective: Return to the hangar and review the loss."
+	if _is_local_overboard():
+		return "Objective: Swim to a ladder or stern line and press F to climb back aboard."
 
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
@@ -2893,6 +2996,8 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 		return "Onboarding: Press Enter or Continue to return to the hangar and spend the rewards."
 	if phase == "failed":
 		return "Onboarding: Failed runs lose unbanked cargo. Rebuild and try a safer route."
+	if _is_local_overboard():
+		return "Onboarding: You went overboard. Swim to the nearest ladder marker, then press F to climb back onto the boat."
 
 	if local_station_id.is_empty():
 		var selected_label := "a station"

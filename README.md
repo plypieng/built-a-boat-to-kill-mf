@@ -98,7 +98,7 @@ Start a client:
 
 The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `Q / E` to cycle blocks, `R` to rotate, `F` to place, `X` to remove, `Z / C` to browse unlocks, `V` to buy the selected part, `Tab` or `H` to toggle the detailed hangar overlay, then press `Launch Run`.
 
-In runs, use mouse aim plus `W A S D` to move on deck, `Q / E` to select `helm` or `grapple`, `F` to claim or release the selected station, `Space` to brace from anywhere on the boat, `G` to fire the grapple while on the crane, and `R` to patch nearby damaged hull when you are close enough.
+In runs, use mouse aim plus `W A S D` to move on deck or swim in the sea, `Q / E` to select `helm` or `grapple`, `F` to claim or release the selected station, `Space` to brace from anywhere on the boat, `G` to fire the grapple while on the crane, and `R` to patch nearby damaged hull when you are close enough. If you get knocked overboard, swim to a ladder or stern line marker and press `F` to climb back aboard.
 
 Optional client overrides:
 
@@ -278,6 +278,15 @@ Avatar-controller end-to-end extraction regression:
 TEST_HOME="$(mktemp -d /tmp/builtaboat-avatar-e2e-XXXXXX)"
 HOME="$TEST_HOME" ./tools/run_server.sh --port=7171 --seed=9191
 HOME="$TEST_HOME" godot --headless --path . --quit-after 12000 -- --host=127.0.0.1 --port=7171 --name=Week4Bot --autoconnect --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock --quit-after-connect-ms=52000
+```
+
+Overboard recovery regression:
+
+```bash
+TEST_HOME="$(mktemp -d /tmp/builtaboat-overboard-clean-XXXXXX)"
+HOME="$TEST_HOME" ./tools/run_server.sh --port=7176 --seed=424242
+HOME="$TEST_HOME" godot --headless --path . --quit-after 7000 -- --host=127.0.0.1 --port=7176 --name=CrashDriver --autoconnect --autobuild-role=builder_launch --autoclaim-station=helm --autodrive-ms=12000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=18000
+HOME="$TEST_HOME" godot --headless --path . --quit-after 7000 -- --host=127.0.0.1 --port=7176 --name=OverboardBot --autoconnect --autorun-role=overboard_recovery --autoforce-overboard --quit-after-connect-ms=18000
 ```
 
 Windows client export:
