@@ -1896,9 +1896,9 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 	if Input.is_physical_key_pressed(KEY_D):
 		input_vector.x += 1.0
 	if Input.is_physical_key_pressed(KEY_W):
-		input_vector.y -= 1.0
-	if Input.is_physical_key_pressed(KEY_S):
 		input_vector.y += 1.0
+	if Input.is_physical_key_pressed(KEY_S):
+		input_vector.y -= 1.0
 	input_vector = input_vector.limit_length(1.0)
 
 	var move_direction_world := Vector3.ZERO
