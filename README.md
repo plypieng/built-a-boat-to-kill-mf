@@ -33,7 +33,7 @@ Milestone 2 prototype adds:
 
 Milestone 3 prototype adds:
 
-- a repair bench station for in-run hull recovery
+- shared patch-kit repairs that recover hull once a crewmate reaches the damaged section
 - a wreck salvage POI with multiple pickups instead of a single floating crate
 - hull breaches that reduce top speed and leak integrity over time until repaired
 - role-based autorun helpers for `driver`, `grapple`, `brace`, and `repair`
@@ -97,6 +97,8 @@ Start a client:
 ```
 
 The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `Q / E` to cycle blocks, `R` to rotate, `F` to place, `X` to remove, `Z / C` to browse unlocks, `V` to buy the selected part, `Tab` or `H` to toggle the detailed hangar overlay, then press `Launch Run`.
+
+In runs, use mouse aim plus `W A S D` to move on deck, `Q / E` to select `helm` or `grapple`, `F` to claim or release the selected station, `Space` to brace from anywhere on the boat, `G` to fire the grapple while on the crane, and `R` to patch nearby damaged hull when you are close enough.
 
 Optional client overrides:
 
@@ -215,7 +217,14 @@ Run-side braced impact comparison:
 
 ```bash
 godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=DriverBot --autoconnect --autobuild-role=builder_launch --autoclaim-station=helm --autodrive-ms=9000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=10000
-godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autoclaim-station=brace --autobrace --autobrace-distance=8.0 --quit-after-connect-ms=10000
+godot --headless --path . --quit-after 2200 -- --host=127.0.0.1 --port=7000 --name=BraceBot --autoconnect --autorun-role=brace --autobrace --autobrace-distance=8.0 --quit-after-connect-ms=10000
+```
+
+Run-side proximity repair smoke:
+
+```bash
+godot --headless --path . --quit-after 5000 -- --host=127.0.0.1 --port=7000 --name=CrashBot --autoconnect --autobuild-role=builder_launch --autoclaim-station=helm --autodrive-ms=18000 --autodrive-throttle=1.0 --autodrive-steer=0.0 --quit-after-connect-ms=19000
+godot --headless --path . --quit-after 5000 -- --host=127.0.0.1 --port=7000 --name=RepairBot --autoconnect --autorun-role=repair --quit-after-connect-ms=19000
 ```
 
 Headless dock handoff check:
@@ -290,7 +299,7 @@ bash tools/package_windows_playtest.sh \
 - `--autobuild-role` is now a one-shot per client process, so `--autocontinue-to-dock` returns cleanly to hangar instead of immediately relaunching the run.
 - The current client scene renders a simple ocean and the launched block-built boat instead of a placeholder-only hull.
 - The current client scene now renders deck stations, placeholder crew, wreck salvage, loot, extraction markers, and a result overlay.
-- The current run model includes breach-driven speed loss and hull leakage that can be countered at the repair bench.
+- The current run model includes breach-driven speed loss and hull leakage that can be countered by carrying patch kits to the damaged section and repairing it in person.
 - The current autorun route and hazard layout now support a clean four-role extraction pass with no damage when the crew coordinates correctly.
 - The current run result now banks shared gold and salvage into the host/server profile after extraction or failure, and the hangar store spends from that shared pool.
 - Repairs are limited by shared patch kits, and the resupply cache can top the team back up once per run while adding bonus rewards.
@@ -303,6 +312,7 @@ bash tools/package_windows_playtest.sh \
 - The current hangar and run scenes now include lightweight contextual onboarding text so first-time players can understand building, rescue pressure, squalls, and extraction without live coaching.
 - The current run scene now uses the first `Expedition Board` HUD pass: a centered objective strip, top-right extraction board, bottom-left crew deck, bottom-right boat plate, and short event callouts for impacts and run-state changes.
 - The current run scene now has the first real deck-avatar layer for the control refactor: replicated crew positions on the moving boat, a player-follow chase camera, and run-side mouse-look/crosshair-facing foundations while the old station logic still handles interactions.
+- The current run interaction layer now keeps only `helm` and `grapple` as claimable stations, lets crew brace from anywhere on deck, and lets repairs spend shared kits when a player is physically close to damaged hull blocks.
 - The current hangar presentation now frames the shared boat more deliberately with an over-shoulder camera, lighter dock dressing, and simplified crew roster text.
 - The current hangar camera now behaves like a pure third-person avatar chase camera, so local movement follows the builder avatar instead of blending back toward the boat focus.
 - The current hangar now supports hard builder-to-builder bump reactions, and the new `--autohangar-role=bumper_left|bumper_right` helpers give a repeatable smoke path for that behavior.

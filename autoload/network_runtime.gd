@@ -29,6 +29,7 @@ enum Mode {
 const SESSION_PHASE_HANGAR := "hangar"
 const SESSION_PHASE_RUN := "run"
 const STATION_ORDER := ["helm", "brace", "grapple", "repair"]
+const STATION_CLAIMABLE_ORDER := ["helm", "grapple"]
 const STATION_LAYOUT := {
 	"helm": {
 		"label": "Helm",
@@ -66,6 +67,12 @@ const RUN_DECK_SPAWN_POINTS := [
 ]
 const RUN_DECK_BOUNDS_MIN := Vector3(-1.18, 0.72, -1.92)
 const RUN_DECK_BOUNDS_MAX := Vector3(1.18, 1.28, 2.08)
+const RUN_HELM_ZONE_RADIUS := 1.15
+const RUN_HELM_RELEASE_RADIUS := 1.55
+const RUN_GRAPPLE_ZONE_RADIUS := 0.92
+const RUN_GRAPPLE_RELEASE_RADIUS := 1.18
+const RUN_REPAIR_RANGE := 1.32
+const RUN_REPAIR_HEAL_RADIUS := 1.2
 const BUILDER_BLOCK_ORDER := [
 	"core",
 	"hull",
@@ -521,6 +528,9 @@ func get_player_peer_ids() -> Array:
 func get_station_ids() -> Array:
 	return STATION_ORDER.duplicate()
 
+func get_claimable_station_ids() -> Array:
+	return STATION_CLAIMABLE_ORDER.duplicate()
+
 func get_station_label(station_id: String) -> String:
 	var station_data: Dictionary = station_state.get(station_id, {})
 	return str(station_data.get("label", station_id.capitalize()))
@@ -662,6 +672,8 @@ func server_step_shared_boat(delta: float) -> void:
 
 	if str(run_state.get("phase", "running")) != "running":
 		return
+
+	_enforce_run_station_ranges()
 
 	var brace_timer: float = maxf(0.0, float(boat_state.get("brace_timer", 0.0)) - delta)
 	var brace_cooldown: float = maxf(0.0, float(boat_state.get("brace_cooldown", 0.0)) - delta)
@@ -1141,6 +1153,87 @@ func _make_default_run_avatar_state(spawn_index: int) -> Dictionary:
 		"facing_y": PI,
 		"grounded": true,
 	}
+
+func _is_station_claimable(station_id: String) -> bool:
+	return STATION_CLAIMABLE_ORDER.has(station_id)
+
+func _get_run_station_claim_radius(station_id: String) -> float:
+	match station_id:
+		"helm":
+			return RUN_HELM_ZONE_RADIUS
+		"grapple":
+			return RUN_GRAPPLE_ZONE_RADIUS
+		_:
+			return 0.0
+
+func _get_run_station_release_radius(station_id: String) -> float:
+	match station_id:
+		"helm":
+			return RUN_HELM_RELEASE_RADIUS
+		"grapple":
+			return RUN_GRAPPLE_RELEASE_RADIUS
+		_:
+			return 0.0
+
+func _get_peer_run_avatar_position(peer_id: int) -> Vector3:
+	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+	return avatar_state.get("deck_position", Vector3.ZERO)
+
+func _peer_within_run_station_range(peer_id: int, station_id: String, extra_margin: float = 0.0) -> bool:
+	if peer_id <= 0 or not station_state.has(station_id):
+		return false
+	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+	if avatar_state.is_empty():
+		return false
+	var claim_radius := _get_run_station_claim_radius(station_id)
+	if claim_radius <= 0.0:
+		return false
+	var avatar_position: Vector3 = avatar_state.get("deck_position", Vector3.ZERO)
+	var station_position := get_station_position(station_id)
+	return avatar_position.distance_to(station_position) <= (claim_radius + maxf(0.0, extra_margin))
+
+func _find_nearest_repairable_block(peer_id: int, max_range: float = RUN_REPAIR_RANGE) -> Dictionary:
+	if peer_id <= 0:
+		return {}
+	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+	if avatar_state.is_empty():
+		return {}
+	var avatar_position: Vector3 = avatar_state.get("deck_position", Vector3.ZERO)
+	var nearest_block: Dictionary = {}
+	var nearest_distance := max_range
+	for block_variant in Array(boat_state.get("runtime_blocks", [])):
+		var block: Dictionary = block_variant
+		if bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+			continue
+		if float(block.get("current_hp", 0.0)) >= float(block.get("max_hp", 0.0)) - 0.01:
+			continue
+		var local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+		var distance := avatar_position.distance_to(local_position)
+		if distance > nearest_distance:
+			continue
+		nearest_distance = distance
+		nearest_block = block.duplicate(true)
+		nearest_block["repair_distance"] = distance
+	return nearest_block
+
+func _enforce_run_station_ranges() -> void:
+	if not multiplayer.is_server():
+		return
+	var released_station_labels := PackedStringArray()
+	for station_id_variant in STATION_CLAIMABLE_ORDER:
+		var station_id := str(station_id_variant)
+		var station: Dictionary = station_state.get(station_id, {})
+		var occupant_peer_id := int(station.get("occupant_peer_id", 0))
+		if occupant_peer_id <= 0:
+			continue
+		if _peer_within_run_station_range(occupant_peer_id, station_id, _get_run_station_release_radius(station_id) - _get_run_station_claim_radius(station_id)):
+			continue
+		_release_station(occupant_peer_id, false)
+		released_station_labels.append(get_station_label(station_id))
+	if not released_station_labels.is_empty():
+		_broadcast_station_state()
+		_broadcast_boat_state()
+		_set_status("%s lost station control after drifting out of range." % ", ".join(released_station_labels))
 
 func _reset_run_runtime() -> void:
 	driver_peer_id = 0
@@ -1783,6 +1876,51 @@ func _heal_runtime_blocks(total_heal: float) -> void:
 
 	boat_state["runtime_blocks"] = runtime_blocks
 
+func _heal_runtime_blocks_around(center_local: Vector3, total_heal: float) -> void:
+	var runtime_blocks: Array = Array(boat_state.get("runtime_blocks", [])).duplicate(true)
+	var damaged_blocks: Array = []
+	for block_variant in runtime_blocks:
+		var block: Dictionary = block_variant
+		if bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+			continue
+		var max_hp := float(block.get("max_hp", 0.0))
+		var current_hp := float(block.get("current_hp", max_hp))
+		if current_hp >= max_hp - 0.01:
+			continue
+		var distance := center_local.distance_to(block.get("local_position", Vector3.ZERO))
+		if distance > RUN_REPAIR_HEAL_RADIUS:
+			continue
+		var block_copy := block.duplicate(true)
+		block_copy["repair_distance"] = distance
+		damaged_blocks.append(block_copy)
+
+	if damaged_blocks.is_empty():
+		_heal_runtime_blocks(total_heal)
+		return
+
+	damaged_blocks.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("repair_distance", 0.0)) < float(b.get("repair_distance", 0.0))
+	)
+
+	var remaining_heal := total_heal
+	for damaged_block_variant in damaged_blocks:
+		if remaining_heal <= 0.0:
+			break
+		var damaged_block: Dictionary = damaged_block_variant
+		var block_id := int(damaged_block.get("id", 0))
+		for runtime_index in range(runtime_blocks.size()):
+			var block: Dictionary = runtime_blocks[runtime_index]
+			if int(block.get("id", 0)) != block_id:
+				continue
+			var missing_hp := float(block.get("max_hp", 0.0)) - float(block.get("current_hp", 0.0))
+			var applied_heal := minf(missing_hp, remaining_heal)
+			block["current_hp"] = float(block.get("current_hp", 0.0)) + applied_heal
+			runtime_blocks[runtime_index] = block
+			remaining_heal -= applied_heal
+			break
+
+	boat_state["runtime_blocks"] = runtime_blocks
+
 func _launch_run_session(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
@@ -2289,9 +2427,13 @@ func _claim_station(peer_id: int, station_id: String) -> void:
 		return
 	if not station_state.has(station_id):
 		return
+	if not _is_station_claimable(station_id):
+		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
 	if _peer_has_reaction_lock(peer_id):
+		return
+	if not _peer_within_run_station_range(peer_id, station_id):
 		return
 
 	var station: Dictionary = station_state.get(station_id, {})
@@ -2345,6 +2487,9 @@ func _receive_boat_input(peer_id: int, throttle: float, steer: float) -> void:
 		return
 	if get_peer_station_id(peer_id) != "helm":
 		return
+	if not _peer_within_run_station_range(peer_id, "helm", RUN_HELM_RELEASE_RADIUS - RUN_HELM_ZONE_RADIUS):
+		_release_station(peer_id)
+		return
 
 	_peer_inputs[peer_id] = {
 		"throttle": throttle,
@@ -2358,7 +2503,7 @@ func _begin_brace(peer_id: int) -> void:
 		return
 	if _peer_has_reaction_lock(peer_id):
 		return
-	if get_peer_station_id(peer_id) != "brace":
+	if not run_avatar_state.has(peer_id):
 		return
 	if float(boat_state.get("brace_cooldown", 0.0)) > 0.0:
 		return
@@ -2366,7 +2511,7 @@ func _begin_brace(peer_id: int) -> void:
 	boat_state["brace_timer"] = BRACE_ACTIVE_SECONDS
 	boat_state["brace_cooldown"] = BRACE_COOLDOWN_SECONDS
 	_broadcast_boat_state()
-	_set_status("Brace station activated.")
+	_set_status("%s braced for impact." % _get_peer_name(peer_id))
 
 func _process_repair(peer_id: int) -> void:
 	if session_phase != SESSION_PHASE_RUN:
@@ -2375,12 +2520,10 @@ func _process_repair(peer_id: int) -> void:
 		return
 	if _peer_has_reaction_lock(peer_id):
 		return
-	if get_peer_station_id(peer_id) != "repair":
-		return
 	if float(boat_state.get("repair_cooldown", 0.0)) > 0.0:
 		return
 	if int(run_state.get("repair_supplies", 0)) <= 0:
-		_set_status("Repair bench is out of patch kits.")
+		_set_status("The crew is out of patch kits.")
 		return
 
 	var breach_stacks := int(boat_state.get("breach_stacks", 0))
@@ -2388,17 +2531,24 @@ func _process_repair(peer_id: int) -> void:
 	var max_hull_integrity: float = float(boat_state.get("max_hull_integrity", BOAT_MAX_INTEGRITY))
 	if breach_stacks <= 0 and hull_integrity >= max_hull_integrity - 0.1:
 		return
+	var repair_target := _find_nearest_repairable_block(peer_id)
+	if repair_target.is_empty():
+		_set_status("%s needs to move closer to the damaged hull to patch it." % _get_peer_name(peer_id))
+		return
 
 	boat_state["breach_stacks"] = maxi(0, breach_stacks - 1)
 	boat_state["hull_integrity"] = minf(max_hull_integrity, hull_integrity + REPAIR_HULL_RECOVERY)
 	boat_state["repair_cooldown"] = REPAIR_COOLDOWN_SECONDS
 	run_state["repair_actions"] = int(run_state.get("repair_actions", 0)) + 1
 	run_state["repair_supplies"] = maxi(0, int(run_state.get("repair_supplies", 0)) - 1)
-	_heal_runtime_blocks(REPAIR_HULL_RECOVERY)
+	_heal_runtime_blocks_around(repair_target.get("local_position", Vector3.ZERO), REPAIR_HULL_RECOVERY)
 	_broadcast_runtime_boat_state()
 	_broadcast_boat_state()
 	_broadcast_run_state()
-	_set_status("Repair bench patched the hull. %d patch kit(s) left." % int(run_state.get("repair_supplies", 0)))
+	_set_status("%s patched the hull. %d patch kit(s) left." % [
+		_get_peer_name(peer_id),
+		int(run_state.get("repair_supplies", 0)),
+	])
 
 func _process_grapple(peer_id: int) -> void:
 	if session_phase != SESSION_PHASE_RUN:

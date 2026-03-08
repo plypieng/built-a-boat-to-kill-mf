@@ -810,6 +810,30 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - full local `hangar -> run` autorun capture at `/tmp/builtaboat-run-deck-avatar.png`
 - The autorun still completes the existing extraction path under the new deck-avatar runtime, but true free-moving station use is intentionally deferred to the next interaction-refactor milestone.
 
+## 2026-03-08 Run Interaction Refactor
+
+- Implemented Milestone 3 of the avatar-control refactor in `autoload/network_runtime.gd` and `scenes/run_client/run_client.gd`.
+- Changed the authoritative run interaction rules so:
+  - `helm` is now a soft station zone with range validation and auto-release if the helmsman drifts too far away
+  - `grapple` remains the anchored crane station for now
+  - `brace` can be triggered from anywhere on the boat
+  - `repair` now spends shared patch kits only when a crewmate is physically close to damaged hull blocks
+- Updated the run client so the local avatar stays free while holding helm control, while grapple still anchors the avatar to the crane.
+- Narrowed station cycling to the claimable deck jobs only:
+  - `helm`
+  - `grapple`
+- Updated the run HUD and onboarding copy so it now teaches:
+  - brace anywhere
+  - patch nearby hull
+  - move close to helm before claiming it
+  - drift too far from helm and steering control drops
+- Updated headless autorun helpers so bots can walk to helm or grapple, release anchored grapple control, and move toward damaged hull sections before attempting repairs.
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - a fresh single-client run smoke on port `7166` reached the new `helm -> grapple -> helm` handoff flow, completed loot recovery, rescue, and cache steps, and stayed alive under the new control model
+  - a targeted repair smoke on port `7167` showed `RepairBot patched the hull` four times, reducing breaches and consuming patch kits from deck proximity instead of a repair station
+- The current open gap is that the single-client autorun demo still does not finish a full extraction before the auto-quit timeout after this refactor, so the new control flow is verified mid-run but not yet re-signed-off end-to-end to hangar.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:

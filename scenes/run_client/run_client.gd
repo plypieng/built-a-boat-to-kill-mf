@@ -333,9 +333,70 @@ func _clamp_run_avatar_position(deck_position: Vector3) -> Vector3:
 
 func _get_local_run_avatar_target() -> Vector3:
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	if local_station_id.is_empty():
+	if local_station_id.is_empty() or not _station_anchors_avatar(local_station_id):
 		return local_run_avatar_position
 	return NetworkRuntime.get_station_position(local_station_id) + Vector3(0.0, 0.18, 0.0)
+
+func _get_claimable_station_ids() -> Array:
+	return NetworkRuntime.get_claimable_station_ids()
+
+func _station_anchors_avatar(station_id: String) -> bool:
+	return station_id == "grapple"
+
+func _get_station_claim_radius(station_id: String) -> float:
+	match station_id:
+		"helm":
+			return NetworkRuntime.RUN_HELM_ZONE_RADIUS
+		"grapple":
+			return NetworkRuntime.RUN_GRAPPLE_ZONE_RADIUS
+		_:
+			return 0.0
+
+func _is_local_near_station(station_id: String, extra_margin: float = 0.0) -> bool:
+	var claim_radius := _get_station_claim_radius(station_id)
+	if claim_radius <= 0.0:
+		return false
+	return local_run_avatar_position.distance_to(NetworkRuntime.get_station_position(station_id)) <= (claim_radius + maxf(0.0, extra_margin))
+
+func _find_local_repair_target() -> Dictionary:
+	var nearest_block: Dictionary = {}
+	var nearest_distance := NetworkRuntime.RUN_REPAIR_RANGE
+	for block_variant in Array(NetworkRuntime.boat_state.get("runtime_blocks", [])):
+		var block_state: Dictionary = block_variant
+		var block := _build_runtime_block_render_data(block_state)
+		if block.is_empty() or bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+			continue
+		if float(block.get("current_hp", 0.0)) >= float(block.get("max_hp", 0.0)) - 0.01:
+			continue
+		var local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+		var distance := local_run_avatar_position.distance_to(local_position)
+		if distance > nearest_distance:
+			continue
+		nearest_distance = distance
+		nearest_block = block.duplicate(true)
+		nearest_block["repair_distance"] = distance
+	return nearest_block
+
+func _scripted_move_local_avatar_toward(target_position: Vector3, delta: float) -> void:
+	if delta <= 0.0:
+		return
+	var offset := target_position - local_run_avatar_position
+	offset.y = 0.0
+	if offset.length() <= 0.04:
+		local_run_avatar_velocity = Vector3.ZERO
+		return
+	var direction := offset.normalized()
+	local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, direction.x * RUN_AVATAR_MOVE_SPEED, RUN_AVATAR_ACCELERATION * delta)
+	local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, direction.z * RUN_AVATAR_MOVE_SPEED, RUN_AVATAR_ACCELERATION * delta)
+	local_run_avatar_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
+	local_run_avatar_position = _clamp_run_avatar_position(local_run_avatar_position)
+	local_avatar_facing_y = atan2(-direction.x, -direction.z)
+	NetworkRuntime.send_local_run_avatar_state(
+		local_run_avatar_position,
+		Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z),
+		local_avatar_facing_y,
+		true
+	)
 
 func _build_station_visuals() -> void:
 	station_visuals = {}
@@ -677,7 +738,7 @@ func _build_hud() -> void:
 	crew_layout.add_child(onboarding_label)
 
 	var footer := Label.new()
-	footer.text = "Mouse aim | Q/E stations | F claim | W A S D helm | Space brace | G grapple | R repair"
+	footer.text = "Mouse aim | Q/E helm/grapple | F claim | W A S D helm | Space brace anywhere | G grapple | R patch nearby hull"
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	footer.add_theme_font_size_override("font_size", 11)
 	footer.modulate = HUD_TEXT_MUTED
@@ -907,7 +968,7 @@ func _refresh_hud() -> void:
 	run_label.text = "\n".join(pressure_lines)
 
 	var station_lines := PackedStringArray()
-	for station_id in NetworkRuntime.get_station_ids():
+	for station_id in _get_claimable_station_ids():
 		var occupant_name := NetworkRuntime.get_station_occupant_name(station_id)
 		var marker := ">" if station_id == selected_station_id else " "
 		station_lines.append("%s %s %s" % [
@@ -915,7 +976,9 @@ func _refresh_hud() -> void:
 			NetworkRuntime.get_station_label(station_id),
 			occupant_name,
 		])
-	station_label.text = "Stations\n%s" % ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")
+	station_lines.append("  Brace Anywhere")
+	station_lines.append("  Patch Nearby Hull")
+	station_label.text = "Deck Jobs\n%s" % ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")
 
 	var local_hint := _build_onboarding_text(selected_station_id, local_station_id).trim_prefix("Onboarding: ").strip_edges()
 	onboarding_label.text = "Local Tip\n%s" % local_hint
@@ -947,16 +1010,19 @@ func _refresh_hud() -> void:
 	var selected_label := NetworkRuntime.get_station_label(selected_station_id) if not selected_station_id.is_empty() else "No station"
 	var local_label := NetworkRuntime.get_station_label(local_station_id) if not local_station_id.is_empty() else "Free Roam"
 	interaction_lines.append("Selected %s | You %s" % [selected_label, local_label])
+	if not selected_station_id.is_empty() and local_station_id.is_empty():
+		if _is_local_near_station(selected_station_id):
+			interaction_lines.append("Press F to take %s from this deck position." % selected_label)
+		else:
+			interaction_lines.append("Move closer to %s before claiming it." % selected_label)
 	if local_station_id == "helm":
-		interaction_lines.append("Hold a calm line for grapple windows and extraction.")
-	elif local_station_id == "brace":
-		interaction_lines.append("Time Space against impacts, surges, and squalls.")
+		interaction_lines.append("Stay near the helm to keep steering. Drift away and you lose control.")
 	elif local_station_id == "grapple":
-		interaction_lines.append("Recover loot only when the helm has settled the boat.")
-	elif local_station_id == "repair":
-		interaction_lines.append("Patch only when the risk is worth the kit spend.")
+		interaction_lines.append("Stay on the crane and recover loot only when the helm has settled the boat.")
+	elif not _find_local_repair_target().is_empty():
+		interaction_lines.append("You are close enough to patch this section. Spend kits only when the trade is worth it.")
 	else:
-		interaction_lines.append("Claim a station and support the shared boat.")
+		interaction_lines.append("Move to the helm or grapple crane, brace anywhere, and patch damage up close.")
 	interaction_label.text = "\n".join(interaction_lines)
 
 	var crew_lines := PackedStringArray()
@@ -1001,14 +1067,10 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 
 	if local_station_id == "helm":
 		lines.append("Hold the boat steady over wrecks and line up safe extraction approaches.")
-	elif local_station_id == "brace":
-		lines.append("Press Space to cover collisions, salvage surges, or squall pulses for the crew.")
 	elif local_station_id == "grapple":
 		lines.append("Press G to recover nearby wreck salvage, rescue cargo, or bonus caches once the helm has slowed the boat.")
-	elif local_station_id == "repair":
-		lines.append("Press R to patch breaches and recover some hull integrity.")
 	else:
-		lines.append("Cycle stations with Q and E.")
+		lines.append("Brace anywhere with Space, or patch nearby hull damage with R.")
 
 	lines.append("Unbraced wreck grapples add hull breaches that slow the boat until repaired.")
 	lines.append("Repairs now spend shared patch kits, so decide whether to patch now or save them for extraction.")
@@ -1279,13 +1341,17 @@ func _refresh_station_visuals() -> void:
 
 		var station_data: Dictionary = NetworkRuntime.station_state.get(station_id, {})
 		var occupant_peer_id := int(station_data.get("occupant_peer_id", 0))
-		var color := STATION_BASE_COLOR
-		if occupant_peer_id == local_peer_id and occupant_peer_id != 0:
-			color = STATION_LOCAL_COLOR
-		elif occupant_peer_id != 0:
-			color = STATION_OCCUPIED_COLOR
-		if station_id == selected_station_id:
-			color = color.lerp(STATION_SELECTED_COLOR, 0.45)
+		var claimable := _get_claimable_station_ids().has(station_id)
+		var color := STATION_BASE_COLOR if claimable else Color(0.36, 0.56, 0.62)
+		if claimable:
+			if occupant_peer_id == local_peer_id and occupant_peer_id != 0:
+				color = STATION_LOCAL_COLOR
+			elif occupant_peer_id != 0:
+				color = STATION_OCCUPIED_COLOR
+			if station_id == selected_station_id:
+				color = color.lerp(STATION_SELECTED_COLOR, 0.45)
+		else:
+			color = color.lerp(STATION_SELECTED_COLOR, 0.18)
 
 		var base_material := StandardMaterial3D.new()
 		base_material.albedo_color = color.darkened(0.08)
@@ -1296,9 +1362,16 @@ func _refresh_station_visuals() -> void:
 		beacon_mesh.material_override = beacon_material
 
 		var occupant_name := NetworkRuntime.get_station_occupant_name(station_id)
-		label.text = NetworkRuntime.get_station_label(station_id)
-		if occupant_peer_id != 0:
-			label.text += "\n%s" % occupant_name
+		if claimable:
+			label.text = NetworkRuntime.get_station_label(station_id)
+			if occupant_peer_id != 0:
+				label.text += "\n%s" % occupant_name
+		elif station_id == "brace":
+			label.text = "Brace Anywhere"
+		elif station_id == "repair":
+			label.text = "Patch Nearby Hull"
+		else:
+			label.text = NetworkRuntime.get_station_label(station_id)
 		label.modulate = color.lightened(0.22)
 
 func _refresh_crew_visuals() -> void:
@@ -1312,7 +1385,7 @@ func _refresh_crew_visuals() -> void:
 		var crew_member := Node3D.new()
 		var station_id := NetworkRuntime.get_peer_station_id(int(peer_id))
 		var avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
-		if not station_id.is_empty():
+		if not station_id.is_empty() and _station_anchors_avatar(station_id):
 			crew_member.position = NetworkRuntime.get_station_position(station_id) + Vector3(0.0, 0.18, 0.0)
 			crew_member.rotation.y = 0.0
 		elif not avatar_state.is_empty():
@@ -1700,7 +1773,7 @@ func _update_crew_visuals(delta: float) -> void:
 		var avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
 		var target_position: Vector3 = IDLE_CREW_SLOTS[idle_slot_index % IDLE_CREW_SLOTS.size()]
 		var target_yaw := float(avatar_state.get("facing_y", PI))
-		if not station_id.is_empty():
+		if not station_id.is_empty() and _station_anchors_avatar(station_id):
 			target_position = NetworkRuntime.get_station_position(station_id) + Vector3(0.0, 0.18, 0.0)
 			target_yaw = 0.0
 		elif not avatar_state.is_empty():
@@ -1733,7 +1806,7 @@ func _update_crew_visuals(delta: float) -> void:
 
 func _process_local_run_avatar_movement(delta: float) -> void:
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	if not local_station_id.is_empty():
+	if not local_station_id.is_empty() and _station_anchors_avatar(local_station_id):
 		local_run_avatar_position = _get_local_run_avatar_target()
 		local_run_avatar_velocity = Vector3.ZERO
 		return
@@ -1854,7 +1927,7 @@ func _collect_action_input(input_state: Dictionary) -> void:
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 
 	var brace_pressed := Input.is_key_pressed(KEY_SPACE)
-	if brace_pressed and not brace_request_latched and local_station_id == "brace":
+	if brace_pressed and not brace_request_latched:
 		input_state["request_brace"] = true
 	brace_request_latched = brace_pressed
 
@@ -1864,7 +1937,7 @@ func _collect_action_input(input_state: Dictionary) -> void:
 	grapple_request_latched = grapple_pressed
 
 	var repair_pressed := Input.is_key_pressed(KEY_R)
-	if repair_pressed and not repair_request_latched and local_station_id == "repair":
+	if repair_pressed and not repair_request_latched:
 		input_state["request_repair"] = true
 	repair_request_latched = repair_pressed
 
@@ -1898,34 +1971,40 @@ func _apply_scripted_station_input(delta: float, input_state: Dictionary) -> voi
 		autopilot_remaining_seconds = maxf(0.0, autopilot_remaining_seconds - delta)
 
 	if not desired_station_id.is_empty():
-		_request_station_if_needed(desired_station_id, input_state)
+		_request_station_if_needed(desired_station_id, input_state, delta)
 
 	if desired_station_id == "helm" and autopilot_remaining_seconds > 0.0 and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
 		input_state["throttle"] = float(launch_overrides.get("autodrive_throttle", 1.0))
 		input_state["steer"] = float(launch_overrides.get("autodrive_steer", 0.0))
-	elif desired_station_id == "brace" and bool(launch_overrides.get("autobrace", false)) and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "brace" and action_request_cooldown <= 0.0 and _should_autobrace():
+	elif desired_station_id == "brace" and bool(launch_overrides.get("autobrace", false)) and action_request_cooldown <= 0.0 and _should_autobrace():
 		input_state["request_brace"] = true
 		action_request_cooldown = 0.35
-	elif desired_station_id == "repair" and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "repair" and action_request_cooldown <= 0.0 and int(NetworkRuntime.boat_state.get("breach_stacks", 0)) > 0:
-		input_state["request_repair"] = true
-		action_request_cooldown = 0.45
+	elif desired_station_id == "repair" and action_request_cooldown <= 0.0 and int(NetworkRuntime.boat_state.get("breach_stacks", 0)) > 0:
+		var repair_target := _find_local_repair_target()
+		if not repair_target.is_empty():
+			input_state["request_repair"] = true
+			action_request_cooldown = 0.45
+		else:
+			var damage_target := _find_most_damaged_runtime_block()
+			if not damage_target.is_empty():
+				_scripted_move_local_avatar_toward(damage_target.get("local_position", local_run_avatar_position), delta)
 
 func _apply_autorun_role(delta: float, autorun_role: String, input_state: Dictionary) -> void:
 	match autorun_role:
 		"driver":
-			_apply_driver_role(input_state)
+			_apply_driver_role(delta, input_state)
 		"driver_detach_test":
-			_apply_driver_detach_test_role(input_state)
+			_apply_driver_detach_test_role(delta, input_state)
 		"grapple":
-			_apply_grapple_role(input_state)
+			_apply_grapple_role(delta, input_state)
 		"brace":
-			_apply_brace_role(input_state)
+			_apply_brace_role(delta, input_state)
 		"repair":
-			_apply_repair_role(input_state)
+			_apply_repair_role(delta, input_state)
 		_:
 			_apply_scripted_station_input(delta, input_state)
 
-func _apply_autorun_demo(_delta: float, input_state: Dictionary) -> void:
+func _apply_autorun_demo(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
 
@@ -1949,79 +2028,82 @@ func _apply_autorun_demo(_delta: float, input_state: Dictionary) -> void:
 
 	if loot_remaining > 0:
 		if boat_position.distance_to(wreck_position) > wreck_radius * 0.55:
-			_request_station_if_needed("helm", input_state)
+			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
 				_apply_drive_to_target(wreck_position + Vector3(0.0, 0.0, -1.1), input_state)
 			return
 
 		if boat_speed > float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
-			_request_station_if_needed("helm", input_state)
+			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
 				_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
 			return
 
 		if brace_timer <= 0.0 and brace_cooldown <= 0.0:
-			_request_station_if_needed("brace", input_state)
-			if local_station_id == "brace" and action_request_cooldown <= 0.0:
+			if action_request_cooldown <= 0.0:
 				input_state["request_brace"] = true
 				action_request_cooldown = 0.2
 			return
 
 		if brace_timer <= 0.0:
-			_request_station_if_needed("helm", input_state)
+			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
 				_hold_position_over_target(wreck_position, float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)), input_state)
 			return
 
-		_request_station_if_needed("grapple", input_state)
+		_request_station_if_needed("grapple", input_state, delta)
 		if local_station_id == "grapple" and action_request_cooldown <= 0.0:
 			input_state["request_grapple"] = true
 			action_request_cooldown = 0.45
 		return
 
 	if breach_stacks > 0 and int(NetworkRuntime.run_state.get("repair_supplies", 0)) > 0:
-		_request_station_if_needed("repair", input_state)
-		if local_station_id == "repair" and action_request_cooldown <= 0.0:
+		var repair_target := _find_local_repair_target()
+		if not repair_target.is_empty() and action_request_cooldown <= 0.0:
 			input_state["request_repair"] = true
 			action_request_cooldown = 0.45
+		else:
+			var damage_target := _find_most_damaged_runtime_block()
+			if not damage_target.is_empty():
+				_scripted_move_local_avatar_toward(damage_target.get("local_position", local_run_avatar_position), delta)
 		return
 
 	if rescue_available:
 		if boat_position.distance_to(rescue_position) > rescue_radius * 0.8:
-			_request_station_if_needed("helm", input_state)
+			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
 				_apply_drive_to_target(rescue_position + Vector3(0.0, 0.0, -0.8), input_state, 0.52)
 			return
 		if boat_speed > rescue_max_speed:
-			_request_station_if_needed("helm", input_state)
+			_request_station_if_needed("helm", input_state, delta)
 			if local_station_id == "helm":
 				_hold_position_over_target(rescue_position, rescue_max_speed, input_state)
 			return
-		_request_station_if_needed("grapple", input_state)
+		_request_station_if_needed("grapple", input_state, delta)
 		if local_station_id == "grapple" and action_request_cooldown <= 0.0:
 			input_state["request_grapple"] = true
 			action_request_cooldown = 0.45
 		return
 
 	if cache_available and boat_position.distance_to(cache_position) <= cache_radius and absf(boat_speed) <= cache_max_speed:
-		_request_station_if_needed("grapple", input_state)
+		_request_station_if_needed("grapple", input_state, delta)
 		if local_station_id == "grapple" and action_request_cooldown <= 0.0:
 			input_state["request_grapple"] = true
 			action_request_cooldown = 0.45
 		return
 
-	_request_station_if_needed("helm", input_state)
+	_request_station_if_needed("helm", input_state, delta)
 	if local_station_id != "helm":
 		return
 
 	_apply_coordinated_return_route(input_state)
 
-func _apply_driver_role(input_state: Dictionary) -> void:
+func _apply_driver_role(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
 
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	_request_station_if_needed("helm", input_state)
+	_request_station_if_needed("helm", input_state, delta)
 	if local_station_id != "helm":
 		return
 
@@ -2030,7 +2112,7 @@ func _apply_driver_role(input_state: Dictionary) -> void:
 	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
 	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
 	if loot_remaining > 0:
-		if not _station_is_crewed("brace") or not _station_is_crewed("grapple"):
+		if not _station_is_crewed("grapple"):
 			input_state["throttle"] = 0.0
 			input_state["steer"] = 0.0
 			return
@@ -2055,12 +2137,12 @@ func _apply_driver_role(input_state: Dictionary) -> void:
 
 	_apply_coordinated_return_route(input_state)
 
-func _apply_driver_detach_test_role(input_state: Dictionary) -> void:
+func _apply_driver_detach_test_role(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
 
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	_request_station_if_needed("helm", input_state)
+	_request_station_if_needed("helm", input_state, delta)
 	if local_station_id != "helm":
 		return
 
@@ -2069,7 +2151,7 @@ func _apply_driver_detach_test_role(input_state: Dictionary) -> void:
 	var wreck_position: Vector3 = NetworkRuntime.run_state.get("wreck_position", Vector3.ZERO)
 	var wreck_radius: float = float(NetworkRuntime.run_state.get("wreck_radius", 4.1))
 	if loot_remaining > 0:
-		if not _station_is_crewed("brace") or not _station_is_crewed("grapple"):
+		if not _station_is_crewed("grapple"):
 			input_state["throttle"] = 0.0
 			input_state["steer"] = 0.0
 			return
@@ -2086,12 +2168,12 @@ func _apply_driver_detach_test_role(input_state: Dictionary) -> void:
 
 	_apply_drive_to_target(Vector3(0.0, 0.0, 19.2), input_state, 0.84)
 
-func _apply_grapple_role(input_state: Dictionary) -> void:
+func _apply_grapple_role(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
 
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	_request_station_if_needed("grapple", input_state)
+	_request_station_if_needed("grapple", input_state, delta)
 	if local_station_id != "grapple":
 		return
 
@@ -2130,12 +2212,8 @@ func _apply_grapple_role(input_state: Dictionary) -> void:
 	input_state["request_grapple"] = true
 	action_request_cooldown = 0.45
 
-func _apply_brace_role(input_state: Dictionary) -> void:
+func _apply_brace_role(_delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
-		return
-	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	_request_station_if_needed("brace", input_state)
-	if local_station_id != "brace":
 		return
 	if float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0)) > 0.0 or action_request_cooldown > 0.0:
 		return
@@ -2151,21 +2229,21 @@ func _apply_brace_role(input_state: Dictionary) -> void:
 	input_state["request_brace"] = true
 	action_request_cooldown = 0.35
 
-func _apply_repair_role(input_state: Dictionary) -> void:
+func _apply_repair_role(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
 	if int(NetworkRuntime.boat_state.get("breach_stacks", 0)) <= 0:
 		return
 	if int(NetworkRuntime.run_state.get("repair_supplies", 0)) <= 0:
 		return
-
-	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	_request_station_if_needed("repair", input_state)
-	if local_station_id != "repair":
-		return
 	if float(NetworkRuntime.boat_state.get("repair_cooldown", 0.0)) > 0.0 or action_request_cooldown > 0.0:
 		return
-
+	var repair_target := _find_local_repair_target()
+	if repair_target.is_empty():
+		var damage_target := _find_most_damaged_runtime_block()
+		if not damage_target.is_empty():
+			_scripted_move_local_avatar_toward(damage_target.get("local_position", local_run_avatar_position), delta)
+		return
 	input_state["request_repair"] = true
 	action_request_cooldown = 0.45
 
@@ -2236,10 +2314,37 @@ func _hold_position_over_target(target: Vector3, max_speed: float, input_state: 
 		throttle = 0.12
 	input_state["throttle"] = throttle
 
-func _request_station_if_needed(station_id: String, input_state: Dictionary) -> void:
+func _find_most_damaged_runtime_block() -> Dictionary:
+	var worst_block: Dictionary = {}
+	var worst_ratio := 1.0
+	for block_variant in Array(NetworkRuntime.boat_state.get("runtime_blocks", [])):
+		var block_state: Dictionary = block_variant
+		var block := _build_runtime_block_render_data(block_state)
+		if block.is_empty() or bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
+			continue
+		var max_hp := maxf(1.0, float(block.get("max_hp", 1.0)))
+		var health_ratio := float(block.get("current_hp", max_hp)) / max_hp
+		if health_ratio >= worst_ratio:
+			continue
+		worst_ratio = health_ratio
+		worst_block = block.duplicate(true)
+	return worst_block
+
+func _request_station_if_needed(station_id: String, input_state: Dictionary, delta: float = 0.0) -> void:
+	if not _get_claimable_station_ids().has(station_id):
+		return
 	if station_request_cooldown > 0.0:
 		return
-	if NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == station_id:
+	var current_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
+	if current_station_id == station_id:
+		return
+	if not current_station_id.is_empty() and _station_anchors_avatar(current_station_id):
+		input_state["claim_station"] = "__release__"
+		station_request_cooldown = 0.15
+		return
+	if not _is_local_near_station(station_id):
+		if delta > 0.0:
+			_scripted_move_local_avatar_toward(NetworkRuntime.get_station_position(station_id), delta)
 		return
 
 	var station_data: Dictionary = NetworkRuntime.station_state.get(station_id, {})
@@ -2465,21 +2570,24 @@ func _initialize_autopilot() -> void:
 	autopilot_remaining_seconds = float(int(launch_overrides.get("autodrive_ms", 0))) / 1000.0
 	var autorun_role := str(launch_overrides.get("autorun_role", ""))
 	if not autorun_role.is_empty():
-		_select_station(autorun_role if autorun_role != "driver" else "helm")
+		if autorun_role == "driver":
+			_select_station("helm")
+		elif _get_claimable_station_ids().has(autorun_role):
+			_select_station(autorun_role)
 	elif bool(launch_overrides.get("autorun_demo", false)):
 		_select_station("helm")
-	elif not str(launch_overrides.get("autoclaim_station", "")).is_empty():
+	elif _get_claimable_station_ids().has(str(launch_overrides.get("autoclaim_station", ""))):
 		_select_station(str(launch_overrides.get("autoclaim_station", "")))
 
 func _ensure_selected_station_valid() -> void:
-	var station_ids := NetworkRuntime.get_station_ids()
+	var station_ids := _get_claimable_station_ids()
 	if station_ids.is_empty():
 		selected_station_index = 0
 		return
 	selected_station_index = wrapi(selected_station_index, 0, station_ids.size())
 
 func _cycle_selected_station(direction: int) -> void:
-	var station_ids := NetworkRuntime.get_station_ids()
+	var station_ids := _get_claimable_station_ids()
 	if station_ids.is_empty():
 		return
 	selected_station_index = wrapi(selected_station_index + direction, 0, station_ids.size())
@@ -2487,14 +2595,14 @@ func _cycle_selected_station(direction: int) -> void:
 	_refresh_hud()
 
 func _get_selected_station_id() -> String:
-	var station_ids := NetworkRuntime.get_station_ids()
+	var station_ids := _get_claimable_station_ids()
 	if station_ids.is_empty():
 		return ""
 	selected_station_index = wrapi(selected_station_index, 0, station_ids.size())
 	return str(station_ids[selected_station_index])
 
 func _select_station(station_id: String) -> void:
-	var station_ids := NetworkRuntime.get_station_ids()
+	var station_ids := _get_claimable_station_ids()
 	var station_index := station_ids.find(station_id)
 	if station_index == -1:
 		return
@@ -2670,7 +2778,7 @@ func _build_objective_text() -> String:
 			return "Objective: Bring the boat into the wreck ring."
 		if boat_speed > float(NetworkRuntime.run_state.get("salvage_max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)):
 			return "Objective: Hold below salvage speed."
-		return "Objective: Brace and recover the remaining wreck loot."
+		return "Objective: Brace anywhere on deck and let the grappler recover the remaining wreck loot."
 
 	if rescue_available:
 		if boat_position.distance_to(rescue_position) > rescue_radius:
@@ -2704,13 +2812,17 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 		var selected_label := "a station"
 		if not selected_station_id.is_empty():
 			selected_label = NetworkRuntime.get_station_label(selected_station_id)
-		return "Onboarding: Mouse aim drives the camera. Walk the deck, then use Q/E and F to take %s." % selected_label
+		return "Onboarding: Mouse aim drives the camera. Walk the deck, then use Q/E and F to take %s. Space works anywhere." % selected_label
 
 	if _boat_inside_any_squall():
 		return "Onboarding: Squalls drag the boat and fire surge pulses. Keep speed under control and brace through the slam."
 
 	if int(NetworkRuntime.run_state.get("loot_remaining", 0)) > 0:
-		return "Onboarding: Get inside the wreck ring, slow down, then brace before the grappler pulls."
+		return "Onboarding: Get inside the wreck ring, slow down, brace from anywhere, and keep the grappler safe."
+
+	var repair_target := _find_local_repair_target()
+	if not repair_target.is_empty():
+		return "Onboarding: You are close enough to patch the damaged hull here. Press R if the kit spend is worth it."
 
 	if bool(NetworkRuntime.run_state.get("rescue_available", false)):
 		return "Onboarding: Distress rescues are optional. Hold inside the ring long enough to secure the bonus."
@@ -2721,4 +2833,4 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 	if int(NetworkRuntime.run_state.get("cargo_count", 0)) > 0:
 		return "Onboarding: Everything aboard is lost if the boat sinks before extraction. Cash out once risk climbs."
 
-	return "Onboarding: Claim stations and get the shared boat moving."
+	return "Onboarding: Stay near the helm to steer, or roam the deck and support the crew where it hurts."
