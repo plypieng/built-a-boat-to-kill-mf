@@ -1,0 +1,54 @@
+{
+  "asset_set": "builtaboat-hud-icons-v1",
+  "style": "vector",
+  "visual_direction": "nautical expedition board, salvage manifest, dock hardware, readable at a glance",
+  "canvas": {
+    "size": 1024,
+    "background": "transparent"
+  },
+  "palette": {
+    "storm_blue": "#183642",
+    "chart_cream": "#EFE3C2",
+    "oxidized_teal": "#3E6F73",
+    "sea_glass_green": "#73BDA8",
+    "buoy_orange": "#D98F3D",
+    "flare_red_rust": "#A84E39"
+  },
+  "composition_rules": [
+    "single centered icon",
+    "strong silhouette",
+    "thick readable outline",
+    "minimal shading",
+    "limited 6-color palette",
+    "no text",
+    "no scene background",
+    "transparent outside the icon"
+  ],
+  "tone": [
+    "practical",
+    "weathered",
+    "salvage-focused",
+    "readable under pressure"
+  ],
+  "avoid": [
+    "photorealism",
+    "3d render look",
+    "thin linework",
+    "tiny detail noise",
+    "mockup presentation",
+    "drop shadows outside silhouette",
+    "gradients that muddy silhouette"
+  ],
+  "targets": [
+    "helm",
+    "brace",
+    "repair-kit",
+    "cargo",
+    "salvage",
+    "gold",
+    "extraction",
+    "reinforced-hull",
+    "twin-engine",
+    "stabilizer"
+  ]
+}

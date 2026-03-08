@@ -1,0 +1,63 @@
+[gd_scene load_steps=1 format=3]
+
+[node name="RunResultOverlay" type="CanvasLayer"]
+visible = false
+
+[node name="Dimmer" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.03, 0.08, 0.14, 0.66)
+
+[node name="Center" type="CenterContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="ResultPanel" type="PanelContainer" parent="Center"]
+custom_minimum_size = Vector2(420, 0)
+layout_mode = 2
+
+[node name="Inner" type="MarginContainer" parent="Center/ResultPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 24
+theme_override_constants/margin_top = 24
+theme_override_constants/margin_right = 24
+theme_override_constants/margin_bottom = 24
+
+[node name="Layout" type="VBoxContainer" parent="Center/ResultPanel/Inner"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HeadingRow" type="HBoxContainer" parent="Center/ResultPanel/Inner/Layout"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 10
+
+[node name="ResultPanelIcon" type="TextureRect" parent="Center/ResultPanel/Inner/Layout/HeadingRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(30, 30)
+
+[node name="ResultTitleLabel" type="Label" parent="Center/ResultPanel/Inner/Layout/HeadingRow"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 26
+vertical_alignment = 1
+
+[node name="ResultBodyLabel" type="Label" parent="Center/ResultPanel/Inner/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="ResultContinueButton" type="Button" parent="Center/ResultPanel/Inner/Layout"]
+layout_mode = 2
+text = "Continue To Hangar"
+
+[node name="HintLabel" type="Label" parent="Center/ResultPanel/Inner/Layout"]
+layout_mode = 2
+text = "Press Enter to bank the result and return to the hangar."
+autowrap_mode = 3

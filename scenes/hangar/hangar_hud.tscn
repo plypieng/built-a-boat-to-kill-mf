@@ -1,0 +1,257 @@
+[gd_scene load_steps=1 format=3]
+
+[node name="HangarHUD" type="CanvasLayer"]
+
+[node name="LeftPanel" type="PanelContainer" parent="."]
+offset_left = 18.0
+offset_top = 18.0
+offset_right = 398.0
+offset_bottom = 342.0
+
+[node name="Margin" type="MarginContainer" parent="LeftPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 12
+
+[node name="Layout" type="VBoxContainer" parent="LeftPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="LeftPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "Shared Boat Hangar"
+
+[node name="OnboardingLabel" type="Label" parent="LeftPanel/Margin/Layout"]
+layout_mode = 2
+modulate = Color(0.86, 0.95, 1, 1)
+autowrap_mode = 3
+
+[node name="SelectionHeader" type="HBoxContainer" parent="LeftPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="SelectionIcon" type="TextureRect" parent="LeftPanel/Margin/Layout/SelectionHeader"]
+layout_mode = 2
+custom_minimum_size = Vector2(26, 26)
+
+[node name="SelectionHeading" type="Label" parent="LeftPanel/Margin/Layout/SelectionHeader"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Selected Part"
+vertical_alignment = 1
+
+[node name="SelectionLabel" type="Label" parent="LeftPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="TargetLabel" type="Label" parent="LeftPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="LaunchReadinessHeader" type="HBoxContainer" parent="LeftPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="LaunchReadinessIcon" type="TextureRect" parent="LeftPanel/Margin/Layout/LaunchReadinessHeader"]
+layout_mode = 2
+custom_minimum_size = Vector2(26, 26)
+
+[node name="LaunchReadinessHeading" type="Label" parent="LeftPanel/Margin/Layout/LaunchReadinessHeader"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Launch Readiness"
+vertical_alignment = 1
+
+[node name="LaunchReadinessLabel" type="Label" parent="LeftPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="StatusLabel" type="Label" parent="LeftPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="Actions" type="HBoxContainer" parent="LeftPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="LaunchButton" type="Button" parent="LeftPanel/Margin/Layout/Actions"]
+layout_mode = 2
+text = "Launch Run"
+
+[node name="ReturnToConnectButton" type="Button" parent="LeftPanel/Margin/Layout/Actions"]
+layout_mode = 2
+text = "Return To Connect"
+
+[node name="QuitButton" type="Button" parent="LeftPanel/Margin/Layout/Actions"]
+layout_mode = 2
+text = "Quit"
+
+[node name="RightPanel" type="PanelContainer" parent="."]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -328.0
+offset_top = 18.0
+offset_right = -18.0
+offset_bottom = 250.0
+
+[node name="Margin" type="MarginContainer" parent="RightPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 12
+
+[node name="Layout" type="VBoxContainer" parent="RightPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="ProfileHeader" type="HBoxContainer" parent="RightPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ProfileIcon" type="TextureRect" parent="RightPanel/Margin/Layout/ProfileHeader"]
+layout_mode = 2
+custom_minimum_size = Vector2(26, 26)
+
+[node name="ProfileHeading" type="Label" parent="RightPanel/Margin/Layout/ProfileHeader"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Dock Totals"
+vertical_alignment = 1
+
+[node name="ProfileLabel" type="Label" parent="RightPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="StoreHeader" type="HBoxContainer" parent="RightPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="StoreIcon" type="TextureRect" parent="RightPanel/Margin/Layout/StoreHeader"]
+layout_mode = 2
+custom_minimum_size = Vector2(26, 26)
+
+[node name="StoreHeading" type="Label" parent="RightPanel/Margin/Layout/StoreHeader"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Unlock Yard"
+vertical_alignment = 1
+
+[node name="StoreLabel" type="Label" parent="RightPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="UnlockButton" type="Button" parent="RightPanel/Margin/Layout"]
+layout_mode = 2
+text = "Unlock Part"
+
+[node name="DetailToggleButton" type="Button" parent="RightPanel/Margin/Layout"]
+layout_mode = 2
+text = "Show Details"
+
+[node name="BottomLeftPanel" type="PanelContainer" parent="."]
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 18.0
+offset_top = -142.0
+offset_right = 454.0
+offset_bottom = -18.0
+
+[node name="Margin" type="MarginContainer" parent="BottomLeftPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 12
+
+[node name="Layout" type="VBoxContainer" parent="BottomLeftPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="RosterLabel" type="Label" parent="BottomLeftPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="ControlsLabel" type="Label" parent="BottomLeftPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="DetailPanel" type="PanelContainer" parent="."]
+visible = false
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -430.0
+offset_top = -266.0
+offset_right = -18.0
+offset_bottom = -18.0
+
+[node name="Margin" type="MarginContainer" parent="DetailPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 12
+
+[node name="Layout" type="VBoxContainer" parent="DetailPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="BuilderHeader" type="HBoxContainer" parent="DetailPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="BuilderIcon" type="TextureRect" parent="DetailPanel/Margin/Layout/BuilderHeader"]
+layout_mode = 2
+custom_minimum_size = Vector2(26, 26)
+
+[node name="BuilderHeading" type="Label" parent="DetailPanel/Margin/Layout/BuilderHeader"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Boat Snapshot"
+vertical_alignment = 1
+
+[node name="BuilderLabel" type="Label" parent="DetailPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="WarningLabel" type="Label" parent="DetailPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="LastRunHeader" type="HBoxContainer" parent="DetailPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="LastRunIcon" type="TextureRect" parent="DetailPanel/Margin/Layout/LastRunHeader"]
+layout_mode = 2
+custom_minimum_size = Vector2(26, 26)
+
+[node name="LastRunHeading" type="Label" parent="DetailPanel/Margin/Layout/LastRunHeader"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Last Run"
+vertical_alignment = 1
+
+[node name="LastRunLabel" type="Label" parent="DetailPanel/Margin/Layout"]
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="CrosshairLabel" type="Label" parent="."]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -12.0
+offset_top = -18.0
+offset_right = 12.0
+offset_bottom = 18.0
+theme_override_font_sizes/font_size = 28
+modulate = Color(0.98, 0.97, 0.92, 0.92)
+text = "+"
+horizontal_alignment = 1
+vertical_alignment = 1

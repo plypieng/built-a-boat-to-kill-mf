@@ -1,0 +1,217 @@
+[gd_scene load_steps=1 format=3]
+
+[node name="RunHUD" type="CanvasLayer"]
+
+[node name="ObjectivePanel" type="PanelContainer" parent="."]
+anchor_right = 1.0
+offset_left = 360.0
+offset_top = 18.0
+offset_right = -360.0
+offset_bottom = 96.0
+
+[node name="Margin" type="MarginContainer" parent="ObjectivePanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 18
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 18
+theme_override_constants/margin_bottom = 12
+
+[node name="Layout" type="VBoxContainer" parent="ObjectivePanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="HeadingRow" type="HBoxContainer" parent="ObjectivePanel/Margin/Layout"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 8
+
+[node name="ObjectiveIcon" type="TextureRect" parent="ObjectivePanel/Margin/Layout/HeadingRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(22, 22)
+
+[node name="ObjectiveHeading" type="Label" parent="ObjectivePanel/Margin/Layout/HeadingRow"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "CURRENT ORDER"
+vertical_alignment = 1
+
+[node name="ObjectiveLabel" type="Label" parent="ObjectivePanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+autowrap_mode = 3
+horizontal_alignment = 1
+
+[node name="ExtractionPanel" type="PanelContainer" parent="."]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -326.0
+offset_top = 132.0
+offset_right = -18.0
+offset_bottom = 276.0
+
+[node name="Margin" type="MarginContainer" parent="ExtractionPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 12
+
+[node name="Layout" type="VBoxContainer" parent="ExtractionPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Header" type="HBoxContainer" parent="ExtractionPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ExtractionPanelIcon" type="TextureRect" parent="ExtractionPanel/Margin/Layout/Header"]
+layout_mode = 2
+custom_minimum_size = Vector2(26, 26)
+
+[node name="ExtractionHeading" type="Label" parent="ExtractionPanel/Margin/Layout/Header"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "EXTRACTION BOARD"
+vertical_alignment = 1
+
+[node name="ResourceLabel" type="Label" parent="ExtractionPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+autowrap_mode = 3
+
+[node name="RunLabel" type="Label" parent="ExtractionPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+autowrap_mode = 3
+
+[node name="CrewPanel" type="PanelContainer" parent="."]
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 18.0
+offset_top = -182.0
+offset_right = 406.0
+offset_bottom = -18.0
+
+[node name="Margin" type="MarginContainer" parent="CrewPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 12
+
+[node name="Layout" type="VBoxContainer" parent="CrewPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Header" type="HBoxContainer" parent="CrewPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="CrewPanelIcon" type="TextureRect" parent="CrewPanel/Margin/Layout/Header"]
+layout_mode = 2
+custom_minimum_size = Vector2(26, 26)
+
+[node name="CrewHeading" type="Label" parent="CrewPanel/Margin/Layout/Header"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "CREW DECK"
+vertical_alignment = 1
+
+[node name="StationLabel" type="Label" parent="CrewPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+autowrap_mode = 3
+
+[node name="RosterLabel" type="Label" parent="CrewPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 3
+
+[node name="OnboardingLabel" type="Label" parent="CrewPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 3
+
+[node name="FooterLabel" type="Label" parent="CrewPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "Mouse aim | Q/E helm/grapple | F claim | W A S D helm | Space brace anywhere | G grapple | R patch nearby hull"
+autowrap_mode = 3
+
+[node name="SurvivalPanel" type="PanelContainer" parent="."]
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -384.0
+offset_top = -208.0
+offset_right = -18.0
+offset_bottom = -18.0
+
+[node name="Margin" type="MarginContainer" parent="SurvivalPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 12
+
+[node name="Layout" type="VBoxContainer" parent="SurvivalPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Header" type="HBoxContainer" parent="SurvivalPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="SurvivalPanelIcon" type="TextureRect" parent="SurvivalPanel/Margin/Layout/Header"]
+layout_mode = 2
+custom_minimum_size = Vector2(26, 26)
+
+[node name="SurvivalHeading" type="Label" parent="SurvivalPanel/Margin/Layout/Header"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "BOAT PLATE"
+vertical_alignment = 1
+
+[node name="BoatLabel" type="Label" parent="SurvivalPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+autowrap_mode = 3
+
+[node name="InteractionLabel" type="Label" parent="SurvivalPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 3
+
+[node name="StatusLabel" type="Label" parent="SurvivalPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+autowrap_mode = 3
+
+[node name="CrosshairLabel" type="Label" parent="."]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -10.0
+offset_top = -16.0
+offset_right = 10.0
+offset_bottom = 16.0
+theme_override_font_sizes/font_size = 26
+modulate = Color(0.98, 0.97, 0.92, 0.9)
+text = "+"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="EventCalloutLabel" type="Label" parent="."]
+visible = false
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -260.0
+offset_top = 136.0
+offset_right = 260.0
+offset_bottom = 196.0
+theme_override_font_sizes/font_size = 24
+autowrap_mode = 3
+horizontal_alignment = 1
+vertical_alignment = 1

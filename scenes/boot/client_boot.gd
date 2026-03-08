@@ -5,14 +5,15 @@ const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HOST_CONNECT_RETRY_DELAY := 0.8
 const MAX_HOST_CONNECT_RETRIES := 8
 
-var host_input: LineEdit
-var port_input: LineEdit
-var name_input: LineEdit
-var host_button: Button
-var connect_button: Button
-var status_label: Label
-var instructions_label: Label
-var share_label: Label
+@onready var host_input: LineEdit = $Center/Panel/Margin/Layout/FieldsGrid/HostInput
+@onready var port_input: LineEdit = $Center/Panel/Margin/Layout/FieldsGrid/PortInput
+@onready var name_input: LineEdit = $Center/Panel/Margin/Layout/FieldsGrid/NameInput
+@onready var host_button: Button = $Center/Panel/Margin/Layout/ButtonRow/HostButton
+@onready var connect_button: Button = $Center/Panel/Margin/Layout/ButtonRow/ConnectButton
+@onready var status_label: Label = $Center/Panel/Margin/Layout/StatusLabel
+@onready var instructions_label: Label = $Center/Panel/Margin/Layout/InstructionsLabel
+@onready var share_label: Label = $Center/Panel/Margin/Layout/ShareLabel
+
 var launch_overrides: Dictionary = {}
 var host_start_in_progress := false
 var host_retry_pending := false
@@ -22,7 +23,11 @@ var hosted_lan_ip := "127.0.0.1"
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
-	_build_ui()
+	host_input.text_changed.connect(_on_connect_fields_changed)
+	port_input.text_changed.connect(_on_connect_fields_changed)
+	name_input.text_changed.connect(_on_connect_fields_changed)
+	host_button.pressed.connect(_on_host_pressed)
+	connect_button.pressed.connect(_on_connect_pressed)
 	_populate_defaults()
 
 	NetworkRuntime.status_changed.connect(_on_status_changed)
@@ -35,92 +40,6 @@ func _ready() -> void:
 	elif bool(launch_overrides.get("autoconnect", false)):
 		call_deferred("_on_connect_pressed")
 
-func _build_ui() -> void:
-	var background := ColorRect.new()
-	background.color = Color(0.05, 0.14, 0.24)
-	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	add_child(background)
-
-	var center := CenterContainer.new()
-	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	add_child(center)
-
-	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(620, 0)
-	center.add_child(panel)
-
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 28)
-	margin.add_theme_constant_override("margin_top", 28)
-	margin.add_theme_constant_override("margin_right", 28)
-	margin.add_theme_constant_override("margin_bottom", 28)
-	panel.add_child(margin)
-
-	var layout := VBoxContainer.new()
-	layout.add_theme_constant_override("separation", 14)
-	margin.add_child(layout)
-
-	var title := Label.new()
-	title.text = "BuiltaBoat"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 28)
-	layout.add_child(title)
-
-	var subtitle := Label.new()
-	subtitle.text = "Host or join an authoritative server, co-build the crew boat, and push for extraction before the sea takes everything."
-	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(subtitle)
-
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 12)
-	grid.add_theme_constant_override("v_separation", 10)
-	layout.add_child(grid)
-
-	grid.add_child(_make_field_label("Server IP"))
-	host_input = LineEdit.new()
-	host_input.text_changed.connect(_on_connect_fields_changed)
-	grid.add_child(host_input)
-
-	grid.add_child(_make_field_label("Port"))
-	port_input = LineEdit.new()
-	port_input.text_changed.connect(_on_connect_fields_changed)
-	grid.add_child(port_input)
-
-	grid.add_child(_make_field_label("Player Name"))
-	name_input = LineEdit.new()
-	name_input.text_changed.connect(_on_connect_fields_changed)
-	grid.add_child(name_input)
-
-	var button_row := HBoxContainer.new()
-	button_row.add_theme_constant_override("separation", 10)
-	layout.add_child(button_row)
-
-	host_button = Button.new()
-	host_button.text = "Host Game"
-	host_button.pressed.connect(_on_host_pressed)
-	button_row.add_child(host_button)
-
-	connect_button = Button.new()
-	connect_button.text = "Join By IP"
-	connect_button.pressed.connect(_on_connect_pressed)
-	button_row.add_child(connect_button)
-
-	instructions_label = Label.new()
-	instructions_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(instructions_label)
-
-	share_label = Label.new()
-	share_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	share_label.modulate = Color(0.85, 0.94, 1.0)
-	layout.add_child(share_label)
-
-	status_label = Label.new()
-	status_label.text = "Offline"
-	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	layout.add_child(status_label)
-
 func _populate_defaults() -> void:
 	host_input.text = str(launch_overrides.get("host", GameConfig.DEFAULT_HOST))
 	port_input.text = str(launch_overrides.get("port", GameConfig.DEFAULT_PORT))
@@ -129,12 +48,6 @@ func _populate_defaults() -> void:
 	_refresh_host_help()
 	_refresh_buttons()
 	status_label.text = "Choose Host Game to launch a local authoritative server, or Join By IP to connect to a friend."
-
-func _make_field_label(text: String) -> Label:
-	var label := Label.new()
-	label.text = text
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	return label
 
 func _on_connect_fields_changed(_value: String) -> void:
 	_refresh_host_help()

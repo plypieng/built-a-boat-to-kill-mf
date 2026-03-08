@@ -1,7 +1,79 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=11 format=3]
 
 [ext_resource type="Script" path="res://scenes/run_client/run_client.gd" id="1"]
+[ext_resource type="PackedScene" path="res://scenes/run_client/run_environment.tscn" id="2_env"]
+[ext_resource type="PackedScene" path="res://scenes/run_client/run_hud.tscn" id="3_hud"]
+[ext_resource type="PackedScene" path="res://scenes/run_client/run_result_overlay.tscn" id="4_overlay"]
+
+[sub_resource type="BoxMesh" id="hull_mesh"]
+size = Vector3(3.3, 0.72, 6.2)
+
+[sub_resource type="StandardMaterial3D" id="hull_material"]
+albedo_color = Color(0.44, 0.27, 0.16, 1)
+roughness = 0.46
+
+[sub_resource type="BoxMesh" id="deck_mesh"]
+size = Vector3(2.7, 0.14, 4.6)
+
+[sub_resource type="StandardMaterial3D" id="deck_material"]
+albedo_color = Color(0.7, 0.56, 0.34, 1)
+
+[sub_resource type="CylinderMesh" id="mast_mesh"]
+height = 3.0
+top_radius = 0.12
+bottom_radius = 0.12
+
+[sub_resource type="StandardMaterial3D" id="mast_material"]
+albedo_color = Color(0.82, 0.79, 0.72, 1)
 
 [node name="RunClient" type="Node3D"]
 script = ExtResource("1")
 
+[node name="Environment" parent="." instance=ExtResource("2_env")]
+
+[node name="HUD" parent="." instance=ExtResource("3_hud")]
+
+[node name="ResultOverlay" parent="." instance=ExtResource("4_overlay")]
+
+[node name="HazardContainer" type="Node3D" parent="."]
+
+[node name="SquallContainer" type="Node3D" parent="."]
+
+[node name="LootContainer" type="Node3D" parent="."]
+
+[node name="WreckRoot" type="Node3D" parent="."]
+
+[node name="RescueRoot" type="Node3D" parent="."]
+
+[node name="CacheRoot" type="Node3D" parent="."]
+
+[node name="ExtractionRoot" type="Node3D" parent="."]
+
+[node name="SinkingChunkContainer" type="Node3D" parent="."]
+
+[node name="BoatRoot" type="Node3D" parent="."]
+
+[node name="MainBlockContainer" type="Node3D" parent="BoatRoot"]
+
+[node name="HullMesh" type="MeshInstance3D" parent="BoatRoot"]
+mesh = SubResource("hull_mesh")
+material_override = SubResource("hull_material")
+position = Vector3(0, 0.35, 0)
+
+[node name="DeckMesh" type="MeshInstance3D" parent="BoatRoot"]
+mesh = SubResource("deck_mesh")
+material_override = SubResource("deck_material")
+position = Vector3(0, 0.78, 0)
+
+[node name="MastMesh" type="MeshInstance3D" parent="BoatRoot"]
+mesh = SubResource("mast_mesh")
+material_override = SubResource("mast_material")
+position = Vector3(0, 2, -0.2)
+
+[node name="StationContainer" type="Node3D" parent="BoatRoot"]
+
+[node name="CrewContainer" type="Node3D" parent="BoatRoot"]
+
+[node name="RunCamera" type="Camera3D" parent="."]
+position = Vector3(0, 5.5, 10.5)
+current = true

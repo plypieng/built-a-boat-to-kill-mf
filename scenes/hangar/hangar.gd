@@ -2,6 +2,7 @@ extends Node3D
 
 const CLIENT_BOOT_SCENE := "res://scenes/boot/client_boot.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
+const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const BLOCK_CELL_SIZE := 1.25
 const CURSOR_OK_COLOR := Color(0.34, 0.82, 0.58, 0.55)
 const CURSOR_OCCUPIED_COLOR := Color(0.92, 0.57, 0.22, 0.58)
@@ -19,14 +20,21 @@ const HANGAR_MOVE_SPEED := 6.2
 const HANGAR_ACCELERATION := 20.0
 const HANGAR_AIR_ACCELERATION := 10.0
 const HANGAR_JUMP_VELOCITY := 6.2
-const HANGAR_CAMERA_HEIGHT := 2.45
-const HANGAR_CAMERA_DISTANCE := 6.4
-const HANGAR_CAMERA_SIDE_OFFSET := 0.9
-const HANGAR_CAMERA_LOOK_HEIGHT := 1.38
-const HANGAR_CAMERA_LOOK_AHEAD := 1.9
-const HANGAR_CAMERA_LAG := 8.2
 const HANGAR_AVATAR_SYNC_INTERVAL := 0.05
 const HANGAR_AVATAR_NAME_HEIGHT := 1.4
+
+@export_group("Chase Camera")
+@export_range(-4.0, 4.0, 0.05) var chase_camera_side_offset := 0.9
+@export_range(0.5, 6.0, 0.05) var chase_camera_height := 2.45
+@export_range(1.0, 14.0, 0.05) var chase_camera_distance := 6.4
+@export_range(0.5, 4.0, 0.05) var chase_camera_look_height := 1.38
+@export_range(0.0, 6.0, 0.05) var chase_camera_look_ahead := 1.9
+@export_range(0.1, 20.0, 0.1) var chase_camera_lag := 8.2
+@export_group("Look Control")
+@export_range(0.0005, 0.02, 0.0005) var mouse_look_sensitivity := 0.0035
+@export_range(-80.0, 80.0, 0.5) var chase_camera_pitch_min_degrees := -58.0
+@export_range(-80.0, 80.0, 0.5) var chase_camera_pitch_max_degrees := 44.0
+@export_range(-45.0, 45.0, 0.5) var chase_camera_pitch_default_degrees := -12.0
 
 var launch_overrides: Dictionary = {}
 var connect_time_seconds := 0.0
@@ -59,6 +67,7 @@ var camera: Camera3D
 var local_avatar_body: CharacterBody3D
 var remote_avatar_visuals: Dictionary = {}
 var local_avatar_facing_y := PI
+var local_camera_pitch := 0.0
 var avatar_sync_timer := 0.0
 var selected_block_index := 0
 var selected_rotation_steps := 0
@@ -79,11 +88,20 @@ var local_camera_jolt := Vector3.ZERO
 var last_local_reaction_id := 0
 var selected_store_index := 0
 var hud_details_visible := false
+var hud_icons := HudIconLibrary.new()
+var selection_icon: TextureRect
+var launch_readiness_icon: TextureRect
+var profile_icon: TextureRect
+var store_icon: TextureRect
+var builder_icon: TextureRect
+var last_run_icon: TextureRect
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
+	local_camera_pitch = deg_to_rad(chase_camera_pitch_default_degrees)
 	_build_world()
 	_build_hud()
+	_set_mouse_capture(true)
 	_refresh_all()
 	_schedule_frame_capture()
 	_schedule_optional_quit()
@@ -99,6 +117,7 @@ func _ready() -> void:
 	DockState.profile_changed.connect(_on_profile_changed)
 	reaction_visual_state = NetworkRuntime.get_reaction_state()
 	if NetworkRuntime.get_session_phase() == NetworkRuntime.SESSION_PHASE_RUN:
+		_set_mouse_capture(false)
 		get_tree().call_deferred("change_scene_to_file", RUN_CLIENT_SCENE)
 		return
 	print("Hangar builder ready: version=%d blocks=%d phase=%s" % [
@@ -123,6 +142,20 @@ func _physics_process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
+	if event is InputEventMouseMotion and _is_mouse_captured():
+		var motion_event := event as InputEventMouseMotion
+		local_avatar_facing_y -= motion_event.relative.x * mouse_look_sensitivity
+		local_camera_pitch = clampf(
+			local_camera_pitch - motion_event.relative.y * mouse_look_sensitivity,
+			deg_to_rad(chase_camera_pitch_min_degrees),
+			deg_to_rad(chase_camera_pitch_max_degrees)
+		)
+		return
+	if event is InputEventMouseButton:
+		var button_event := event as InputEventMouseButton
+		if button_event.pressed and button_event.button_index == MOUSE_BUTTON_LEFT and not _is_mouse_captured():
+			_set_mouse_capture(true)
+			return
 	if not (event is InputEventKey):
 		return
 
@@ -152,23 +185,101 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_ENTER, KEY_KP_ENTER:
 			_launch_run()
 		KEY_ESCAPE:
-			_return_to_connect()
+			if _is_mouse_captured():
+				_set_mouse_capture(false)
+			else:
+				_return_to_connect()
 
 func _build_world() -> void:
+	_ensure_world_environment()
+
+	dock_body = get_node_or_null("Environment/DockBody") as StaticBody3D
+	if dock_body == null:
+		_build_static_world_fallback()
+	if dock_body != null:
+		dock_body.set_meta("builder_surface", "dock")
+
+	boat_root = get_node_or_null("BoatRoot") as Node3D
+	if boat_root == null:
+		boat_root = Node3D.new()
+		boat_root.name = "BoatRoot"
+		boat_root.position = Vector3(0.0, 0.1, 0.0)
+		add_child(boat_root)
+
+	block_container = get_node_or_null("BoatRoot/BlockContainer") as Node3D
+	if block_container == null:
+		block_container = Node3D.new()
+		block_container.name = "BlockContainer"
+		boat_root.add_child(block_container)
+
+	avatar_container = get_node_or_null("AvatarContainer") as Node3D
+	if avatar_container == null:
+		avatar_container = Node3D.new()
+		avatar_container.name = "AvatarContainer"
+		add_child(avatar_container)
+	_build_local_avatar()
+
+	cursor_root = get_node_or_null("BoatRoot/CursorRoot") as Node3D
+	if cursor_root == null:
+		cursor_root = Node3D.new()
+		cursor_root.name = "CursorRoot"
+		boat_root.add_child(cursor_root)
+	_build_cursor_visual()
+	_build_build_volume()
+
+	camera = get_node_or_null("HangarCamera") as Camera3D
+	if camera == null:
+		camera = Camera3D.new()
+		camera.name = "HangarCamera"
+		add_child(camera)
+	camera.position = Vector3(0.0, chase_camera_height + 2.0, chase_camera_distance)
+	camera.current = true
+	camera.make_current()
+	camera.look_at(Vector3(0.0, 1.4, 0.0), Vector3.UP)
+
+func _supports_mouse_capture() -> bool:
+	return DisplayServer.get_name() != "headless"
+
+func _is_mouse_captured() -> bool:
+	return _supports_mouse_capture() and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
+
+func _set_mouse_capture(captured: bool) -> void:
+	if not _supports_mouse_capture():
+		return
+	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED if captured else Input.MOUSE_MODE_VISIBLE)
+
+func _ensure_world_environment() -> void:
+	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
+	if world_environment == null:
+		world_environment = get_node_or_null("WorldEnvironment") as WorldEnvironment
+	if world_environment != null:
+		return
+	world_environment = WorldEnvironment.new()
+	world_environment.name = "WorldEnvironment"
+	world_environment.environment = _make_default_environment_resource()
+	add_child(world_environment)
+
+func _make_default_environment_resource() -> Environment:
 	var environment := Environment.new()
 	environment.background_mode = Environment.BG_COLOR
 	environment.background_color = Color(0.58, 0.72, 0.84)
+	return environment
 
-	var world_environment := WorldEnvironment.new()
-	world_environment.environment = environment
-	add_child(world_environment)
+func _build_static_world_fallback() -> void:
+	var fallback_root := get_node_or_null("EnvironmentFallback") as Node3D
+	if fallback_root == null:
+		fallback_root = Node3D.new()
+		fallback_root.name = "EnvironmentFallback"
+		add_child(fallback_root)
 
 	var light := DirectionalLight3D.new()
+	light.name = "SunLight"
 	light.light_energy = 1.18
 	light.rotation_degrees = Vector3(-42.0, 32.0, 0.0)
-	add_child(light)
+	fallback_root.add_child(light)
 
 	var dock := MeshInstance3D.new()
+	dock.name = "DockVisual"
 	var dock_mesh := BoxMesh.new()
 	dock_mesh.size = Vector3(24.0, 0.6, 30.0)
 	dock.mesh = dock_mesh
@@ -177,19 +288,20 @@ func _build_world() -> void:
 	dock_material.albedo_color = Color(0.65, 0.56, 0.42)
 	dock_material.roughness = 0.9
 	dock.material_override = dock_material
-	add_child(dock)
+	fallback_root.add_child(dock)
 
 	dock_body = StaticBody3D.new()
+	dock_body.name = "DockBody"
 	dock_body.position = dock.position
-	dock_body.set_meta("builder_surface", "dock")
 	var dock_collider := CollisionShape3D.new()
 	var dock_shape := BoxShape3D.new()
 	dock_shape.size = dock_mesh.size
 	dock_collider.shape = dock_shape
 	dock_body.add_child(dock_collider)
-	add_child(dock_body)
+	fallback_root.add_child(dock_body)
 
 	var water := MeshInstance3D.new()
+	water.name = "Water"
 	var water_mesh := PlaneMesh.new()
 	water_mesh.size = Vector2(180.0, 180.0)
 	water.mesh = water_mesh
@@ -198,34 +310,11 @@ func _build_world() -> void:
 	water_material.albedo_color = Color(0.09, 0.39, 0.57)
 	water_material.roughness = 0.18
 	water.material_override = water_material
-	add_child(water)
+	fallback_root.add_child(water)
 
-	_build_hangar_props()
+	_build_hangar_props(fallback_root)
 
-	boat_root = Node3D.new()
-	boat_root.position = Vector3(0.0, 0.1, 0.0)
-	add_child(boat_root)
-
-	block_container = Node3D.new()
-	boat_root.add_child(block_container)
-
-	avatar_container = Node3D.new()
-	add_child(avatar_container)
-	_build_local_avatar()
-
-	cursor_root = Node3D.new()
-	boat_root.add_child(cursor_root)
-	_build_cursor_visual()
-	_build_build_volume()
-
-	camera = Camera3D.new()
-	camera.position = Vector3(0.0, HANGAR_CAMERA_HEIGHT + 2.0, HANGAR_CAMERA_DISTANCE)
-	add_child(camera)
-	camera.current = true
-	camera.make_current()
-	camera.look_at(Vector3(0.0, 1.4, 0.0), Vector3.UP)
-
-func _build_hangar_props() -> void:
+func _build_hangar_props(parent: Node3D) -> void:
 	var bollard_positions := [
 		Vector3(-8.0, 0.12, 8.6),
 		Vector3(8.0, 0.12, 8.6),
@@ -244,7 +333,7 @@ func _build_hangar_props() -> void:
 		bollard_material.albedo_color = Color(0.18, 0.22, 0.27)
 		bollard_material.roughness = 0.9
 		bollard.material_override = bollard_material
-		add_child(bollard)
+		parent.add_child(bollard)
 
 	var crate_positions := [
 		Vector3(-6.2, 0.18, 4.6),
@@ -262,7 +351,7 @@ func _build_hangar_props() -> void:
 		crate_material.albedo_color = Color(0.74, 0.55, 0.31)
 		crate_material.roughness = 0.88
 		crate.material_override = crate_material
-		add_child(crate)
+		parent.add_child(crate)
 
 	var light_positions := [
 		Vector3(-4.6, 2.8, 8.1),
@@ -274,7 +363,7 @@ func _build_hangar_props() -> void:
 		lamp.light_energy = 0.85
 		lamp.light_color = Color(1.0, 0.88, 0.64)
 		lamp.omni_range = 12.0
-		add_child(lamp)
+		parent.add_child(lamp)
 
 func _build_local_avatar() -> void:
 	local_avatar_body = CharacterBody3D.new()
@@ -415,180 +504,53 @@ func _build_build_volume() -> void:
 	boat_root.add_child(frame)
 
 func _build_hud() -> void:
-	var layer := CanvasLayer.new()
-	add_child(layer)
+	var hud := get_node("HUD") as CanvasLayer
+	onboarding_label = hud.get_node("LeftPanel/Margin/Layout/OnboardingLabel") as Label
+	selection_icon = hud.get_node("LeftPanel/Margin/Layout/SelectionHeader/SelectionIcon") as TextureRect
+	selection_label = hud.get_node("LeftPanel/Margin/Layout/SelectionLabel") as Label
+	target_label = hud.get_node("LeftPanel/Margin/Layout/TargetLabel") as Label
+	launch_readiness_icon = hud.get_node("LeftPanel/Margin/Layout/LaunchReadinessHeader/LaunchReadinessIcon") as TextureRect
+	launch_readiness_label = hud.get_node("LeftPanel/Margin/Layout/LaunchReadinessLabel") as Label
+	status_label = hud.get_node("LeftPanel/Margin/Layout/StatusLabel") as Label
+	launch_button = hud.get_node("LeftPanel/Margin/Layout/Actions/LaunchButton") as Button
+	var reconnect_button := hud.get_node("LeftPanel/Margin/Layout/Actions/ReturnToConnectButton") as Button
+	var quit_button := hud.get_node("LeftPanel/Margin/Layout/Actions/QuitButton") as Button
+	profile_icon = hud.get_node("RightPanel/Margin/Layout/ProfileHeader/ProfileIcon") as TextureRect
+	profile_label = hud.get_node("RightPanel/Margin/Layout/ProfileLabel") as Label
+	store_icon = hud.get_node("RightPanel/Margin/Layout/StoreHeader/StoreIcon") as TextureRect
+	store_label = hud.get_node("RightPanel/Margin/Layout/StoreLabel") as Label
+	unlock_button = hud.get_node("RightPanel/Margin/Layout/UnlockButton") as Button
+	detail_toggle_button = hud.get_node("RightPanel/Margin/Layout/DetailToggleButton") as Button
+	roster_label = hud.get_node("BottomLeftPanel/Margin/Layout/RosterLabel") as Label
+	controls_label = hud.get_node("BottomLeftPanel/Margin/Layout/ControlsLabel") as Label
+	detail_panel = hud.get_node("DetailPanel") as PanelContainer
+	builder_icon = hud.get_node("DetailPanel/Margin/Layout/BuilderHeader/BuilderIcon") as TextureRect
+	builder_label = hud.get_node("DetailPanel/Margin/Layout/BuilderLabel") as Label
+	warning_label = hud.get_node("DetailPanel/Margin/Layout/WarningLabel") as Label
+	last_run_icon = hud.get_node("DetailPanel/Margin/Layout/LastRunHeader/LastRunIcon") as TextureRect
+	last_run_label = hud.get_node("DetailPanel/Margin/Layout/LastRunLabel") as Label
+	crosshair_label = hud.get_node("CrosshairLabel") as Label
 
-	var left_panel := PanelContainer.new()
-	left_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
-	left_panel.offset_left = 18.0
-	left_panel.offset_top = 18.0
-	left_panel.offset_right = 398.0
-	left_panel.offset_bottom = 342.0
-	layer.add_child(left_panel)
+	for icon in [
+		selection_icon,
+		launch_readiness_icon,
+		profile_icon,
+		store_icon,
+		builder_icon,
+		last_run_icon,
+	]:
+		hud_icons.configure_icon_rect(icon)
 
-	var left_margin := MarginContainer.new()
-	left_margin.add_theme_constant_override("margin_left", 14)
-	left_margin.add_theme_constant_override("margin_top", 12)
-	left_margin.add_theme_constant_override("margin_right", 14)
-	left_margin.add_theme_constant_override("margin_bottom", 12)
-	left_panel.add_child(left_margin)
-
-	var left_layout := VBoxContainer.new()
-	left_layout.add_theme_constant_override("separation", 6)
-	left_margin.add_child(left_layout)
-
-	var title := Label.new()
-	title.text = "Shared Boat Hangar"
-	title.add_theme_font_size_override("font_size", 22)
-	left_layout.add_child(title)
-
-	onboarding_label = Label.new()
-	onboarding_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	onboarding_label.modulate = Color(0.86, 0.95, 1.0)
-	left_layout.add_child(onboarding_label)
-
-	selection_label = Label.new()
-	selection_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	left_layout.add_child(selection_label)
-
-	target_label = Label.new()
-	target_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	left_layout.add_child(target_label)
-
-	launch_readiness_label = Label.new()
-	launch_readiness_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	left_layout.add_child(launch_readiness_label)
-
-	status_label = Label.new()
-	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	left_layout.add_child(status_label)
-
-	var actions := HBoxContainer.new()
-	actions.add_theme_constant_override("separation", 10)
-	left_layout.add_child(actions)
-
-	launch_button = Button.new()
-	launch_button.text = "Launch Run"
-	launch_button.pressed.connect(_launch_run)
-	actions.add_child(launch_button)
-
-	var reconnect_button := Button.new()
-	reconnect_button.text = "Return To Connect"
-	reconnect_button.pressed.connect(_return_to_connect)
-	actions.add_child(reconnect_button)
-
-	var quit_button := Button.new()
-	quit_button.text = "Quit"
-	quit_button.pressed.connect(_quit)
-	actions.add_child(quit_button)
-
-	var right_panel := PanelContainer.new()
-	right_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	right_panel.offset_left = -328.0
-	right_panel.offset_top = 18.0
-	right_panel.offset_right = -18.0
-	right_panel.offset_bottom = 250.0
-	layer.add_child(right_panel)
-
-	var right_margin := MarginContainer.new()
-	right_margin.add_theme_constant_override("margin_left", 14)
-	right_margin.add_theme_constant_override("margin_top", 12)
-	right_margin.add_theme_constant_override("margin_right", 14)
-	right_margin.add_theme_constant_override("margin_bottom", 12)
-	right_panel.add_child(right_margin)
-
-	var right_layout := VBoxContainer.new()
-	right_layout.add_theme_constant_override("separation", 6)
-	right_margin.add_child(right_layout)
-
-	profile_label = Label.new()
-	profile_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	right_layout.add_child(profile_label)
-
-	store_label = Label.new()
-	store_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	right_layout.add_child(store_label)
-
-	unlock_button = Button.new()
-	unlock_button.text = "Unlock Part"
-	unlock_button.pressed.connect(_purchase_selected_unlock)
-	right_layout.add_child(unlock_button)
-
-	detail_toggle_button = Button.new()
-	detail_toggle_button.text = "Show Details"
-	detail_toggle_button.pressed.connect(_toggle_hud_details)
-	right_layout.add_child(detail_toggle_button)
-
-	var bottom_left_panel := PanelContainer.new()
-	bottom_left_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
-	bottom_left_panel.offset_left = 18.0
-	bottom_left_panel.offset_top = -142.0
-	bottom_left_panel.offset_right = 454.0
-	bottom_left_panel.offset_bottom = -18.0
-	layer.add_child(bottom_left_panel)
-
-	var bottom_left_margin := MarginContainer.new()
-	bottom_left_margin.add_theme_constant_override("margin_left", 14)
-	bottom_left_margin.add_theme_constant_override("margin_top", 12)
-	bottom_left_margin.add_theme_constant_override("margin_right", 14)
-	bottom_left_margin.add_theme_constant_override("margin_bottom", 12)
-	bottom_left_panel.add_child(bottom_left_margin)
-
-	var bottom_left_layout := VBoxContainer.new()
-	bottom_left_layout.add_theme_constant_override("separation", 6)
-	bottom_left_margin.add_child(bottom_left_layout)
-
-	roster_label = Label.new()
-	roster_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	bottom_left_layout.add_child(roster_label)
-
-	controls_label = Label.new()
-	controls_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	bottom_left_layout.add_child(controls_label)
-
-	detail_panel = PanelContainer.new()
-	detail_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
-	detail_panel.offset_left = -430.0
-	detail_panel.offset_top = -266.0
-	detail_panel.offset_right = -18.0
-	detail_panel.offset_bottom = -18.0
-	layer.add_child(detail_panel)
-
-	var detail_margin := MarginContainer.new()
-	detail_margin.add_theme_constant_override("margin_left", 14)
-	detail_margin.add_theme_constant_override("margin_top", 12)
-	detail_margin.add_theme_constant_override("margin_right", 14)
-	detail_margin.add_theme_constant_override("margin_bottom", 12)
-	detail_panel.add_child(detail_margin)
-
-	var detail_layout := VBoxContainer.new()
-	detail_layout.add_theme_constant_override("separation", 6)
-	detail_margin.add_child(detail_layout)
-
-	builder_label = Label.new()
-	builder_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	detail_layout.add_child(builder_label)
-
-	warning_label = Label.new()
-	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	detail_layout.add_child(warning_label)
-
-	last_run_label = Label.new()
-	last_run_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	detail_layout.add_child(last_run_label)
-
-	crosshair_label = Label.new()
-	crosshair_label.text = "+"
-	crosshair_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	crosshair_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	crosshair_label.add_theme_font_size_override("font_size", 28)
-	crosshair_label.modulate = Color(0.98, 0.97, 0.92, 0.92)
-	crosshair_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	crosshair_label.offset_left = -12.0
-	crosshair_label.offset_top = -18.0
-	crosshair_label.offset_right = 12.0
-	crosshair_label.offset_bottom = 18.0
-	layer.add_child(crosshair_label)
+	if not launch_button.pressed.is_connected(_launch_run):
+		launch_button.pressed.connect(_launch_run)
+	if not reconnect_button.pressed.is_connected(_return_to_connect):
+		reconnect_button.pressed.connect(_return_to_connect)
+	if not quit_button.pressed.is_connected(_quit):
+		quit_button.pressed.connect(_quit)
+	if not unlock_button.pressed.is_connected(_purchase_selected_unlock):
+		unlock_button.pressed.connect(_purchase_selected_unlock)
+	if not detail_toggle_button.pressed.is_connected(_toggle_hud_details):
+		detail_toggle_button.pressed.connect(_toggle_hud_details)
 
 	_apply_hud_visibility()
 
@@ -722,7 +684,9 @@ func _refresh_hud() -> void:
 		else:
 			palette_entries.append(palette_label_text)
 	onboarding_label.text = _build_onboarding_text()
-	selection_label.text = "Build Tool\n%s\nSelected: %s | Rot %d deg | HP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
+	hud_icons.set_icon(selection_icon, hud_icons.get_block_icon_id(block_id))
+	hud_icons.set_icon(builder_icon, hud_icons.get_block_icon_id(block_id))
+	selection_label.text = "%s\nSelected: %s | Rot %d deg | HP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
 		" ".join(palette_entries),
 		str(block_def.get("label", block_id.capitalize())),
 		selected_rotation_steps * 90,
@@ -742,7 +706,7 @@ func _refresh_hud() -> void:
 		cursor_feedback_state.capitalize() if cursor_feedback_state != "hidden" else "Searching",
 	]
 
-	builder_label.text = "Boat Snapshot\nBlueprint v%d | Blocks %d | Main %d | Loose %d | Components %d\nHull %.0f | Top Speed %.1f | Cargo %d | Patch Kits %d | Brace x%.2f | Margin %.1f" % [
+	builder_label.text = "Blueprint v%d | Blocks %d | Main %d | Loose %d | Components %d\nHull %.0f | Top Speed %.1f | Cargo %d | Patch Kits %d | Brace x%.2f | Margin %.1f" % [
 		int(NetworkRuntime.boat_blueprint.get("version", 1)),
 		int(stats.get("block_count", 0)),
 		int(stats.get("main_chunk_blocks", 0)),
@@ -756,7 +720,11 @@ func _refresh_hud() -> void:
 		float(stats.get("buoyancy_margin", 0.0)),
 	]
 	var readiness_snapshot := _get_launch_readiness_snapshot(stats, warnings)
-	launch_readiness_label.text = "Launch Readiness\n%s\n%s" % [
+	hud_icons.set_icon(
+		launch_readiness_icon,
+		"brace" if str(readiness_snapshot.get("button_text", "")).contains("Risky") or str(readiness_snapshot.get("button_text", "")).contains("Loose") else "extraction"
+	)
+	launch_readiness_label.text = "%s\n%s" % [
 		str(readiness_snapshot.get("title", "Ready To Sail")),
 		str(readiness_snapshot.get("detail", "")),
 	]
@@ -774,7 +742,8 @@ func _refresh_hud() -> void:
 	if total_runs > 0:
 		extraction_rate = float(successful_runs) / float(total_runs) * 100.0
 	var unlocked_blocks := Array(progression_snapshot.get("unlocked_blocks", []))
-	profile_label.text = "Dock Totals\nGold %d | Salvage %d | Runs %d | Extracted %d (%.0f%%)\nUnlocked %d/%d parts" % [
+	hud_icons.set_icon(profile_icon, "gold")
+	profile_label.text = "Gold %d | Salvage %d | Runs %d | Extracted %d (%.0f%%)\nUnlocked %d/%d parts" % [
 		int(progression_snapshot.get("total_gold", 0)),
 		int(progression_snapshot.get("total_salvage", 0)),
 		total_runs,
@@ -785,7 +754,8 @@ func _refresh_hud() -> void:
 	]
 	var store_entries := NetworkRuntime.get_builder_store_entries()
 	if store_entries.is_empty():
-		store_label.text = "Unlock Yard\nAll prototype parts are already available."
+		hud_icons.set_icon(store_icon, "salvage")
+		store_label.text = "All prototype parts are already available."
 		if unlock_button != null:
 			unlock_button.disabled = true
 			unlock_button.text = "All Parts Unlocked"
@@ -795,7 +765,8 @@ func _refresh_hud() -> void:
 		var selected_unlocked := bool(selected_store_entry.get("unlocked", false))
 		var selected_affordable := bool(selected_store_entry.get("affordable", false))
 		var entry_status := "Unlocked" if selected_unlocked else ("Ready" if selected_affordable else "Locked")
-		store_label.text = "Unlock Yard (%d/%d)\nSelected: %s\n%s\nStatus: %s\nCost: %d gold / %d salvage\nZ/C browse | V buy" % [
+		hud_icons.set_icon(store_icon, hud_icons.get_block_icon_id(str(selected_store_entry.get("block_id", ""))))
+		store_label.text = "Selection %d/%d\nSelected: %s\n%s\nStatus: %s\nCost: %d gold / %d salvage\nZ/C browse | V buy" % [
 			selected_store_index + 1,
 			store_entries.size(),
 			str(selected_store_entry.get("label", "Part")),
@@ -832,9 +803,11 @@ func _refresh_hud() -> void:
 	var last_run := Dictionary(progression_snapshot.get("last_run", {}))
 	var last_unlock := Dictionary(progression_snapshot.get("last_unlock", {}))
 	if last_run.is_empty():
-		last_run_label.text = "Last Run\nNo extracted team runs recorded on this host yet."
+		hud_icons.set_icon(last_run_icon, "cargo")
+		last_run_label.text = "No extracted team runs recorded on this host yet."
 	else:
-		last_run_label.text = "Last Run\n%s\nGold %d | Salvage %d | Secured %d | Lost %d | Recorded %s" % [
+		hud_icons.set_icon(last_run_icon, "salvage")
+		last_run_label.text = "%s\nGold %d | Salvage %d | Secured %d | Lost %d | Recorded %s" % [
 			str(last_run.get("title", "Run Complete")),
 			int(last_run.get("reward_gold", 0)),
 			int(last_run.get("reward_salvage", 0)),
@@ -849,7 +822,7 @@ func _refresh_hud() -> void:
 			int(last_unlock.get("cost_salvage", 0)),
 		]
 
-	controls_label.text = "Quick Controls\nW A S D move | Space jump\nQ / E parts | R rotate | F place | X remove\nZ / C unlocks | V buy | Enter launch\nTab or H toggles details | Esc returns"
+	controls_label.text = "Quick Controls\nMouse aim | W A S D move | Space jump\nQ / E parts | R rotate | F place | X remove\nZ / C unlocks | V buy | Enter launch\nLMB recaptures mouse | Esc frees mouse / returns"
 	_apply_hud_visibility()
 
 func _build_onboarding_text() -> String:
@@ -858,7 +831,7 @@ func _build_onboarding_text() -> String:
 	if cursor_feedback_state == "occupied":
 		return "Onboarding: That cell is already taken. Rotate, remove, or move to a fresh face on the hull."
 	if not cursor_has_target:
-		return "Onboarding: Walk, jump, and aim the center crosshair at the dock or boat to place blocks together."
+		return "Onboarding: Mouse look drives the crosshair. Walk, jump, and aim the center crosshair at the dock or boat to place blocks together."
 
 	var stats := NetworkRuntime.get_blueprint_stats()
 	if int(stats.get("loose_blocks", 0)) > 0:
@@ -934,7 +907,7 @@ func _query_build_target_from_camera() -> Dictionary:
 	var screen_center := viewport_rect.size * 0.5
 	var ray_origin := camera.project_ray_origin(screen_center)
 	var ray_direction := camera.project_ray_normal(screen_center)
-	var ray_length := NetworkRuntime.get_hangar_build_range() + HANGAR_CAMERA_DISTANCE + 10.0
+	var ray_length := NetworkRuntime.get_hangar_build_range() + chase_camera_distance + 10.0
 	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_origin + ray_direction * ray_length)
 	query.exclude = [local_avatar_body.get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
@@ -1180,13 +1153,16 @@ func _remove_selected_block() -> void:
 func _launch_run() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
+	_set_mouse_capture(false)
 	NetworkRuntime.request_launch_run()
 
 func _return_to_connect() -> void:
+	_set_mouse_capture(false)
 	NetworkRuntime.shutdown()
 	get_tree().change_scene_to_file(CLIENT_BOOT_SCENE)
 
 func _quit() -> void:
+	_set_mouse_capture(false)
 	get_tree().quit()
 
 func _find_block_at_cell(cell_value: Variant) -> Dictionary:
@@ -1242,12 +1218,18 @@ func _update_camera(delta: float) -> void:
 		camera.current = true
 		camera.make_current()
 	var avatar_position := local_avatar_body.global_position
-	var avatar_forward := Vector3(0.0, 0.0, -1.0).rotated(Vector3.UP, local_avatar_facing_y)
-	var camera_offset := Vector3(HANGAR_CAMERA_SIDE_OFFSET, HANGAR_CAMERA_HEIGHT, HANGAR_CAMERA_DISTANCE).rotated(Vector3.UP, local_avatar_facing_y)
-	var desired_position := avatar_position + camera_offset + local_camera_jolt
-	var look_target := avatar_position + Vector3(0.0, HANGAR_CAMERA_LOOK_HEIGHT, 0.0) + avatar_forward * HANGAR_CAMERA_LOOK_AHEAD
+	var pivot := avatar_position + Vector3(0.0, chase_camera_look_height, 0.0)
+	var yaw_basis := Basis(Vector3.UP, local_avatar_facing_y)
+	var aim_basis := yaw_basis * Basis(Vector3.RIGHT, local_camera_pitch)
+	var forward := (aim_basis * Vector3.FORWARD).normalized()
+	var right := (yaw_basis * Vector3.RIGHT).normalized()
+	var desired_position := pivot - forward * chase_camera_distance
+	desired_position += right * chase_camera_side_offset
+	desired_position += Vector3.UP * maxf(0.0, chase_camera_height - chase_camera_look_height)
+	desired_position += local_camera_jolt
+	var look_target := pivot + forward * chase_camera_look_ahead
 	look_target += local_camera_jolt * 0.35
-	camera.position = camera.position.lerp(desired_position, minf(1.0, delta * HANGAR_CAMERA_LAG))
+	camera.position = camera.position.lerp(desired_position, minf(1.0, delta * chase_camera_lag))
 	camera.look_at(look_target, Vector3.UP)
 
 func _get_blueprint_focus_point() -> Vector3:
@@ -1633,8 +1615,10 @@ func _on_boat_blueprint_changed(_snapshot: Dictionary) -> void:
 
 func _on_session_phase_changed(phase: String) -> void:
 	if phase == NetworkRuntime.SESSION_PHASE_RUN:
+		_set_mouse_capture(false)
 		get_tree().change_scene_to_file(RUN_CLIENT_SCENE)
 		return
+	_set_mouse_capture(true)
 	_refresh_hud()
 
 func _on_profile_changed(_snapshot: Dictionary) -> void:

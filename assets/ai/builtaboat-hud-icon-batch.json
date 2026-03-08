@@ -1,0 +1,49 @@
+{
+  "provider": "dalle",
+  "model": "dall-e-3",
+  "style": "vector",
+  "size": "1024x1024",
+  "basePrompt": "nautical salvage game HUD icon for BuiltaBoat, expedition-board visual language, practical dock hardware aesthetic, flat vector game UI, strong centered silhouette, storm blue, chart cream, oxidized teal, sea-glass green, buoy orange, flare red-rust, transparent background, no text, no mockup, no scene background",
+  "assets": [
+    {
+      "name": "helm",
+      "prompt": "ship wheel helm control icon, sturdy harbor hardware, readable at small size"
+    },
+    {
+      "name": "brace",
+      "prompt": "impact brace icon, shield with crossing straps, ready stance, readable at small size"
+    },
+    {
+      "name": "repair-kit",
+      "prompt": "patch kit repair icon, compact toolbox with repair cross and rugged handle, readable at small size"
+    },
+    {
+      "name": "cargo",
+      "prompt": "secured cargo crate icon, strapped expedition box, readable at small size"
+    },
+    {
+      "name": "salvage",
+      "prompt": "salvage hook and recovered crate fragment icon, readable at small size"
+    },
+    {
+      "name": "gold",
+      "prompt": "dock payout gold coin stack icon, readable at small size"
+    },
+    {
+      "name": "extraction",
+      "prompt": "extraction buoy beacon icon with return arrow, readable at small size"
+    },
+    {
+      "name": "reinforced-hull",
+      "prompt": "reinforced hull upgrade icon, armored boat plate with rivets, readable at small size"
+    },
+    {
+      "name": "twin-engine",
+      "prompt": "twin engine upgrade icon, paired boat engines with thrust emphasis, readable at small size"
+    },
+    {
+      "name": "stabilizer",
+      "prompt": "stabilizer upgrade icon, balanced boat fin assembly, readable at small size"
+    }
+  ]
+}
