@@ -249,6 +249,29 @@ HOME="$TEST_HOME" ./tools/run_server.sh --port=7000 --seed=404
 HOME="$TEST_HOME" godot --headless --path . --quit-after 4000 -- --host=127.0.0.1 --port=7000 --name=LayoutBot --autoconnect --autobuild-role=builder_launch --autorun-demo --quit-after-connect-ms=14000
 ```
 
+Week 4 local host-flow smoke:
+
+```bash
+TEST_HOME="$(mktemp -d /tmp/builtaboat-week4-host-XXXXXX)"
+HOME="$TEST_HOME" godot --headless --path . --quit-after 1200 -- --name=HostBot --port=7170 --autohost --quit-after-connect-ms=9000
+```
+
+Week 4 full local host-flow loop:
+
+```bash
+TEST_HOME="$(mktemp -d /tmp/builtaboat-week4-full-XXXXXX)"
+HOME="$TEST_HOME" godot --headless --path . --quit-after 7000 -- --name=Week4Host --port=7172 --autohost --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock --quit-after-connect-ms=28000
+```
+
+Week 4 Windows playtest bundle helper:
+
+```bash
+bash tools/package_windows_playtest.sh \
+  build/windows-client/BuiltaBoat.exe \
+  build/windows-server/BuiltaBoatServer.exe \
+  dist/windows-playtest
+```
+
 ## Notes
 
 - For deterministic smoke tests, start the server and all clients with the same temporary `HOME` so the shared boat blueprint starts from a clean save.
@@ -260,6 +283,7 @@ HOME="$TEST_HOME" godot --headless --path . --quit-after 4000 -- --host=127.0.0.
 - The current run result now banks shared gold and salvage into the host/server profile after extraction or failure, and the hangar store spends from that shared pool.
 - Repairs are limited by shared patch kits, and the resupply cache can top the team back up once per run while adding bonus rewards.
 - The current connect flow now lands in a shared 3D hangar builder where the crew can edit one live blueprint together before launching.
+- The current connect flow now supports `Host Game` and `Join By IP`, with host mode launching a local authoritative server process before connecting the client to `127.0.0.1`.
 - The current hangar now uses a short-range camera-crosshair build ghost tied to the third-person builder avatar, so moving around the boat matters while building.
 - The current shared-builder autobuild helpers now reposition the hangar avatar before placing or removing blocks so automated smoke tests obey the same range rule as manual builders.
 - The current hangar now shows a clearer build-tool panel, placement-state feedback, and launch-readiness summary so the crew can read the boat status faster before launching.
@@ -271,6 +295,7 @@ HOME="$TEST_HOME" godot --headless --path . --quit-after 4000 -- --host=127.0.0.
 - The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.
 - The current reaction system is a lightweight non-ragdoll layer: hard hangar bumps and run impacts briefly interrupt control, add knockback/camera jolt, and let brace reduce the severity of run-side reactions.
 - The current Week 3 run layer procedurally seeds one optional distress rescue and one or two squall bands from the run seed, so route choice and timing change between seeds without abandoning the extraction-loop structure.
+- The current repo also includes `tools/package_windows_playtest.sh`, which stages separate Windows client/server export folders into a simple friend-playtest bundle with host/join batch files.
 - The current networking model now sends boat motion separately from structural runtime state so large block boats do not overflow the unreliable ENet packet budget during launch.
 - Disconnect cleanup now coalesces network state flushes for a short window so quick multi-client hangar teardowns do not re-trigger the old ENet send error.
 - The current server scene logs heartbeat, progression totals, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.

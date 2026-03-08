@@ -631,6 +631,52 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - the autorun route can now complete the optional rescue cleanly, but unbraced squall pulses still chip the hull if no brace bot is present
   - the extraction-loop structure still reads clearly even with the added rescue detour and weather pressure
 
+## 2026-03-08 Week 4 Windows Playtest Hardening Design
+
+- Approved the Week 4 MVP slice as a Windows-first friends-playtest hardening pass.
+- Confirmed that the game stays server-authoritative even in local host mode.
+- Locked the playtest architecture to:
+  - authoritative server remains the source of truth
+  - host mode is only a friendlier way to launch that server locally
+  - friends still join by IP
+- Wrote the approved design doc to `docs/plans/2026-03-08-week-4-windows-playtest-hardening-design.md`.
+- Wrote the fallback implementation plan to `docs/plans/2026-03-08-week-4-windows-playtest-hardening-implementation-plan.md`.
+
+## 2026-03-08 Week 4 Windows Playtest Hardening Implementation
+
+- Implemented a friendlier host/join boot flow in `scenes/boot/client_boot.gd`:
+  - replaced the old single connect action with:
+    - `Host Game`
+    - `Join By IP`
+  - added LAN-IP share text
+  - added automatic local-host retries while the authoritative server process boots
+  - added a new `--autohost` launch flag for repeatable smoke coverage
+- Updated `autoload/game_config.gd` to parse `--autohost`.
+- Updated `autoload/network_runtime.gd` connection messaging so missing-server and disconnect states explain what to do next in friend-readable language.
+- Added `tools/package_windows_playtest.sh`:
+  - bundles separate Windows client and server export folders into one playtest directory
+  - generates:
+    - `HostAndPlay.bat`
+    - `JoinFriend.bat`
+    - `StartDedicatedServer.bat`
+    - `README-playtest.txt`
+- Updated `README.md` with:
+  - Week 4 host-flow smoke commands
+  - Windows packaging helper usage
+  - notes about the new host/join flow
+- Verified:
+  - clean Godot parse smoke after the Week 4 changes
+  - local host-mode smoke on port `7170`, with the client launching a local authoritative server and joining it successfully
+  - second-client join-by-IP against a locally hosted server on port `7171`
+  - full `autohost -> hangar -> run -> extraction -> hangar` loop on port `7172`, including reward banking back into the host profile
+  - packaging helper smoke against fake Windows export folders, producing:
+    - bundled `client/`
+    - bundled `server/`
+    - generated `.bat` launchers
+    - generated playtest README
+- Remaining verification gap:
+  - I updated the connection-failure wording for bad-IP or missing-server cases, but I did not capture a full ENet timeout message in a short automated smoke because the timeout window outlasted the quick test budget.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:

@@ -364,7 +364,7 @@ func start_client(host: String, connect_port: int, player_name: String) -> int:
 	var peer := ENetMultiplayerPeer.new()
 	var error: int = peer.create_client(host, connect_port)
 	if error != OK:
-		_set_status("Client failed to connect (code %s)." % str(error))
+		_set_status("Could not start a client connection to %s:%d (code %s)." % [host, connect_port, str(error)])
 		emit_signal("client_connect_failed")
 		return error
 
@@ -2825,11 +2825,11 @@ func _on_connected_to_server() -> void:
 	server_register_player.rpc_id(1, local_player_name)
 
 func _on_connection_failed() -> void:
-	_set_status("Connection failed.")
+	_set_status("Connection failed. Check the host IP and port, or make sure the host started the server.")
 	emit_signal("client_connect_failed")
 
 func _on_server_disconnected() -> void:
-	_set_status("Server disconnected.")
+	_set_status("Server disconnected. Ask the host to restart the server or return to the connect screen.")
 	emit_signal("client_disconnected")
 
 @rpc("any_peer", "call_remote", "reliable")

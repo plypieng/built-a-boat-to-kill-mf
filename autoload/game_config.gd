@@ -22,6 +22,7 @@ func parse_cmdline_overrides() -> Dictionary:
 		"capture_frame_path": "",
 		"capture_frame_delay_ms": 0,
 		"autoconnect": false,
+		"autohost": false,
 		"quit_after_connect_ms": 0,
 		"autodrive_ms": 0,
 		"autodrive_throttle": 1.0,
@@ -51,6 +52,8 @@ func parse_cmdline_overrides() -> Dictionary:
 			overrides["capture_frame_delay_ms"] = max(0, arg.trim_prefix("--capture-frame-delay-ms=").to_int())
 		elif arg == "--autoconnect":
 			overrides["autoconnect"] = true
+		elif arg == "--autohost":
+			overrides["autohost"] = true
 		elif arg.begins_with("--quit-after-connect-ms="):
 			overrides["quit_after_connect_ms"] = max(0, arg.trim_prefix("--quit-after-connect-ms=").to_int())
 		elif arg.begins_with("--autodrive-ms="):
