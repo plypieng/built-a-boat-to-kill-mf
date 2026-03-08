@@ -3,7 +3,7 @@ extends Control
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HOST_CONNECT_RETRY_DELAY := 0.8
-const MAX_HOST_CONNECT_RETRIES := 8
+const MAX_HOST_CONNECT_RETRIES := 40
 
 @onready var host_input: LineEdit = $Center/Panel/Margin/Layout/FieldsGrid/HostInput
 @onready var port_input: LineEdit = $Center/Panel/Margin/Layout/FieldsGrid/PortInput
@@ -161,11 +161,13 @@ func _launch_local_server(port: int, seed: int) -> int:
 				"open_console": true,
 			})
 
+	var my_pid := OS.get_process_id()
+	
 	if executable_name.contains("godot"):
-		candidate_launches.append({
+		candidate_launches.push_front({
 			"path": executable_path,
-			"args": PackedStringArray(["--path", project_path, "--headless", "--", "--server", "--port=%d" % port, "--seed=%d" % seed]),
-			"open_console": true,
+			"args": PackedStringArray(["--path", project_path, "--headless", "--", "--server", "--port=%d" % port, "--seed=%d" % seed, "--parent-pid=%d" % my_pid]),
+			"open_console": false,
 		})
 		var script_path := ProjectSettings.globalize_path("res://tools/run_server.sh")
 		if FileAccess.file_exists(script_path):
@@ -177,7 +179,7 @@ func _launch_local_server(port: int, seed: int) -> int:
 	else:
 		candidate_launches.append({
 			"path": executable_path,
-			"args": PackedStringArray(["--headless", "--server", "--port=%d" % port, "--seed=%d" % seed]),
+			"args": PackedStringArray(["--headless", "--server", "--port=%d" % port, "--seed=%d" % seed, "--parent-pid=%d" % my_pid]),
 			"open_console": true,
 		})
 
