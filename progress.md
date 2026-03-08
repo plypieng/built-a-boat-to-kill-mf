@@ -537,6 +537,17 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - the server switched cleanly to `phase=run`
   - the hangar teardown error no longer appeared
 
+## 2026-03-08 Week 2 Reward Loop Design
+
+- Approved the Week 2 MVP slice as a compact reward loop built around new block unlocks rather than upgrade tiers.
+- Wrote the approved design doc to `docs/plans/2026-03-08-week-2-reward-loop-design.md`.
+- Wrote the fallback implementation plan to `docs/plans/2026-03-08-week-2-reward-loop-implementation-plan.md`.
+- Locked the first unlock catalog to:
+  - `reinforced_hull`
+  - `twin_engine`
+  - `stabilizer`
+- Locked progression ownership to the shared host/server profile so the builder palette and unlock flow stay authoritative.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
