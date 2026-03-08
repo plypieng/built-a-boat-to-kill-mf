@@ -153,7 +153,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton:
 		var button_event := event as InputEventMouseButton
-		if button_event.pressed and button_event.button_index == MOUSE_BUTTON_LEFT and not _is_mouse_captured():
+		if button_event.pressed and button_event.button_index == MOUSE_BUTTON_RIGHT and not _is_mouse_captured():
 			_set_mouse_capture(true)
 			return
 	if not (event is InputEventKey):
@@ -185,10 +185,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_ENTER, KEY_KP_ENTER:
 			_launch_run()
 		KEY_ESCAPE:
-			if _is_mouse_captured():
-				_set_mouse_capture(false)
-			else:
-				_return_to_connect()
+			_set_mouse_capture(not _is_mouse_captured())
 
 func _build_world() -> void:
 	_ensure_world_environment()
@@ -829,7 +826,8 @@ func _refresh_hud() -> void:
 	]
 	launch_readiness_label.modulate = readiness_snapshot.get("color", Color(0.98, 0.97, 0.92))
 	warning_label.text = "Warnings And Tips\n%s" % "\n".join(warning_lines)
-	status_label.text = "Build Session\n%s" % NetworkRuntime.status_message
+	var mouse_hint := "Esc frees the cursor for buttons. RMB returns to build aim." if _is_mouse_captured() else "Cursor free: click buttons, then press Esc or RMB to return to aim."
+	status_label.text = "Build Session\n%s\n%s" % [NetworkRuntime.status_message, mouse_hint]
 	launch_button.disabled = NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR
 	launch_button.text = str(readiness_snapshot.get("button_text", "Launch Run"))
 	launch_button.tooltip_text = "\n".join(warning_lines)
@@ -923,7 +921,7 @@ func _refresh_hud() -> void:
 			int(last_unlock.get("cost_salvage", 0)),
 		]
 
-	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\nQ / E parts | R rotate | F place | X remove\nZ / C unlocks | V buy | Enter launch"
+	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\nQ / E parts | R rotate | F place | X remove\nZ / C unlocks | V buy | Enter launch\nEsc cursor toggle | RMB recapture aim"
 	_apply_hud_visibility()
 
 func _build_onboarding_text() -> String:
