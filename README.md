@@ -93,9 +93,12 @@ Open-sea procedural world gen v1 adds:
 
 Dangerous sea feel pass adds:
 
-- a real water shader with layered swells, chop, and darker open-ocean coloring
+- a stronger water shader with layered swells, detail chop, whitecaps, and darker open-ocean troughs
 - boat heave, pitch, and roll sampled from the same sea-state function that drives the water surface
 - stern wake and bow spray visuals that scale with speed, squalls, and rough water
+- splash-burst rings and mist when the crew slams the hull, goes overboard, or climbs back aboard
+- animated squall rain streaks and horizon storm-wall silhouettes that push the world toward a more dangerous mood
+- procedural sea audio for wind, hull slap, and distant storm pressure
 - colder, heavier biome atmosphere through fog, sky tint, and sun-light tuning
 - chunk-floor and prop visuals pushed down and darkened so the sea reads first and the debug grid stays secondary
 

@@ -1005,11 +1005,16 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 
 - Added shader-driven open-sea water in `shaders/open_sea_water.gdshader`
 - Added wake and bow-spray shaders in `shaders/open_sea_wake.gdshader`
+- Added splash-burst, squall-streak, and storm-wall shaders in `shaders/open_sea_splash.gdshader`, `shaders/squall_streaks.gdshader`, and `shaders/storm_wall.gdshader`
 - Updated `scenes/run_client/run_client.gd` so the boat now samples the same sea-state model for bob, pitch, and roll
 - Added speed- and storm-driven wake/spray visuals anchored to the runtime boat
+- Added stronger water shading with detail chop, whitecaps, and darker troughs
+- Added splash bursts on impacts, overboard entries, and climb-back recoveries
+- Added procedural sea audio layers for wind, hull slap, and distant storm pressure
+- Added animated squall streaks and horizon storm-wall silhouettes for a more dangerous sea mood
 - Darkened and cooled open-ocean atmosphere so even baseline runs feel more threatening
 - Pushed chunk floor markers deeper and muted their colors so they support navigation without overpowering the sea surface
 - Verified:
   - `godot --headless --path . --quit-after 2`
-  - visual capture at `/tmp/builtaboat-sea-danger-v2.png`
+  - visual capture at `/tmp/builtaboat-sea-danger-v3.png`
   - generated-world end-to-end regression on seed `9191` with successful extraction and clean hangar return

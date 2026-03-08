@@ -5,6 +5,9 @@ const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
 const OpenSeaWakeShader = preload("res://shaders/open_sea_wake.gdshader")
+const OpenSeaSplashShader = preload("res://shaders/open_sea_splash.gdshader")
+const SquallStreaksShader = preload("res://shaders/squall_streaks.gdshader")
+const StormWallShader = preload("res://shaders/storm_wall.gdshader")
 const IDLE_CREW_SLOTS := [
 	Vector3(0.0, 0.92, 1.35),
 	Vector3(-1.2, 0.92, 1.05),
@@ -68,6 +71,7 @@ var chunk_container: Node3D
 var water_mesh_instance: MeshInstance3D
 var water_shader_material: ShaderMaterial
 var sun_light: DirectionalLight3D
+var storm_wall_container: Node3D
 var hull_mesh_instance: MeshInstance3D
 var hull_material: StandardMaterial3D
 var deck_mesh_instance: MeshInstance3D
@@ -82,6 +86,7 @@ var bow_spray_left: MeshInstance3D
 var bow_spray_left_material: ShaderMaterial
 var bow_spray_right: MeshInstance3D
 var bow_spray_right_material: ShaderMaterial
+var splash_container: Node3D
 var hazard_container: Node3D
 var squall_container: Node3D
 var station_container: Node3D
@@ -142,6 +147,7 @@ var main_block_visuals: Dictionary = {}
 var sinking_chunk_visuals: Dictionary = {}
 var crew_visuals: Dictionary = {}
 var squall_visuals: Dictionary = {}
+var splash_visuals: Array = []
 var run_result_recorded := false
 var auto_continue_queued := false
 var reaction_visual_state: Dictionary = {}
@@ -173,11 +179,21 @@ var extraction_panel_icon: TextureRect
 var crew_panel_icon: TextureRect
 var survival_panel_icon: TextureRect
 var result_panel_icon: TextureRect
+var wind_audio_player: AudioStreamPlayer
+var hull_audio_player: AudioStreamPlayer
+var storm_audio_player: AudioStreamPlayer
+var wind_audio_playback: AudioStreamGeneratorPlayback
+var hull_audio_playback: AudioStreamGeneratorPlayback
+var storm_audio_playback: AudioStreamGeneratorPlayback
+var wind_audio_time := 0.0
+var hull_audio_time := 0.0
+var storm_audio_time := 0.0
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
 	local_camera_pitch = _get_run_camera_pitch_default()
 	_build_world()
+	_ensure_procedural_audio()
 	_build_hud()
 	_build_result_overlay()
 	_prime_local_run_avatar_state()
@@ -209,9 +225,11 @@ func _process(delta: float) -> void:
 	connect_time_seconds += delta
 	_tick_reaction_visuals(delta)
 	_update_sea_presentation(delta)
+	_update_sea_audio()
 	_update_boat_visual(delta)
 	_update_runtime_block_visuals()
 	_update_sinking_chunk_visuals(delta)
+	_update_splash_bursts(delta)
 	_update_crew_visuals(delta)
 	_update_hazard_visuals()
 	_update_loot_visuals()
@@ -258,8 +276,10 @@ func _build_world() -> void:
 		_build_static_world_fallback()
 
 	chunk_container = _ensure_root_node3d("ChunkContainer")
+	storm_wall_container = _ensure_root_node3d("StormWallContainer")
 	hazard_container = _ensure_root_node3d("HazardContainer")
 	squall_container = _ensure_root_node3d("SquallContainer")
+	splash_container = _ensure_root_node3d("SplashContainer")
 	loot_container = _ensure_root_node3d("LootContainer")
 	salvage_site_container = _ensure_root_node3d("SalvageSiteContainer")
 	distress_site_container = _ensure_root_node3d("DistressSiteContainer")
@@ -425,6 +445,72 @@ func _ensure_wake_plane(node_name: String, plane_size: Vector2) -> MeshInstance3
 	wake_root.add_child(plane_node)
 	return plane_node
 
+func _ensure_procedural_audio() -> void:
+	wind_audio_player = _ensure_audio_layer("SeaWindAudio", -20.0)
+	hull_audio_player = _ensure_audio_layer("HullGroanAudio", -24.0)
+	storm_audio_player = _ensure_audio_layer("StormRoarAudio", -22.0)
+	wind_audio_playback = null
+	hull_audio_playback = null
+	storm_audio_playback = null
+	if wind_audio_player != null:
+		wind_audio_playback = wind_audio_player.get_stream_playback() as AudioStreamGeneratorPlayback
+	if hull_audio_player != null:
+		hull_audio_playback = hull_audio_player.get_stream_playback() as AudioStreamGeneratorPlayback
+	if storm_audio_player != null:
+		storm_audio_playback = storm_audio_player.get_stream_playback() as AudioStreamGeneratorPlayback
+
+func _ensure_audio_layer(node_name: String, volume_db: float) -> AudioStreamPlayer:
+	var player := get_node_or_null(node_name) as AudioStreamPlayer
+	if player == null:
+		player = AudioStreamPlayer.new()
+		player.name = node_name
+		player.autoplay = false
+		add_child(player)
+	player.volume_db = volume_db
+	var generator := player.stream as AudioStreamGenerator
+	if generator == null:
+		generator = AudioStreamGenerator.new()
+		generator.mix_rate = 22050
+		generator.buffer_length = 0.25
+		player.stream = generator
+	if not player.playing:
+		player.play()
+	return player
+
+func _wave_synth(t: float, base_a: float, base_b: float, mod_a: float, mod_b: float, mix_amount: float = 0.5) -> float:
+	return sin(TAU * base_a * t + sin(TAU * mod_a * t) * mix_amount) * 0.58 + sin(TAU * base_b * t + cos(TAU * mod_b * t) * mix_amount * 0.7) * 0.42
+
+func _fill_audio_layer(playback: AudioStreamGeneratorPlayback, layer_name: String, from_time: float, intensity: float, mod_strength: float) -> float:
+	if playback == null:
+		return from_time
+	var frames := mini(playback.get_frames_available(), 2048)
+	if frames <= 0:
+		return from_time
+	var delta_t := 1.0 / 22050.0
+	var current_time := from_time
+	for _frame in range(frames):
+		var sample_left := 0.0
+		var sample_right := 0.0
+		match layer_name:
+			"wind":
+				var body := _wave_synth(current_time, 97.0, 173.0, 0.07, 0.11, 2.8)
+				var hiss := _wave_synth(current_time, 233.0, 311.0, 0.13, 0.09, 1.4)
+				sample_left = (body * 0.62 + hiss * 0.28) * intensity
+				sample_right = (_wave_synth(current_time + 0.003, 103.0, 181.0, 0.05, 0.09, 2.5) * 0.62 + hiss * 0.24) * intensity
+			"hull":
+				var groan := sin(TAU * (0.62 + mod_strength * 0.35) * current_time + sin(TAU * 0.19 * current_time) * 2.2)
+				var slap: float = pow(abs(sin(TAU * (1.1 + mod_strength * 0.8) * current_time)), 6.0) * sign(sin(TAU * 3.8 * current_time))
+				sample_left = (groan * 0.54 + slap * 0.34) * intensity
+				sample_right = (sin(TAU * (0.66 + mod_strength * 0.28) * current_time + 0.8) * 0.48 + slap * 0.30) * intensity
+			"storm":
+				var roar := _wave_synth(current_time, 61.0, 89.0, 0.03, 0.05, 3.4)
+				var rumble := sin(TAU * 19.0 * current_time + sin(TAU * 0.08 * current_time) * 1.5)
+				sample_left = (roar * 0.48 + rumble * 0.36) * intensity
+				sample_right = (_wave_synth(current_time + 0.002, 67.0, 97.0, 0.02, 0.06, 3.2) * 0.46 + rumble * 0.34) * intensity
+		playback.push_frame(Vector2(sample_left, sample_right))
+		current_time += delta_t
+	return current_time
+
 func _get_biome_sea_profile(biome_id: String) -> Dictionary:
 	match biome_id:
 		RunWorldGenerator.BIOME_REEF_WATERS:
@@ -553,6 +639,9 @@ func _update_sea_presentation(delta: float) -> void:
 		water_shader_material.set_shader_parameter("chop_strength", float(profile.get("chop_strength", 0.18)) * (0.9 + hazard_level * 0.55))
 		water_shader_material.set_shader_parameter("storm_strength", storm_strength)
 		water_shader_material.set_shader_parameter("foam_amount", 0.34 + storm_strength * 0.30)
+		water_shader_material.set_shader_parameter("detail_amplitude", 0.045 + storm_strength * 0.05 + hazard_level * 0.03)
+		water_shader_material.set_shader_parameter("whitecap_strength", 0.36 + storm_strength * 0.42)
+		water_shader_material.set_shader_parameter("trough_darkness", 0.14 + storm_strength * 0.16)
 
 	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
 	if world_environment == null:
@@ -599,6 +688,104 @@ func _update_sea_presentation(delta: float) -> void:
 			spray_material.set_shader_parameter("core_color", Color(0.92, 0.96, 0.98, 1.0))
 			spray_material.set_shader_parameter("edge_color", profile.get("foam_color", Color(0.76, 0.90, 0.96)))
 			spray_material.set_shader_parameter("noise_scale", 1.25 + storm_strength * 0.55)
+
+func _update_sea_audio() -> void:
+	var descriptor := _get_current_chunk_descriptor()
+	var biome_id := str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN))
+	var hazard_level := clampf(float(descriptor.get("hazard_level", 0.35)), 0.0, 1.0)
+	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / maxf(0.1, float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED))), 0.0, 1.0)
+	var storm_strength := clampf(hazard_level * 0.65 + (0.35 if biome_id == RunWorldGenerator.BIOME_STORM_BELT else 0.0) + (0.22 if _boat_inside_any_squall() else 0.0), 0.0, 1.0)
+	var hull_motion := clampf(absf(boat_root.rotation.x) * 2.8 + absf(boat_root.rotation.z) * 2.4, 0.0, 1.0)
+	var overboard_boost := 0.12 if _is_local_overboard() else 0.0
+	wind_audio_time = _fill_audio_layer(wind_audio_playback, "wind", wind_audio_time, 0.022 + speed_ratio * 0.035 + storm_strength * 0.055 + overboard_boost, storm_strength)
+	hull_audio_time = _fill_audio_layer(hull_audio_playback, "hull", hull_audio_time, 0.010 + speed_ratio * 0.020 + hull_motion * 0.024 + storm_strength * 0.012, hull_motion)
+	storm_audio_time = _fill_audio_layer(storm_audio_playback, "storm", storm_audio_time, storm_strength * 0.072 + (0.024 if _boat_inside_any_squall() else 0.0), storm_strength)
+
+func _refresh_horizon_storm_wall() -> void:
+	if storm_wall_container == null:
+		return
+	for child in storm_wall_container.get_children():
+		child.queue_free()
+	var bounds := RunWorldGenerator._coord_from_variant(NetworkRuntime.run_state.get("world_bounds_chunks", [RunWorldGenerator.WORLD_SIZE_CHUNKS, RunWorldGenerator.WORLD_SIZE_CHUNKS]))
+	var chunk_size := float(NetworkRuntime.run_state.get("chunk_size_m", RunWorldGenerator.CHUNK_SIZE_M))
+	var world_width := float(bounds.x) * chunk_size
+	var world_depth := float(bounds.y) * chunk_size
+	var center := Vector3(0.0, 18.0, -chunk_size * 0.5)
+	var height := 84.0
+	var north_south_width := world_width + chunk_size * 3.0
+	var east_west_width := world_depth + chunk_size * 3.0
+	var wall_specs := [
+		{"name": "NorthWall", "position": center + Vector3(0.0, 0.0, -world_depth * 0.5 - 22.0), "width": north_south_width, "rotation_y": PI},
+		{"name": "SouthWall", "position": center + Vector3(0.0, 0.0, world_depth * 0.5 + 22.0), "width": north_south_width, "rotation_y": 0.0},
+		{"name": "WestWall", "position": center + Vector3(-world_width * 0.5 - 22.0, 0.0, 0.0), "width": east_west_width, "rotation_y": PI * 0.5},
+		{"name": "EastWall", "position": center + Vector3(world_width * 0.5 + 22.0, 0.0, 0.0), "width": east_west_width, "rotation_y": -PI * 0.5},
+	]
+	for wall_spec_variant in wall_specs:
+		var wall_spec: Dictionary = wall_spec_variant
+		var wall := MeshInstance3D.new()
+		wall.name = str(wall_spec.get("name", "StormWall"))
+		var quad := QuadMesh.new()
+		quad.size = Vector2(float(wall_spec.get("width", world_width)), height)
+		wall.mesh = quad
+		wall.position = wall_spec.get("position", Vector3.ZERO)
+		wall.rotation.y = float(wall_spec.get("rotation_y", 0.0))
+		var material := ShaderMaterial.new()
+		material.shader = StormWallShader
+		material.set_shader_parameter("intensity", 0.82)
+		wall.material_override = material
+		storm_wall_container.add_child(wall)
+
+func _spawn_splash_burst(world_position: Vector3, strength: float, ring_color: Color = Color(0.86, 0.96, 1.0), mist_color: Color = Color(0.48, 0.70, 0.82)) -> void:
+	if splash_container == null:
+		return
+	var splash := MeshInstance3D.new()
+	var mesh := PlaneMesh.new()
+	mesh.size = Vector2(1.0, 1.0)
+	mesh.subdivide_width = 8
+	mesh.subdivide_depth = 8
+	splash.mesh = mesh
+	splash.position = Vector3(world_position.x, WATER_SURFACE_Y + 0.04, world_position.z)
+	splash.rotation.x = -PI * 0.5
+	var material := ShaderMaterial.new()
+	material.shader = OpenSeaSplashShader
+	material.set_shader_parameter("ring_color", ring_color)
+	material.set_shader_parameter("mist_color", mist_color)
+	material.set_shader_parameter("life_ratio", 0.0)
+	material.set_shader_parameter("intensity", clampf(strength, 0.3, 1.6))
+	splash.material_override = material
+	splash_container.add_child(splash)
+	splash_visuals.append({
+		"node": splash,
+		"material": material,
+		"age": 0.0,
+		"duration": 0.9 + strength * 0.25,
+		"base_scale": 1.2 + strength * 2.0,
+	})
+
+func _update_splash_bursts(delta: float) -> void:
+	if splash_visuals.is_empty():
+		return
+	var survivors: Array = []
+	for splash_variant in splash_visuals:
+		var splash: Dictionary = splash_variant
+		var node := splash.get("node") as MeshInstance3D
+		var material := splash.get("material") as ShaderMaterial
+		if node == null:
+			continue
+		var age := float(splash.get("age", 0.0)) + delta
+		var duration := maxf(0.1, float(splash.get("duration", 1.0)))
+		var life_ratio := clampf(age / duration, 0.0, 1.0)
+		var base_scale := float(splash.get("base_scale", 2.0))
+		node.scale = Vector3.ONE * lerpf(base_scale * 0.4, base_scale, life_ratio)
+		node.position.y = WATER_SURFACE_Y + 0.04 + sin(connect_time_seconds * 8.0 + base_scale) * 0.02
+		if material != null:
+			material.set_shader_parameter("life_ratio", life_ratio)
+		if life_ratio >= 1.0:
+			node.queue_free()
+			continue
+		splash["age"] = age
+		survivors.append(splash)
+	splash_visuals = survivors
 
 func _refresh_chunk_visuals() -> void:
 	if chunk_container == null:
@@ -1428,6 +1615,7 @@ func _get_run_tool_label(tool_id: String) -> String:
 
 func _refresh_world() -> void:
 	_refresh_chunk_visuals()
+	_refresh_horizon_storm_wall()
 	_refresh_runtime_block_visuals()
 	_refresh_sinking_chunk_visuals()
 	_refresh_station_visuals()
@@ -2232,7 +2420,7 @@ func _refresh_squall_visuals() -> void:
 		shell.mesh = shell_mesh
 		shell.position = Vector3(0.0, 0.95, 0.0)
 		var shell_material := StandardMaterial3D.new()
-		shell_material.albedo_color = Color(0.20, 0.37, 0.52, 0.22)
+		shell_material.albedo_color = Color(0.12, 0.20, 0.27, 0.18)
 		shell_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		shell_material.roughness = 0.18
 		shell.material_override = shell_material
@@ -2253,6 +2441,27 @@ func _refresh_squall_visuals() -> void:
 		core.material_override = core_material
 		root.add_child(core)
 
+		var streak_root := Node3D.new()
+		streak_root.name = "StreakRoot"
+		root.add_child(streak_root)
+		var streak_materials: Array = []
+		for streak_index in range(3):
+			var streak := MeshInstance3D.new()
+			streak.name = "Streak%d" % streak_index
+			var streak_mesh := QuadMesh.new()
+			streak_mesh.size = Vector2(maxf(half_extents.x, half_extents.z) * 1.35, 6.8)
+			streak.mesh = streak_mesh
+			streak.position = Vector3(0.0, 3.2, 0.0)
+			streak.rotation.y = deg_to_rad(60.0 * float(streak_index))
+			streak.rotation.x = deg_to_rad(-8.0)
+			var streak_material := ShaderMaterial.new()
+			streak_material.shader = SquallStreaksShader
+			streak_material.set_shader_parameter("intensity", 0.36 + float(band.get("pulse_damage", 0.0)) * 0.05)
+			streak_material.set_shader_parameter("density", 9.0 + float(streak_index) * 2.0)
+			streak.material_override = streak_material
+			streak_root.add_child(streak)
+			streak_materials.append(streak_material)
+
 		var label := Label3D.new()
 		label.name = "Label"
 		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -2264,6 +2473,7 @@ func _refresh_squall_visuals() -> void:
 			"root": root,
 			"shell_material": shell_material,
 			"core_material": core_material,
+			"streak_materials": streak_materials,
 			"label": label,
 		}
 
@@ -2418,6 +2628,8 @@ func _consume_local_reaction_impulse() -> void:
 	var knockback: Vector3 = local_reaction.get("knockback_velocity", Vector3.ZERO)
 	if knockback.length() > 0.01:
 		local_camera_jolt += knockback.normalized() * (0.26 + float(local_reaction.get("strength", 0.5)) * 0.22)
+	if str(local_reaction.get("type", "")) == "impact":
+		_spawn_splash_burst(NetworkRuntime.boat_state.get("position", Vector3.ZERO), clampf(float(local_reaction.get("strength", 0.5)) * 1.1, 0.45, 1.2))
 
 func _update_crew_visuals(delta: float) -> void:
 	var idle_slot_index := 0
@@ -3323,12 +3535,20 @@ func _update_squall_visuals() -> void:
 		root.position = center + Vector3(0.0, sin(connect_time_seconds * 0.8 + float(band_id)) * 0.08, 0.0)
 		var shell_material := visual.get("shell_material") as StandardMaterial3D
 		var core_material := visual.get("core_material") as StandardMaterial3D
+		var streak_materials: Array = visual.get("streak_materials", [])
 		var label := visual.get("label") as Label3D
 		var inside := _position_inside_squall(boat_position, band)
 		if shell_material != null:
-			shell_material.albedo_color = Color(0.20, 0.37, 0.52, 0.22).lerp(Color(0.33, 0.62, 0.88, 0.34), 1.0 if inside else 0.0)
+			shell_material.albedo_color = Color(0.10, 0.16, 0.22, 0.18).lerp(Color(0.18, 0.30, 0.42, 0.28), 1.0 if inside else 0.36)
 		if core_material != null:
-			core_material.albedo_color = Color(0.30, 0.70, 0.96, 0.46).lerp(Color(0.92, 0.95, 1.0, 0.64), 1.0 if inside else 0.0)
+			core_material.albedo_color = Color(0.24, 0.56, 0.76, 0.30).lerp(Color(0.80, 0.88, 0.96, 0.58), 1.0 if inside else 0.0)
+		var streak_strength := clampf(0.28 + float(band.get("pulse_damage", 0.0)) * 0.04 + (0.26 if inside else 0.0), 0.0, 1.0)
+		for streak_material_variant in streak_materials:
+			var streak_material := streak_material_variant as ShaderMaterial
+			if streak_material == null:
+				continue
+			streak_material.set_shader_parameter("intensity", streak_strength)
+			streak_material.set_shader_parameter("scroll_speed", 2.2 + float(band.get("drag_multiplier", 1.0)) * 0.9)
 		if label != null:
 			label.text = "%s\nDrag x%.2f | Surge %.1f" % [
 				str(band.get("label", "Squall Front")),
@@ -3599,8 +3819,10 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 	var local_overboard := _is_local_overboard()
 	if local_overboard and not last_local_overboard:
 		_push_event_callout("Overboard!", HUD_TEXT_DANGER, 2.4)
+		_spawn_splash_burst(_get_local_avatar_world_position(), 1.15, Color(0.92, 0.96, 1.0), Color(0.54, 0.76, 0.86))
 	elif not local_overboard and last_local_overboard:
 		_push_event_callout("Back On Deck", HUD_TEXT_SUCCESS, 2.1)
+		_spawn_splash_burst(_get_local_avatar_world_position(), 0.72, Color(0.80, 0.92, 0.98), Color(0.44, 0.68, 0.78))
 	last_local_overboard = local_overboard
 	var overboard_count := 0
 	for peer_id_variant in snapshot.keys():
@@ -3627,6 +3849,10 @@ func _on_helm_changed(_driver_peer_id: int) -> void:
 func _on_boat_state_changed(_state: Dictionary) -> void:
 	var collision_count := int(NetworkRuntime.boat_state.get("collision_count", 0))
 	if collision_count > last_hud_collision_count:
+		var boat_forward := -Vector3.FORWARD.rotated(Vector3.UP, float(NetworkRuntime.boat_state.get("rotation_y", 0.0)))
+		var impact_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO) + boat_forward * 2.5
+		var impact_strength := clampf(float(NetworkRuntime.boat_state.get("last_impact_damage", 0.0)) / 14.0, 0.55, 1.35)
+		_spawn_splash_burst(impact_position, impact_strength, Color(0.92, 0.97, 1.0), Color(0.56, 0.76, 0.86))
 		if bool(NetworkRuntime.boat_state.get("last_impact_braced", false)):
 			_push_event_callout("Brace Held", HUD_TEXT_SUCCESS)
 		else:
