@@ -936,7 +936,14 @@ func _build_run_toolbelt_text() -> String:
 	]
 
 func _build_run_inventory_text() -> String:
-	var snapshot := NetworkRuntime.get_run_inventory_snapshot()
+	var snapshot := NetworkRuntime.get_run_inventory_snapshot(_get_selected_run_tool_id())
+	var tool_lines := PackedStringArray()
+	for entry_variant in Array(snapshot.get("toolbelt_manifest", [])):
+		var entry: Dictionary = entry_variant
+		var prefix := "* " if bool(entry.get("equipped", false)) else "- "
+		tool_lines.append("%s%s" % [prefix, str(entry.get("label", "Tool"))])
+	if tool_lines.is_empty():
+		tool_lines.append("- No tools equipped.")
 	var manifest_lines := PackedStringArray()
 	for entry_variant in Array(snapshot.get("cargo_manifest", [])):
 		var entry: Dictionary = entry_variant
@@ -955,7 +962,8 @@ func _build_run_inventory_text() -> String:
 		])
 	if bonus_lines.is_empty():
 		bonus_lines.append("- No support bonuses secured yet.")
-	return "Cargo Hold %d/%d | Patch Kits %d/%d\nAboard\n%s\nSupport\n%s\nCargo Lost To Sea %d | Bonus Bank %dg / %ds" % [
+	return "On You\n%s\nCargo Hold %d/%d | Patch Kits %d/%d\nAboard\n%s\nSupport\n%s\nCargo Lost To Sea %d | Bonus Bank %dg / %ds" % [
+		"\n".join(tool_lines),
 		int(snapshot.get("cargo_count", 0)),
 		int(snapshot.get("cargo_capacity", 0)),
 		int(snapshot.get("patch_kits", 0)),

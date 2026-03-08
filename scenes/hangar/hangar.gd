@@ -988,7 +988,14 @@ func _build_hangar_toolbelt_text() -> String:
 	]
 
 func _build_hangar_inventory_text() -> String:
-	var snapshot := NetworkRuntime.get_hangar_inventory_snapshot()
+	var snapshot := NetworkRuntime.get_hangar_inventory_snapshot(_get_selected_hangar_tool_id())
+	var tool_lines := PackedStringArray()
+	for entry_variant in Array(snapshot.get("toolbelt_manifest", [])):
+		var entry: Dictionary = entry_variant
+		var prefix := "* " if bool(entry.get("equipped", false)) else "- "
+		tool_lines.append("%s%s" % [prefix, str(entry.get("label", "Tool"))])
+	if tool_lines.is_empty():
+		tool_lines.append("- No tools equipped.")
 	var manifest_lines := PackedStringArray()
 	for entry_variant in Array(snapshot.get("blueprint_manifest", [])):
 		var entry: Dictionary = entry_variant
@@ -1013,7 +1020,8 @@ func _build_hangar_inventory_text() -> String:
 			int(next_entry.get("unlock_cost_salvage", 0)),
 		]
 	var stats: Dictionary = snapshot.get("stats", {})
-	return "Dock Totals: %d gold | %d salvage\nMounted Parts\n%s\nUnlocked: %s\nNext Yard Pick: %s\nBlueprint: Cargo %d | Patch Kits %d | Main %d | Loose %d" % [
+	return "On You\n%s\nDock Totals: %d gold | %d salvage\nMounted Parts\n%s\nUnlocked: %s\nNext Yard Pick: %s\nBlueprint: Cargo %d | Patch Kits %d | Main %d | Loose %d" % [
+		"\n".join(tool_lines),
 		int(snapshot.get("gold", 0)),
 		int(snapshot.get("salvage", 0)),
 		"\n".join(manifest_lines),

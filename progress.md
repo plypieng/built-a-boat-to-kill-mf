@@ -948,3 +948,10 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - fresh temp-`HOME` end-to-end autohost regression on port `7195`
   - the run still completed `hangar -> run -> extraction -> hangar`
   - the server banked `82 gold / 5 salvage` on return with the new inventory/toolbelt code active
+
+## 2026-03-09 - Personal toolbelt inventory follow-up
+
+- Extended the inventory snapshots so the local character's carried toolbelt is part of inventory data, not just the HUD strip
+- Hangar inventory now shows an `On You` section for `Build`, `Remove`, and `Yard`, with the equipped tool marked
+- Run inventory now shows an `On You` section for `Helm`, `Brace`, `Grapple`, `Repair`, and `Recover`, with the equipped tool marked
+- Verified with a fresh parse smoke: `godot --headless --path . --quit-after 2`

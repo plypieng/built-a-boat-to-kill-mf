@@ -565,7 +565,7 @@ func get_toolbelt_entries(phase_name: String = session_phase) -> Array:
 		return RUN_TOOLBELT.duplicate(true)
 	return HANGAR_TOOLBELT.duplicate(true)
 
-func get_hangar_inventory_snapshot() -> Dictionary:
+func get_hangar_inventory_snapshot(active_tool_id: String = "") -> Dictionary:
 	var snapshot := progression_state.duplicate(true)
 	if snapshot.is_empty():
 		snapshot = DockState.get_profile_snapshot()
@@ -596,13 +596,14 @@ func get_hangar_inventory_snapshot() -> Dictionary:
 	return {
 		"gold": int(snapshot.get("total_gold", 0)),
 		"salvage": int(snapshot.get("total_salvage", 0)),
+		"toolbelt_manifest": _build_toolbelt_manifest(SESSION_PHASE_HANGAR, active_tool_id),
 		"unlocked_parts": unlocked_labels,
 		"blueprint_manifest": blueprint_manifest,
 		"store_entries": get_builder_store_entries(),
 		"stats": get_blueprint_stats(),
 	}
 
-func get_run_inventory_snapshot() -> Dictionary:
+func get_run_inventory_snapshot(active_tool_id: String = "") -> Dictionary:
 	var bonus_manifest: Array = []
 	if bool(run_state.get("rescue_completed", false)):
 		bonus_manifest.append(_make_inventory_entry(
@@ -627,6 +628,7 @@ func get_run_inventory_snapshot() -> Dictionary:
 			]
 		))
 	return {
+		"toolbelt_manifest": _build_toolbelt_manifest(SESSION_PHASE_RUN, active_tool_id),
 		"cargo_manifest": Array(run_state.get("cargo_manifest", [])).duplicate(true),
 		"secured_manifest": Array(run_state.get("secured_manifest", [])).duplicate(true),
 		"bonus_manifest": bonus_manifest,
@@ -638,6 +640,20 @@ func get_run_inventory_snapshot() -> Dictionary:
 		"bonus_gold_bank": int(run_state.get("bonus_gold_bank", 0)),
 		"bonus_salvage_bank": int(run_state.get("bonus_salvage_bank", 0)),
 	}
+
+func _build_toolbelt_manifest(phase_name: String, active_tool_id: String = "") -> Array:
+	var manifest: Array = []
+	for tool_variant in get_toolbelt_entries(phase_name):
+		var tool: Dictionary = tool_variant
+		var entry := _make_inventory_entry(
+			str(tool.get("label", "Tool")),
+			1,
+			str(tool.get("icon", "cargo")),
+			str(tool.get("hint", ""))
+		)
+		entry["equipped"] = str(tool.get("id", "")) == active_tool_id
+		manifest.append(entry)
+	return manifest
 
 func _get_inventory_icon_for_block(block_id: String) -> String:
 	match block_id.strip_edges().to_lower():
