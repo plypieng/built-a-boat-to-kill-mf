@@ -9,6 +9,7 @@ signal session_phase_changed(phase: String)
 signal boat_blueprint_changed(snapshot: Dictionary)
 signal peer_snapshot_changed(snapshot: Dictionary)
 signal hangar_avatar_state_changed(snapshot: Dictionary)
+signal run_avatar_state_changed(snapshot: Dictionary)
 signal reaction_state_changed(snapshot: Dictionary)
 signal run_seed_changed(seed: int)
 signal helm_changed(driver_peer_id: int)
@@ -57,6 +58,14 @@ const HANGAR_SPAWN_POINTS := [
 	Vector3(1.2, 0.55, 6.4),
 	Vector3(3.6, 0.55, 6.8),
 ]
+const RUN_DECK_SPAWN_POINTS := [
+	Vector3(0.0, 0.92, 1.35),
+	Vector3(-1.0, 0.92, 1.05),
+	Vector3(1.0, 0.92, 1.05),
+	Vector3(0.0, 0.92, 2.0),
+]
+const RUN_DECK_BOUNDS_MIN := Vector3(-1.18, 0.72, -1.92)
+const RUN_DECK_BOUNDS_MAX := Vector3(1.18, 1.28, 2.08)
 const BUILDER_BLOCK_ORDER := [
 	"core",
 	"hull",
@@ -297,6 +306,7 @@ var session_phase := SESSION_PHASE_HANGAR
 var boat_blueprint: Dictionary = {}
 var peer_snapshot: Dictionary = {}
 var hangar_avatar_state: Dictionary = {}
+var run_avatar_state: Dictionary = {}
 var reaction_state: Dictionary = {}
 var status_message := "Offline"
 var driver_peer_id := 0
@@ -348,6 +358,7 @@ func start_server(listen_port: int = GameConfig.DEFAULT_PORT, seed: int = GameCo
 	}
 	_reset_progression_runtime()
 	_reset_hangar_avatar_state()
+	_reset_run_avatar_state()
 	_reset_reaction_runtime()
 	_reset_blueprint_runtime()
 	_reset_run_runtime()
@@ -465,6 +476,9 @@ func get_builder_store_entries() -> Array:
 
 func get_hangar_avatar_state() -> Dictionary:
 	return hangar_avatar_state.duplicate(true)
+
+func get_run_avatar_state() -> Dictionary:
+	return run_avatar_state.duplicate(true)
 
 func get_reaction_state() -> Dictionary:
 	return reaction_state.duplicate(true)
@@ -619,6 +633,14 @@ func send_local_hangar_avatar_state(position: Vector3, velocity: Vector3, facing
 		return
 	server_receive_hangar_avatar_state.rpc_id(1, position, velocity, facing_y, grounded)
 
+func send_local_run_avatar_state(deck_position: Vector3, velocity: Vector3, facing_y: float, grounded: bool) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
+	if multiplayer.is_server():
+		_receive_run_avatar_state(multiplayer.get_unique_id(), deck_position, velocity, facing_y, grounded)
+		return
+	server_receive_run_avatar_state.rpc_id(1, deck_position, velocity, facing_y, grounded)
+
 func send_local_boat_input(throttle: float, steer: float) -> void:
 	var clamped_throttle := clampf(throttle, -1.0, 1.0)
 	var clamped_steer := clampf(steer, -1.0, 1.0)
@@ -729,6 +751,7 @@ func _emit_all_runtime_state() -> void:
 	emit_signal("progression_state_changed", progression_state.duplicate(true))
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
 	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
+	emit_signal("run_avatar_state_changed", run_avatar_state.duplicate(true))
 	emit_signal("reaction_state_changed", reaction_state.duplicate(true))
 	emit_signal("helm_changed", driver_peer_id)
 	emit_signal("boat_state_changed", boat_state.duplicate(true))
@@ -770,6 +793,13 @@ func _broadcast_hangar_avatar_state() -> void:
 		var snapshot := hangar_avatar_state.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_hangar_avatar_state.rpc_id(int(peer_id), snapshot)
+
+func _broadcast_run_avatar_state() -> void:
+	emit_signal("run_avatar_state_changed", run_avatar_state.duplicate(true))
+	if multiplayer.is_server():
+		var snapshot := run_avatar_state.duplicate(true)
+		for peer_id in _get_server_broadcast_peer_ids():
+			client_receive_run_avatar_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_reaction_state() -> void:
 	emit_signal("reaction_state_changed", reaction_state.duplicate(true))
@@ -832,6 +862,7 @@ func _send_bootstrap(peer_id: int) -> void:
 	client_receive_loot_state.rpc_id(peer_id, loot_state.duplicate(true))
 	client_receive_run_state.rpc_id(peer_id, run_state.duplicate(true))
 	client_receive_hangar_avatar_state.rpc_id(peer_id, hangar_avatar_state.duplicate(true))
+	client_receive_run_avatar_state.rpc_id(peer_id, run_avatar_state.duplicate(true))
 	client_receive_reaction_state.rpc_id(peer_id, reaction_state.duplicate(true))
 	if session_phase == SESSION_PHASE_RUN:
 		client_receive_runtime_boat_state.rpc_id(peer_id, _build_client_runtime_boat_snapshot())
@@ -1063,6 +1094,9 @@ func _reset_blueprint_runtime() -> void:
 func _reset_hangar_avatar_state() -> void:
 	hangar_avatar_state = {}
 
+func _reset_run_avatar_state() -> void:
+	run_avatar_state = {}
+
 func _reset_reaction_runtime() -> void:
 	reaction_state = {}
 	_next_reaction_id = 1
@@ -1078,6 +1112,16 @@ func _reset_connected_hangar_avatars() -> void:
 		hangar_avatar_state[peer_id] = _make_default_hangar_avatar_state(index)
 	_broadcast_hangar_avatar_state()
 
+func _reset_connected_run_avatars() -> void:
+	if not multiplayer.is_server():
+		return
+	run_avatar_state = {}
+	var peer_ids := get_player_peer_ids()
+	for index in range(peer_ids.size()):
+		var peer_id := int(peer_ids[index])
+		run_avatar_state[peer_id] = _make_default_run_avatar_state(index)
+	_broadcast_run_avatar_state()
+
 func _make_default_hangar_avatar_state(spawn_index: int) -> Dictionary:
 	var clamped_index := wrapi(spawn_index, 0, HANGAR_SPAWN_POINTS.size())
 	var spawn_position: Vector3 = HANGAR_SPAWN_POINTS[clamped_index]
@@ -1088,6 +1132,16 @@ func _make_default_hangar_avatar_state(spawn_index: int) -> Dictionary:
 		"grounded": true,
 	}
 
+func _make_default_run_avatar_state(spawn_index: int) -> Dictionary:
+	var clamped_index := wrapi(spawn_index, 0, RUN_DECK_SPAWN_POINTS.size())
+	var spawn_position: Vector3 = RUN_DECK_SPAWN_POINTS[clamped_index]
+	return {
+		"deck_position": spawn_position,
+		"velocity": Vector3.ZERO,
+		"facing_y": PI,
+		"grounded": true,
+	}
+
 func _reset_run_runtime() -> void:
 	driver_peer_id = 0
 	_peer_inputs = {}
@@ -1095,6 +1149,7 @@ func _reset_run_runtime() -> void:
 	_next_hazard_id = 1
 	_next_loot_id = 1
 	_next_runtime_chunk_id = 1
+	_reset_run_avatar_state()
 	_reset_reaction_runtime()
 	var blueprint_stats := Dictionary(boat_blueprint.get("stats", {}))
 	var max_hull_integrity := float(blueprint_stats.get("max_hull_integrity", BOAT_MAX_INTEGRITY))
@@ -1736,11 +1791,13 @@ func _launch_run_session(peer_id: int) -> void:
 
 	_reset_run_runtime()
 	_set_session_phase(SESSION_PHASE_RUN)
+	_reset_connected_run_avatars()
 	_broadcast_boat_state()
 	_broadcast_hazard_state()
 	_broadcast_station_state()
 	_broadcast_loot_state()
 	_broadcast_run_state()
+	_broadcast_run_avatar_state()
 	_broadcast_reaction_state()
 	_broadcast_runtime_boat_state()
 	_set_status("Run launched by %s using blueprint v%d." % [
@@ -1764,6 +1821,7 @@ func _return_to_hangar_session(peer_id: int) -> void:
 	_broadcast_station_state()
 	_broadcast_loot_state()
 	_broadcast_run_state()
+	_broadcast_run_avatar_state()
 	_broadcast_reaction_state()
 	_set_status("%s returned the crew to the hangar." % _get_peer_name(peer_id))
 
@@ -2786,6 +2844,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	_release_station(peer_id, false)
 	peer_snapshot.erase(peer_id)
 	hangar_avatar_state.erase(peer_id)
+	run_avatar_state.erase(peer_id)
 	reaction_state.erase(peer_id)
 	var expired_pair_keys: Array = []
 	for pair_key_variant in _hangar_bump_pair_cooldowns.keys():
@@ -2805,6 +2864,7 @@ func _broadcast_disconnect_updates() -> void:
 	_broadcast_boat_state()
 	_broadcast_peer_snapshot()
 	_broadcast_hangar_avatar_state()
+	_broadcast_run_avatar_state()
 	_broadcast_reaction_state()
 
 func _schedule_disconnect_updates() -> void:
@@ -2844,9 +2904,12 @@ func server_register_player(player_name: String) -> void:
 	}
 	if not hangar_avatar_state.has(peer_id):
 		hangar_avatar_state[peer_id] = _make_default_hangar_avatar_state(hangar_avatar_state.size())
+	if session_phase == SESSION_PHASE_RUN and not run_avatar_state.has(peer_id):
+		run_avatar_state[peer_id] = _make_default_run_avatar_state(run_avatar_state.size())
 	_send_bootstrap(peer_id)
 	_broadcast_peer_snapshot()
 	_broadcast_hangar_avatar_state()
+	_broadcast_run_avatar_state()
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_request_driver_control() -> void:
@@ -2947,6 +3010,16 @@ func server_receive_hangar_avatar_state(position: Vector3, velocity: Vector3, fa
 	_receive_hangar_avatar_state(peer_id, position, velocity, facing_y, grounded)
 
 @rpc("any_peer", "call_remote", "unreliable")
+func server_receive_run_avatar_state(deck_position: Vector3, velocity: Vector3, facing_y: float, grounded: bool) -> void:
+	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_RUN:
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_receive_run_avatar_state(peer_id, deck_position, velocity, facing_y, grounded)
+
+@rpc("any_peer", "call_remote", "unreliable")
 func server_receive_boat_input(throttle: float, steer: float) -> void:
 	if not multiplayer.is_server():
 		return
@@ -2958,6 +3031,11 @@ func server_receive_boat_input(throttle: float, steer: float) -> void:
 func client_receive_hangar_avatar_state(snapshot: Dictionary) -> void:
 	hangar_avatar_state = snapshot.duplicate(true)
 	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
+
+@rpc("authority", "call_remote", "unreliable")
+func client_receive_run_avatar_state(snapshot: Dictionary) -> void:
+	run_avatar_state = snapshot.duplicate(true)
+	emit_signal("run_avatar_state_changed", run_avatar_state.duplicate(true))
 
 @rpc("authority", "call_remote", "reliable")
 func client_receive_reaction_state(snapshot: Dictionary) -> void:
@@ -3011,6 +3089,27 @@ func _receive_hangar_avatar_state(peer_id: int, position: Vector3, velocity: Vec
 		"grounded": grounded,
 	}
 	_broadcast_hangar_avatar_state()
+
+func _sanitize_run_avatar_deck_position(deck_position: Vector3) -> Vector3:
+	return Vector3(
+		clampf(deck_position.x, RUN_DECK_BOUNDS_MIN.x, RUN_DECK_BOUNDS_MAX.x),
+		clampf(deck_position.y, RUN_DECK_BOUNDS_MIN.y, RUN_DECK_BOUNDS_MAX.y),
+		clampf(deck_position.z, RUN_DECK_BOUNDS_MIN.z, RUN_DECK_BOUNDS_MAX.z)
+	)
+
+func _receive_run_avatar_state(peer_id: int, deck_position: Vector3, velocity: Vector3, facing_y: float, grounded: bool) -> void:
+	if not multiplayer.is_server():
+		return
+	if not peer_snapshot.has(peer_id):
+		return
+
+	run_avatar_state[peer_id] = {
+		"deck_position": _sanitize_run_avatar_deck_position(deck_position),
+		"velocity": velocity.limit_length(9.5),
+		"facing_y": facing_y,
+		"grounded": grounded,
+	}
+	_broadcast_run_avatar_state()
 
 @rpc("authority", "call_remote", "unreliable")
 func client_receive_boat_state(state: Dictionary, current_driver_id: int) -> void:

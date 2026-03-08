@@ -15,6 +15,19 @@ const STATION_LOCAL_COLOR := Color(0.30, 0.82, 0.52)
 const EXTRACTION_IDLE_COLOR := Color(0.30, 0.62, 0.86)
 const EXTRACTION_READY_COLOR := Color(0.21, 0.82, 0.57)
 const EXTRACTION_FAILED_COLOR := Color(0.84, 0.25, 0.24)
+const RUN_AVATAR_MOVE_SPEED := 4.9
+const RUN_AVATAR_ACCELERATION := 15.0
+const RUN_AVATAR_SYNC_INTERVAL := 0.05
+const RUN_CAMERA_SIDE_OFFSET := 0.9
+const RUN_CAMERA_HEIGHT := 2.2
+const RUN_CAMERA_DISTANCE := 5.9
+const RUN_CAMERA_LOOK_HEIGHT := 1.32
+const RUN_CAMERA_LOOK_AHEAD := 2.1
+const RUN_CAMERA_LAG := 8.0
+const RUN_MOUSE_LOOK_SENSITIVITY := 0.0035
+const RUN_CAMERA_PITCH_MIN := deg_to_rad(-58.0)
+const RUN_CAMERA_PITCH_MAX := deg_to_rad(44.0)
+const RUN_CAMERA_PITCH_DEFAULT := deg_to_rad(-10.0)
 const HUD_PANEL_BG := Color(0.05, 0.09, 0.13, 0.78)
 const HUD_PANEL_BG_SOFT := Color(0.07, 0.12, 0.17, 0.70)
 const HUD_BORDER_BLUE := Color(0.30, 0.53, 0.66, 0.92)
@@ -70,6 +83,7 @@ var result_panel: PanelContainer
 var result_title_label: Label
 var result_body_label: Label
 var result_continue_button: Button
+var crosshair_label: Label
 var launch_overrides: Dictionary = {}
 var connect_time_seconds := 0.0
 var autopilot_remaining_seconds := 0.0
@@ -95,6 +109,11 @@ var auto_continue_queued := false
 var reaction_visual_state: Dictionary = {}
 var last_local_reaction_id := 0
 var local_camera_jolt := Vector3.ZERO
+var local_avatar_facing_y := PI
+var local_camera_pitch := RUN_CAMERA_PITCH_DEFAULT
+var local_run_avatar_position := IDLE_CREW_SLOTS[0]
+var local_run_avatar_velocity := Vector3.ZERO
+var run_avatar_sync_timer := 0.0
 var event_callout_timer := 0.0
 var event_callout_color := HUD_TEXT_PRIMARY
 var last_hud_collision_count := 0
@@ -106,9 +125,12 @@ var last_hud_phase := "running"
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
+	local_camera_pitch = RUN_CAMERA_PITCH_DEFAULT
 	_build_world()
 	_build_hud()
 	_build_result_overlay()
+	_prime_local_run_avatar_state()
+	_set_mouse_capture(true)
 	_refresh_world()
 	_refresh_hud()
 	_schedule_frame_capture()
@@ -120,6 +142,7 @@ func _ready() -> void:
 	NetworkRuntime.status_changed.connect(_on_status_changed)
 	NetworkRuntime.session_phase_changed.connect(_on_session_phase_changed)
 	NetworkRuntime.peer_snapshot_changed.connect(_on_peer_snapshot_changed)
+	NetworkRuntime.run_avatar_state_changed.connect(_on_run_avatar_state_changed)
 	NetworkRuntime.reaction_state_changed.connect(_on_reaction_state_changed)
 	NetworkRuntime.run_seed_changed.connect(_on_run_seed_changed)
 	NetworkRuntime.helm_changed.connect(_on_helm_changed)
@@ -151,6 +174,8 @@ func _process(delta: float) -> void:
 func _physics_process(delta: float) -> void:
 	station_request_cooldown = maxf(0.0, station_request_cooldown - delta)
 	action_request_cooldown = maxf(0.0, action_request_cooldown - delta)
+	_process_local_run_avatar_movement(delta)
+	_sync_local_run_avatar_state(delta)
 
 	var input_state := _collect_input_state(delta)
 	var claim_station_id := str(input_state.get("claim_station", ""))
@@ -275,6 +300,42 @@ func _build_world() -> void:
 	camera.position = Vector3(0.0, 5.5, 10.5)
 	add_child(camera)
 	camera.look_at(Vector3(0.0, 0.6, 0.0), Vector3.UP)
+
+func _supports_mouse_capture() -> bool:
+	return DisplayServer.get_name() != "headless"
+
+func _is_mouse_captured() -> bool:
+	return _supports_mouse_capture() and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED
+
+func _set_mouse_capture(captured: bool) -> void:
+	if not _supports_mouse_capture():
+		return
+	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED if captured else Input.MOUSE_MODE_VISIBLE)
+
+func _prime_local_run_avatar_state() -> void:
+	var local_peer_id := _get_local_peer_id()
+	var snapshot: Dictionary = NetworkRuntime.get_run_avatar_state().get(local_peer_id, {})
+	if snapshot.is_empty():
+		local_run_avatar_position = IDLE_CREW_SLOTS[0]
+		local_run_avatar_velocity = Vector3.ZERO
+		local_avatar_facing_y = PI
+		return
+	local_run_avatar_position = snapshot.get("deck_position", IDLE_CREW_SLOTS[0])
+	local_run_avatar_velocity = snapshot.get("velocity", Vector3.ZERO)
+	local_avatar_facing_y = float(snapshot.get("facing_y", PI))
+
+func _clamp_run_avatar_position(deck_position: Vector3) -> Vector3:
+	return Vector3(
+		clampf(deck_position.x, NetworkRuntime.RUN_DECK_BOUNDS_MIN.x, NetworkRuntime.RUN_DECK_BOUNDS_MAX.x),
+		clampf(deck_position.y, NetworkRuntime.RUN_DECK_BOUNDS_MIN.y, NetworkRuntime.RUN_DECK_BOUNDS_MAX.y),
+		clampf(deck_position.z, NetworkRuntime.RUN_DECK_BOUNDS_MIN.z, NetworkRuntime.RUN_DECK_BOUNDS_MAX.z)
+	)
+
+func _get_local_run_avatar_target() -> Vector3:
+	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
+	if local_station_id.is_empty():
+		return local_run_avatar_position
+	return NetworkRuntime.get_station_position(local_station_id) + Vector3(0.0, 0.18, 0.0)
 
 func _build_station_visuals() -> void:
 	station_visuals = {}
@@ -616,7 +677,7 @@ func _build_hud() -> void:
 	crew_layout.add_child(onboarding_label)
 
 	var footer := Label.new()
-	footer.text = "Q/E stations | F claim | W A S D helm | Space brace | G grapple | R repair"
+	footer.text = "Mouse aim | Q/E stations | F claim | W A S D helm | Space brace | G grapple | R repair"
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	footer.add_theme_font_size_override("font_size", 11)
 	footer.modulate = HUD_TEXT_MUTED
@@ -665,6 +726,19 @@ func _build_hud() -> void:
 	status_label.add_theme_font_size_override("font_size", 11)
 	status_label.modulate = HUD_TEXT_MUTED
 	survival_layout.add_child(status_label)
+
+	crosshair_label = Label.new()
+	crosshair_label.text = "+"
+	crosshair_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	crosshair_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	crosshair_label.add_theme_font_size_override("font_size", 26)
+	crosshair_label.modulate = Color(0.98, 0.97, 0.92, 0.9)
+	crosshair_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	crosshair_label.offset_left = -10.0
+	crosshair_label.offset_top = -16.0
+	crosshair_label.offset_right = 10.0
+	crosshair_label.offset_bottom = 16.0
+	layer.add_child(crosshair_label)
 
 	event_callout_label = Label.new()
 	event_callout_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1237,10 +1311,16 @@ func _refresh_crew_visuals() -> void:
 		var peer_data: Dictionary = NetworkRuntime.peer_snapshot[peer_id]
 		var crew_member := Node3D.new()
 		var station_id := NetworkRuntime.get_peer_station_id(int(peer_id))
+		var avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
 		if not station_id.is_empty():
 			crew_member.position = NetworkRuntime.get_station_position(station_id) + Vector3(0.0, 0.18, 0.0)
+			crew_member.rotation.y = 0.0
+		elif not avatar_state.is_empty():
+			crew_member.position = avatar_state.get("deck_position", IDLE_CREW_SLOTS[idle_slot_index % IDLE_CREW_SLOTS.size()])
+			crew_member.rotation.y = float(avatar_state.get("facing_y", PI))
 		else:
 			crew_member.position = IDLE_CREW_SLOTS[idle_slot_index % IDLE_CREW_SLOTS.size()]
+			crew_member.rotation.y = PI
 			idle_slot_index += 1
 		crew_container.add_child(crew_member)
 
@@ -1617,9 +1697,14 @@ func _update_crew_visuals(delta: float) -> void:
 		if crew_root == null:
 			continue
 		var station_id := NetworkRuntime.get_peer_station_id(int(peer_id))
+		var avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
 		var target_position: Vector3 = IDLE_CREW_SLOTS[idle_slot_index % IDLE_CREW_SLOTS.size()]
+		var target_yaw := float(avatar_state.get("facing_y", PI))
 		if not station_id.is_empty():
 			target_position = NetworkRuntime.get_station_position(station_id) + Vector3(0.0, 0.18, 0.0)
+			target_yaw = 0.0
+		elif not avatar_state.is_empty():
+			target_position = avatar_state.get("deck_position", target_position)
 		else:
 			idle_slot_index += 1
 		var peer_reaction := _get_reaction_visual(int(peer_id))
@@ -1635,6 +1720,7 @@ func _update_crew_visuals(delta: float) -> void:
 			target_position += local_knockback * 0.08 * intensity
 			target_position.y += sin(connect_time_seconds * 22.0 + float(peer_id)) * 0.06 * intensity
 		crew_root.position = crew_root.position.lerp(target_position, minf(1.0, delta * 8.5))
+		crew_root.rotation.y = lerp_angle(crew_root.rotation.y, target_yaw, minf(1.0, delta * 10.0))
 		crew_root.rotation.x = lerp_angle(crew_root.rotation.x, clampf(local_knockback.z * -0.05 * intensity, -0.42, 0.42), minf(1.0, delta * 12.0))
 		crew_root.rotation.z = lerp_angle(crew_root.rotation.z, clampf(local_knockback.x * 0.055 * intensity, -0.48, 0.48), minf(1.0, delta * 12.0))
 		var nameplate := visual.get("nameplate") as Label3D
@@ -1644,6 +1730,69 @@ func _update_crew_visuals(delta: float) -> void:
 			nameplate.text = "%s - %s" % [str(peer_data.get("name", "Crew")), role_label]
 			if not peer_reaction.is_empty():
 				nameplate.text += " [%s]" % str(peer_reaction.get("type", "reacting")).capitalize()
+
+func _process_local_run_avatar_movement(delta: float) -> void:
+	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
+	if not local_station_id.is_empty():
+		local_run_avatar_position = _get_local_run_avatar_target()
+		local_run_avatar_velocity = Vector3.ZERO
+		return
+
+	var input_vector := Vector2.ZERO
+	if Input.is_physical_key_pressed(KEY_A):
+		input_vector.x -= 1.0
+	if Input.is_physical_key_pressed(KEY_D):
+		input_vector.x += 1.0
+	if Input.is_physical_key_pressed(KEY_W):
+		input_vector.y -= 1.0
+	if Input.is_physical_key_pressed(KEY_S):
+		input_vector.y += 1.0
+	input_vector = input_vector.limit_length(1.0)
+
+	var move_direction_local := Vector3.ZERO
+	if input_vector.length() > 0.001:
+		var camera_forward := -camera.global_transform.basis.z
+		camera_forward.y = 0.0
+		camera_forward = camera_forward.normalized()
+		var camera_right := camera.global_transform.basis.x
+		camera_right.y = 0.0
+		camera_right = camera_right.normalized()
+		var move_direction_world := (camera_right * input_vector.x) + (camera_forward * input_vector.y)
+		if move_direction_world.length() > 0.001:
+			move_direction_world = move_direction_world.normalized()
+			move_direction_local = boat_root.global_transform.basis.inverse() * move_direction_world
+			move_direction_local.y = 0.0
+			move_direction_local = move_direction_local.normalized()
+
+	var local_reaction := _get_reaction_visual(_get_local_peer_id())
+	var active_reaction := float(local_reaction.get("active_time", 0.0)) > 0.0
+	var recovering := float(local_reaction.get("recovery_time", 0.0)) > 0.0
+	if active_reaction:
+		move_direction_local = Vector3.ZERO
+	elif recovering:
+		move_direction_local *= 0.35
+
+	if move_direction_local.length() > 0.001:
+		local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_local.x * RUN_AVATAR_MOVE_SPEED, RUN_AVATAR_ACCELERATION * delta)
+		local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_local.z * RUN_AVATAR_MOVE_SPEED, RUN_AVATAR_ACCELERATION * delta)
+	else:
+		local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, RUN_AVATAR_ACCELERATION * delta)
+		local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, RUN_AVATAR_ACCELERATION * delta)
+
+	local_run_avatar_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
+	local_run_avatar_position = _clamp_run_avatar_position(local_run_avatar_position)
+
+func _sync_local_run_avatar_state(delta: float) -> void:
+	run_avatar_sync_timer = maxf(0.0, run_avatar_sync_timer - delta)
+	if run_avatar_sync_timer > 0.0:
+		return
+	run_avatar_sync_timer = RUN_AVATAR_SYNC_INTERVAL
+	NetworkRuntime.send_local_run_avatar_state(
+		local_run_avatar_position,
+		Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z),
+		local_avatar_facing_y,
+		true
+	)
 
 func _collect_input_state(delta: float) -> Dictionary:
 	var input_state := {
@@ -2226,14 +2375,20 @@ func _update_camera(delta: float) -> void:
 		return
 
 	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / NetworkRuntime.BOAT_TOP_SPEED, 0.0, 1.0)
-	var boat_anchor := boat_root.position + Vector3(0.0, 1.7, 0.0)
-	var forward := -Vector3.FORWARD.rotated(Vector3.UP, boat_root.rotation.y)
-	var look_target := boat_anchor + forward * (1.5 + speed_ratio * 2.2) + local_camera_jolt * 0.42
-	var follow_offset := Vector3(0.0, 4.9 + speed_ratio * 1.2, 9.8 + speed_ratio * 3.0).rotated(Vector3.UP, boat_root.rotation.y)
-	var desired_position := boat_anchor + follow_offset + local_camera_jolt
-	var blend := minf(1.0, delta * 4.0)
+	var pivot := boat_root.to_global(local_run_avatar_position + Vector3(0.0, RUN_CAMERA_LOOK_HEIGHT, 0.0))
+	var global_yaw := boat_root.rotation.y + local_avatar_facing_y
+	var yaw_basis := Basis(Vector3.UP, global_yaw)
+	var aim_basis := yaw_basis * Basis(Vector3.RIGHT, local_camera_pitch)
+	var forward := (aim_basis * Vector3.FORWARD).normalized()
+	var right := (yaw_basis * Vector3.RIGHT).normalized()
+	var desired_position := pivot - forward * (RUN_CAMERA_DISTANCE + speed_ratio * 1.4)
+	desired_position += right * RUN_CAMERA_SIDE_OFFSET
+	desired_position += Vector3.UP * RUN_CAMERA_HEIGHT
+	desired_position += local_camera_jolt
+	var look_target := pivot + forward * (RUN_CAMERA_LOOK_AHEAD + speed_ratio * 0.8) + local_camera_jolt * 0.42
+	var blend := minf(1.0, delta * RUN_CAMERA_LAG)
 	camera.position = camera.position.lerp(desired_position, blend)
-	camera.fov = lerpf(camera.fov, 70.0 + speed_ratio * 9.0, blend)
+	camera.fov = lerpf(camera.fov, 69.0 + speed_ratio * 7.0, blend)
 	camera.look_at(look_target, Vector3.UP)
 
 func _update_boat_material() -> void:
@@ -2352,8 +2507,25 @@ func _continue_to_dock() -> void:
 		return
 	NetworkRuntime.request_return_to_hangar()
 
+func _exit_tree() -> void:
+	_set_mouse_capture(false)
+
 func _unhandled_input(event: InputEvent) -> void:
-	if str(NetworkRuntime.run_state.get("phase", "running")) == "running":
+	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
+	if phase == "running":
+		if event is InputEventMouseMotion and _is_mouse_captured():
+			var motion_event := event as InputEventMouseMotion
+			local_avatar_facing_y -= motion_event.relative.x * RUN_MOUSE_LOOK_SENSITIVITY
+			local_camera_pitch = clampf(local_camera_pitch - motion_event.relative.y * RUN_MOUSE_LOOK_SENSITIVITY, RUN_CAMERA_PITCH_MIN, RUN_CAMERA_PITCH_MAX)
+			return
+		if event is InputEventMouseButton:
+			var button_event := event as InputEventMouseButton
+			if button_event.pressed and button_event.button_index == MOUSE_BUTTON_LEFT and not _is_mouse_captured():
+				_set_mouse_capture(true)
+				return
+		if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+			_set_mouse_capture(not _is_mouse_captured())
+			return
 		return
 	if event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER):
 		_continue_to_dock()
@@ -2363,11 +2535,23 @@ func _on_status_changed(_message: String) -> void:
 
 func _on_session_phase_changed(phase: String) -> void:
 	if phase == NetworkRuntime.SESSION_PHASE_HANGAR:
+		_set_mouse_capture(false)
 		get_tree().change_scene_to_file(HANGAR_SCENE)
 
 func _on_peer_snapshot_changed(_snapshot: Dictionary) -> void:
 	_refresh_crew_visuals()
 	_refresh_station_visuals()
+	_refresh_hud()
+
+func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
+	var local_state: Dictionary = snapshot.get(_get_local_peer_id(), {})
+	if not local_state.is_empty():
+		var target_position: Vector3 = local_state.get("deck_position", local_run_avatar_position)
+		if local_run_avatar_position.distance_to(target_position) > 0.85:
+			local_run_avatar_position = target_position
+			local_run_avatar_velocity = local_state.get("velocity", local_run_avatar_velocity)
+		local_avatar_facing_y = float(local_state.get("facing_y", local_avatar_facing_y))
+	_refresh_crew_visuals()
 	_refresh_hud()
 
 func _on_reaction_state_changed(snapshot: Dictionary) -> void:
@@ -2520,7 +2704,7 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 		var selected_label := "a station"
 		if not selected_station_id.is_empty():
 			selected_label = NetworkRuntime.get_station_label(selected_station_id)
-		return "Onboarding: Q/E chooses %s, F claims it, and the whole crew shares one boat." % selected_label
+		return "Onboarding: Mouse aim drives the camera. Walk the deck, then use Q/E and F to take %s." % selected_label
 
 	if _boat_inside_any_squall():
 		return "Onboarding: Squalls drag the boat and fire surge pulses. Keep speed under control and brace through the slam."

@@ -796,6 +796,20 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Wrote the approved design doc to `docs/plans/2026-03-08-third-person-avatar-control-refactor-design.md`.
 - Wrote the fallback implementation plan to `docs/plans/2026-03-08-third-person-avatar-control-refactor-implementation-plan.md` because the `writing-plans` skill is not available in this session.
 
+## 2026-03-08 Run Deck Avatar Foundation
+
+- Implemented the first real run-avatar layer for Milestone 2 in `autoload/network_runtime.gd` and `scenes/run_client/run_client.gd`.
+- Added replicated `run_avatar_state` snapshots to the authoritative runtime so clients can sync deck-local avatar position, velocity, and facing while the boat moves underneath them.
+- Replaced the old placeholder crew update path so run-side crew visuals now read from replicated deck-avatar state, while currently claimed stations still snap avatars to their existing station positions until the soft-zone interaction refactor lands.
+- Switched the run camera to a player-follow chase camera with mouse-look and crosshair-facing foundations.
+- Kept the current station-driven extraction loop intact for safety:
+  - helm / brace / grapple / repair still use the old interaction logic for now
+  - movement currently matters most while a player is not occupying a station
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - full local `hangar -> run` autorun capture at `/tmp/builtaboat-run-deck-avatar.png`
+- The autorun still completes the existing extraction path under the new deck-avatar runtime, but true free-moving station use is intentionally deferred to the next interaction-refactor milestone.
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:
