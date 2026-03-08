@@ -41,7 +41,9 @@ var controls_label: Label
 var last_run_label: Label
 var launch_button: Button
 var unlock_button: Button
+var detail_toggle_button: Button
 var crosshair_label: Label
+var detail_panel: PanelContainer
 var dock_body: StaticBody3D
 var boat_root: Node3D
 var block_container: Node3D
@@ -73,6 +75,7 @@ var local_reaction_impulse := Vector3.ZERO
 var local_camera_jolt := Vector3.ZERO
 var last_local_reaction_id := 0
 var selected_store_index := 0
+var hud_details_visible := false
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -125,6 +128,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 
 	match key_event.keycode:
+		KEY_TAB, KEY_H:
+			_toggle_hud_details()
 		KEY_Q:
 			_cycle_block(-1)
 		KEY_E:
@@ -213,6 +218,8 @@ func _build_world() -> void:
 	camera = Camera3D.new()
 	camera.position = Vector3(0.0, HANGAR_CAMERA_HEIGHT + 2.0, HANGAR_CAMERA_DISTANCE)
 	add_child(camera)
+	camera.current = true
+	camera.make_current()
 	camera.look_at(Vector3(0.0, 1.4, 0.0), Vector3.UP)
 
 func _build_hangar_props() -> void:
@@ -408,37 +415,28 @@ func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 
-	var margin := MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	margin.offset_left = 20.0
-	margin.offset_top = 20.0
-	margin.offset_right = -20.0
-	margin.offset_bottom = -20.0
-	layer.add_child(margin)
-
-	var shell := HBoxContainer.new()
-	shell.alignment = BoxContainer.ALIGNMENT_BEGIN
-	shell.add_theme_constant_override("separation", 16)
-	margin.add_child(shell)
-
 	var left_panel := PanelContainer.new()
-	left_panel.custom_minimum_size = Vector2(390.0, 0.0)
-	shell.add_child(left_panel)
+	left_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	left_panel.offset_left = 18.0
+	left_panel.offset_top = 18.0
+	left_panel.offset_right = 398.0
+	left_panel.offset_bottom = 342.0
+	layer.add_child(left_panel)
 
 	var left_margin := MarginContainer.new()
-	left_margin.add_theme_constant_override("margin_left", 16)
-	left_margin.add_theme_constant_override("margin_top", 14)
-	left_margin.add_theme_constant_override("margin_right", 16)
-	left_margin.add_theme_constant_override("margin_bottom", 14)
+	left_margin.add_theme_constant_override("margin_left", 14)
+	left_margin.add_theme_constant_override("margin_top", 12)
+	left_margin.add_theme_constant_override("margin_right", 14)
+	left_margin.add_theme_constant_override("margin_bottom", 12)
 	left_panel.add_child(left_margin)
 
 	var left_layout := VBoxContainer.new()
-	left_layout.add_theme_constant_override("separation", 8)
+	left_layout.add_theme_constant_override("separation", 6)
 	left_margin.add_child(left_layout)
 
 	var title := Label.new()
 	title.text = "Shared Boat Hangar"
-	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_font_size_override("font_size", 22)
 	left_layout.add_child(title)
 
 	onboarding_label = Label.new()
@@ -454,17 +452,9 @@ func _build_hud() -> void:
 	target_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	left_layout.add_child(target_label)
 
-	builder_label = Label.new()
-	builder_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	left_layout.add_child(builder_label)
-
 	launch_readiness_label = Label.new()
 	launch_readiness_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	left_layout.add_child(launch_readiness_label)
-
-	warning_label = Label.new()
-	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	left_layout.add_child(warning_label)
 
 	status_label = Label.new()
 	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -490,18 +480,22 @@ func _build_hud() -> void:
 	actions.add_child(quit_button)
 
 	var right_panel := PanelContainer.new()
-	right_panel.custom_minimum_size = Vector2(296.0, 0.0)
-	shell.add_child(right_panel)
+	right_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	right_panel.offset_left = -328.0
+	right_panel.offset_top = 18.0
+	right_panel.offset_right = -18.0
+	right_panel.offset_bottom = 250.0
+	layer.add_child(right_panel)
 
 	var right_margin := MarginContainer.new()
-	right_margin.add_theme_constant_override("margin_left", 16)
-	right_margin.add_theme_constant_override("margin_top", 14)
-	right_margin.add_theme_constant_override("margin_right", 16)
-	right_margin.add_theme_constant_override("margin_bottom", 14)
+	right_margin.add_theme_constant_override("margin_left", 14)
+	right_margin.add_theme_constant_override("margin_top", 12)
+	right_margin.add_theme_constant_override("margin_right", 14)
+	right_margin.add_theme_constant_override("margin_bottom", 12)
 	right_panel.add_child(right_margin)
 
 	var right_layout := VBoxContainer.new()
-	right_layout.add_theme_constant_override("separation", 8)
+	right_layout.add_theme_constant_override("separation", 6)
 	right_margin.add_child(right_layout)
 
 	profile_label = Label.new()
@@ -517,17 +511,68 @@ func _build_hud() -> void:
 	unlock_button.pressed.connect(_purchase_selected_unlock)
 	right_layout.add_child(unlock_button)
 
+	detail_toggle_button = Button.new()
+	detail_toggle_button.text = "Show Details"
+	detail_toggle_button.pressed.connect(_toggle_hud_details)
+	right_layout.add_child(detail_toggle_button)
+
+	var bottom_left_panel := PanelContainer.new()
+	bottom_left_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	bottom_left_panel.offset_left = 18.0
+	bottom_left_panel.offset_top = -142.0
+	bottom_left_panel.offset_right = 454.0
+	bottom_left_panel.offset_bottom = -18.0
+	layer.add_child(bottom_left_panel)
+
+	var bottom_left_margin := MarginContainer.new()
+	bottom_left_margin.add_theme_constant_override("margin_left", 14)
+	bottom_left_margin.add_theme_constant_override("margin_top", 12)
+	bottom_left_margin.add_theme_constant_override("margin_right", 14)
+	bottom_left_margin.add_theme_constant_override("margin_bottom", 12)
+	bottom_left_panel.add_child(bottom_left_margin)
+
+	var bottom_left_layout := VBoxContainer.new()
+	bottom_left_layout.add_theme_constant_override("separation", 6)
+	bottom_left_margin.add_child(bottom_left_layout)
+
 	roster_label = Label.new()
 	roster_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	right_layout.add_child(roster_label)
-
-	last_run_label = Label.new()
-	last_run_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	right_layout.add_child(last_run_label)
+	bottom_left_layout.add_child(roster_label)
 
 	controls_label = Label.new()
 	controls_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	right_layout.add_child(controls_label)
+	bottom_left_layout.add_child(controls_label)
+
+	detail_panel = PanelContainer.new()
+	detail_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	detail_panel.offset_left = -430.0
+	detail_panel.offset_top = -266.0
+	detail_panel.offset_right = -18.0
+	detail_panel.offset_bottom = -18.0
+	layer.add_child(detail_panel)
+
+	var detail_margin := MarginContainer.new()
+	detail_margin.add_theme_constant_override("margin_left", 14)
+	detail_margin.add_theme_constant_override("margin_top", 12)
+	detail_margin.add_theme_constant_override("margin_right", 14)
+	detail_margin.add_theme_constant_override("margin_bottom", 12)
+	detail_panel.add_child(detail_margin)
+
+	var detail_layout := VBoxContainer.new()
+	detail_layout.add_theme_constant_override("separation", 6)
+	detail_margin.add_child(detail_layout)
+
+	builder_label = Label.new()
+	builder_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail_layout.add_child(builder_label)
+
+	warning_label = Label.new()
+	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail_layout.add_child(warning_label)
+
+	last_run_label = Label.new()
+	last_run_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail_layout.add_child(last_run_label)
 
 	crosshair_label = Label.new()
 	crosshair_label.text = "+"
@@ -541,6 +586,8 @@ func _build_hud() -> void:
 	crosshair_label.offset_right = 12.0
 	crosshair_label.offset_bottom = 18.0
 	layer.add_child(crosshair_label)
+
+	_apply_hud_visibility()
 
 func _refresh_all() -> void:
 	_refresh_blueprint_visuals()
@@ -672,7 +719,7 @@ func _refresh_hud() -> void:
 		else:
 			palette_entries.append(palette_label_text)
 	onboarding_label.text = _build_onboarding_text()
-	selection_label.text = "Build Tool\n%s\nSelected %s | Rot %d deg | HP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
+	selection_label.text = "Build Tool\n%s\nSelected: %s | Rot %d deg | HP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
 		" ".join(palette_entries),
 		str(block_def.get("label", block_id.capitalize())),
 		selected_rotation_steps * 90,
@@ -724,7 +771,7 @@ func _refresh_hud() -> void:
 	if total_runs > 0:
 		extraction_rate = float(successful_runs) / float(total_runs) * 100.0
 	var unlocked_blocks := Array(progression_snapshot.get("unlocked_blocks", []))
-	profile_label.text = "Dock Totals\nGold %d | Salvage %d | Runs %d | Extracted %d (%.0f%%)\nUnlocked Parts %d/%d" % [
+	profile_label.text = "Dock Totals\nGold %d | Salvage %d | Runs %d | Extracted %d (%.0f%%)\nUnlocked %d/%d parts" % [
 		int(progression_snapshot.get("total_gold", 0)),
 		int(progression_snapshot.get("total_salvage", 0)),
 		total_runs,
@@ -742,32 +789,19 @@ func _refresh_hud() -> void:
 	else:
 		selected_store_index = wrapi(selected_store_index, 0, store_entries.size())
 		var selected_store_entry: Dictionary = store_entries[selected_store_index]
-		var store_lines := PackedStringArray()
-		for store_index in range(store_entries.size()):
-			var store_entry: Dictionary = store_entries[store_index]
-			var prefix := ">" if store_index == selected_store_index else " "
-			var entry_label := str(store_entry.get("label", "Part"))
-			var entry_status := "Unlocked"
-			if not bool(store_entry.get("unlocked", false)):
-				entry_status = "Ready" if bool(store_entry.get("affordable", false)) else "Locked"
-			store_lines.append("%s %s - %s (%dg/%ds)" % [
-				prefix,
-				entry_label,
-				entry_status,
-				int(store_entry.get("unlock_cost_gold", 0)),
-				int(store_entry.get("unlock_cost_salvage", 0)),
-			])
-
-		store_label.text = "Unlock Yard\n%s\nSelected %s\n%s\nCost %d gold / %d salvage" % [
-			"\n".join(store_lines),
+		var selected_unlocked := bool(selected_store_entry.get("unlocked", false))
+		var selected_affordable := bool(selected_store_entry.get("affordable", false))
+		var entry_status := "Unlocked" if selected_unlocked else ("Ready" if selected_affordable else "Locked")
+		store_label.text = "Unlock Yard (%d/%d)\nSelected: %s\n%s\nStatus: %s\nCost: %d gold / %d salvage\nZ/C browse | V buy" % [
+			selected_store_index + 1,
+			store_entries.size(),
 			str(selected_store_entry.get("label", "Part")),
 			str(selected_store_entry.get("description", "")),
+			entry_status,
 			int(selected_store_entry.get("unlock_cost_gold", 0)),
 			int(selected_store_entry.get("unlock_cost_salvage", 0)),
 		]
 		if unlock_button != null:
-			var selected_unlocked := bool(selected_store_entry.get("unlocked", false))
-			var selected_affordable := bool(selected_store_entry.get("affordable", false))
 			unlock_button.disabled = NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR or selected_unlocked or not selected_affordable
 			unlock_button.text = "Already Unlocked" if selected_unlocked else "Unlock %s" % str(selected_store_entry.get("label", "Part"))
 
@@ -812,7 +846,8 @@ func _refresh_hud() -> void:
 			int(last_unlock.get("cost_salvage", 0)),
 		]
 
-	controls_label.text = "Controls\nW A S D move | Space jump\nAim the center crosshair at the boat or dock\nQ / E cycle parts | R rotate | F place | X remove\nZ / C cycle unlocks | V purchase selected part\nGreen ready | Amber occupied | Blue move closer | Red blocked\nHard collisions can knock builders around\nEnter launches the run | Esc returns to connect"
+	controls_label.text = "Quick Controls\nW A S D move | Space jump\nQ / E parts | R rotate | F place | X remove\nZ / C unlocks | V buy | Enter launch\nTab or H toggles details | Esc returns"
+	_apply_hud_visibility()
 
 func _build_onboarding_text() -> String:
 	if cursor_feedback_state == "range":
@@ -1200,6 +1235,8 @@ func _update_camera(delta: float) -> void:
 		return
 	if local_avatar_body == null:
 		return
+	if not camera.current:
+		camera.make_current()
 	var avatar_position := local_avatar_body.global_position
 	var focus_point := _get_blueprint_focus_point()
 	var boat_span := _get_blueprint_focus_span()
@@ -1343,6 +1380,16 @@ func _sync_local_avatar_state(delta: float) -> void:
 		local_avatar_facing_y,
 		local_avatar_body.is_on_floor()
 	)
+
+func _toggle_hud_details() -> void:
+	hud_details_visible = not hud_details_visible
+	_apply_hud_visibility()
+
+func _apply_hud_visibility() -> void:
+	if detail_panel != null:
+		detail_panel.visible = hud_details_visible
+	if detail_toggle_button != null:
+		detail_toggle_button.text = "Hide Details (Tab)" if hud_details_visible else "Show Details (Tab)"
 
 func _refresh_hangar_avatar_visuals() -> void:
 	var local_peer_id := _get_local_peer_id()

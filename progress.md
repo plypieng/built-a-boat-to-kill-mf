@@ -707,6 +707,23 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - this does not block `HostAndPlay.bat`, but it makes `StartDedicatedServer.bat` less transparent for manual server logging
   - if this becomes a pain point for friend tests, the next packaging pass should switch the server preset to a console-template export path
 
+## 2026-03-08 Hangar Camera And HUD Usability Fix
+
+- Added the short design note to `docs/plans/2026-03-08-hangar-camera-hud-usability-fix-design.md`.
+- Updated `scenes/hangar/hangar.gd` so the hangar camera explicitly becomes current and reclaims focus while the local avatar moves.
+- Reworked the hangar overlay from large full-height panels into smaller corner overlays:
+  - compact build and launch panel
+  - compact dock/unlock panel
+  - smaller bottom-left crew/control panel
+  - optional detail panel toggled with `Tab` or `H`
+- Kept detailed builder/warning/run history information available, but moved it behind the detail toggle so the center of the scene stays usable for local testing.
+- Updated `README.md` to mention the new hangar detail toggle.
+- Verified:
+  - clean parse smoke with `godot --headless --path . --quit-after 2`
+  - local GUI hangar capture on an external server at `/tmp/builtaboat-hangar-fix.png`
+  - local GUI host-flow capture at `/tmp/builtaboat-hangar-host-fix.png`
+  - both captures show the hangar loading through the avatar-follow camera with the slimmer overlay instead of the old full-height builder panels
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:

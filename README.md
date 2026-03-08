@@ -96,7 +96,7 @@ Start a client:
 ./tools/run_client.sh
 ```
 
-The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `Q / E` to cycle blocks, `R` to rotate, `F` to place, `X` to remove, `Z / C` to browse unlocks, `V` to buy the selected part, then press `Launch Run`.
+The client now lands in the shared hangar builder after connecting. Use `W A S D` and `Space` to move, aim the center crosshair, use `Q / E` to cycle blocks, `R` to rotate, `F` to place, `X` to remove, `Z / C` to browse unlocks, `V` to buy the selected part, `Tab` or `H` to toggle the detailed hangar overlay, then press `Launch Run`.
 
 Optional client overrides:
 
