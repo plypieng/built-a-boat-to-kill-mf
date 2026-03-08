@@ -677,6 +677,36 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
 - Remaining verification gap:
   - I updated the connection-failure wording for bad-IP or missing-server cases, but I did not capture a full ENet timeout message in a short automated smoke because the timeout window outlasted the quick test budget.
 
+## 2026-03-08 Windows Export Presets And First Friend Bundle
+
+- Added committed Windows export configuration:
+  - new `export_presets.cfg` with:
+    - `Windows Client`
+    - `Windows Dedicated Server`
+  - updated `.gitignore` so `export_presets.cfg` stays versioned while generated `build/` and `dist/` folders stay ignored
+- Installed Godot `4.6.1.stable` export templates locally under:
+  - `~/Library/Application Support/Godot/export_templates/4.6.1.stable`
+  - extracted the Windows x86_64 release/debug templates plus console variants and `version.txt`
+- Verified real Windows exports from this repo:
+  - `godot --headless --path . --export-release "Windows Client" build/windows-client/BuiltaBoat.exe`
+  - `godot --headless --path . --export-release "Windows Dedicated Server" build/windows-server/BuiltaBoatServer.exe`
+  - both exports produced `.exe` and `.pck` outputs successfully
+- Verified the bundle packager against the real exports:
+  - `bash tools/package_windows_playtest.sh build/windows-client/BuiltaBoat.exe build/windows-server/BuiltaBoatServer.exe dist/windows-playtest`
+  - resulting bundle contains:
+    - `client/BuiltaBoat.exe`
+    - `client/BuiltaBoat.pck`
+    - `server/BuiltaBoatServer.exe`
+    - `server/BuiltaBoatServer.pck`
+    - `HostAndPlay.bat`
+    - `JoinFriend.bat`
+    - `StartDedicatedServer.bat`
+    - `README-playtest.txt`
+- Current limitation discovered during the first real export:
+  - the dedicated-server export currently comes out as a Windows GUI-subsystem executable rather than a visible console-window server build
+  - this does not block `HostAndPlay.bat`, but it makes `StartDedicatedServer.bat` less transparent for manual server logging
+  - if this becomes a pain point for friend tests, the next packaging pass should switch the server preset to a console-template export path
+
 ## TODOs
 
 - Implement the Roblox-style social builder hangar:

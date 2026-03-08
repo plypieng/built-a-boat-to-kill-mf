@@ -263,7 +263,19 @@ TEST_HOME="$(mktemp -d /tmp/builtaboat-week4-full-XXXXXX)"
 HOME="$TEST_HOME" godot --headless --path . --quit-after 7000 -- --name=Week4Host --port=7172 --autohost --autobuild-role=builder_launch --autorun-demo --autocontinue-to-dock --quit-after-connect-ms=28000
 ```
 
-Week 4 Windows playtest bundle helper:
+Windows client export:
+
+```bash
+godot --headless --path . --export-release "Windows Client" build/windows-client/BuiltaBoat.exe
+```
+
+Windows dedicated-server export:
+
+```bash
+godot --headless --path . --export-release "Windows Dedicated Server" build/windows-server/BuiltaBoatServer.exe
+```
+
+Windows playtest bundle helper:
 
 ```bash
 bash tools/package_windows_playtest.sh \
@@ -295,7 +307,10 @@ bash tools/package_windows_playtest.sh \
 - The current runtime damage model is per-block for HP and chunk detachment, while buoyancy and handling still derive from aggregate stats on the surviving main chunk.
 - The current reaction system is a lightweight non-ragdoll layer: hard hangar bumps and run impacts briefly interrupt control, add knockback/camera jolt, and let brace reduce the severity of run-side reactions.
 - The current Week 3 run layer procedurally seeds one optional distress rescue and one or two squall bands from the run seed, so route choice and timing change between seeds without abandoning the extraction-loop structure.
+- The current repo now includes committed Windows export presets in `export_presets.cfg`, so the client/server export commands above work once Godot `4.6.1.stable` export templates are installed locally.
 - The current repo also includes `tools/package_windows_playtest.sh`, which stages separate Windows client/server export folders into a simple friend-playtest bundle with host/join batch files.
+- The first real friend-test bundle was generated locally at `dist/windows-playtest`.
+- The current Windows dedicated-server export runs as a GUI-subsystem `.exe`, so `HostAndPlay.bat` is the smoothest path for friends right now. `StartDedicatedServer.bat` still works, but it does not currently provide a visible console log window.
 - The current networking model now sends boat motion separately from structural runtime state so large block boats do not overflow the unreliable ENet packet budget during launch.
 - Disconnect cleanup now coalesces network state flushes for a short window so quick multi-client hangar teardowns do not re-trigger the old ENet send error.
 - The current server scene logs heartbeat, progression totals, roster, station ownership, cargo, repairs, breach state, extraction progress, and run outcomes.
