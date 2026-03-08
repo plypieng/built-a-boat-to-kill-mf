@@ -312,6 +312,9 @@ const REACTION_HOOK_ACTIVE_SECONDS := 0.42
 const REACTION_HOOK_RECOVERY_SECONDS := 0.38
 const RUN_AVATAR_MODE_DECK := "deck"
 const RUN_AVATAR_MODE_OVERBOARD := "overboard"
+const RUN_AVATAR_MODE_DOWNED := "downed"
+const RUN_AVATAR_MOVE_SPEED := 4.9
+const RUN_SWIM_MOVE_SPEED := 2.6
 const RUN_AVATAR_STAND_HEIGHT := 0.52
 const RUN_DECK_SURFACE_MARGIN := 0.08
 const RUN_DECK_SURFACE_SNAP_DISTANCE := 0.62
@@ -321,6 +324,35 @@ const RUN_OVERBOARD_SWIM_RADIUS := 8.8
 const RUN_OVERBOARD_RECOVERY_RANGE := 1.15
 const RUN_OVERBOARD_EDGE_MARGIN := 0.24
 const RUN_OVERBOARD_MIN_STRENGTH := 0.54
+const AVATAR_MAX_HEALTH := 100.0
+const AVATAR_MAX_STAMINA := 100.0
+const AVATAR_WOUNDED_THRESHOLD := 60.0
+const AVATAR_CRITICAL_THRESHOLD := 30.0
+const AVATAR_HEALTH_REGEN_DELAY := 8.0
+const AVATAR_HEALTH_REGEN_RATE := 6.0
+const AVATAR_HEALTH_REGEN_CAP := 60.0
+const AVATAR_STAMINA_REGEN_DELAY := 0.8
+const AVATAR_STAMINA_REGEN_DECK := 20.0
+const AVATAR_STAMINA_REGEN_OVERBOARD := 5.0
+const AVATAR_STAMINA_EXHAUSTED_RECOVERY_THRESHOLD := 20.0
+const AVATAR_SPRINT_STAMINA_DRAIN := 16.0
+const AVATAR_SWIM_BURST_STAMINA_DRAIN := 22.0
+const AVATAR_BRACE_STAMINA_COST := 18.0
+const AVATAR_REPAIR_STAMINA_COST := 24.0
+const AVATAR_ASSIST_STAMINA_COST := 15.0
+const AVATAR_DOWNED_SELF_RECOVERY_SECONDS := 6.0
+const AVATAR_ASSIST_RALLY_RANGE := 1.25
+const AVATAR_OVERBOARD_ENTRY_DAMAGE := 12.0
+const AVATAR_OVERBOARD_ATTRITION_DELAY := 3.0
+const AVATAR_OVERBOARD_ATTRITION_INTERVAL := 2.5
+const AVATAR_OVERBOARD_ATTRITION_DAMAGE := 4.0
+const AVATAR_IMPACT_DAMAGE_UNBRACED := 8.0
+const AVATAR_IMPACT_DAMAGE_BRACED := 2.0
+const AVATAR_IMPACT_EXPOSED_BONUS := 8.0
+const AVATAR_SALVAGE_BACKLASH_PRIMARY_DAMAGE := 18.0
+const AVATAR_SALVAGE_BACKLASH_SPLASH_DAMAGE := 4.0
+const AVATAR_RALLY_HEALTH := 40.0
+const AVATAR_RALLY_STAMINA := 35.0
 const RUN_RECOVERY_POINTS := [
 	{
 		"id": "port_ladder",
@@ -849,6 +881,15 @@ func request_overboard_recovery() -> void:
 
 	server_request_overboard_recovery.rpc_id(1)
 
+func request_assist_rally(target_peer_id: int) -> void:
+	if target_peer_id <= 0:
+		return
+	if multiplayer.is_server():
+		_attempt_assist_rally(multiplayer.get_unique_id(), target_peer_id)
+		return
+
+	server_request_assist_rally.rpc_id(1, target_peer_id)
+
 func request_debug_overboard() -> void:
 	if multiplayer.is_server():
 		_force_peer_overboard_for_debug(multiplayer.get_unique_id())
@@ -995,7 +1036,9 @@ func server_step_shared_boat(delta: float) -> void:
 	if str(run_state.get("phase", "running")) != "running":
 		return
 
+	run_state["elapsed_time"] = float(run_state.get("elapsed_time", 0.0)) + delta
 	_enforce_run_station_ranges()
+	_process_run_avatar_vitals(delta)
 
 	var brace_timer: float = maxf(0.0, float(boat_state.get("brace_timer", 0.0)) - delta)
 	var brace_cooldown: float = maxf(0.0, float(boat_state.get("brace_cooldown", 0.0)) - delta)
@@ -1414,7 +1457,7 @@ func _apply_run_impact_reactions(base_direction: Vector3, base_strength: float, 
 func _try_knock_peer_overboard(peer_id: int, knockback_velocity: Vector3, strength: float, brace_applied: bool) -> void:
 	if brace_applied or strength < RUN_OVERBOARD_MIN_STRENGTH:
 		return
-	if _is_peer_overboard(peer_id):
+	if _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
 		return
 	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
 	if avatar_state.is_empty():
@@ -1438,7 +1481,7 @@ func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockb
 	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
 	if avatar_state.is_empty():
 		return
-	if _is_peer_overboard(peer_id):
+	if _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
 		return
 	var current_station_id := get_peer_station_id(peer_id)
 	if not current_station_id.is_empty():
@@ -1449,7 +1492,10 @@ func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockb
 	avatar_state["world_position"] = world_position
 	avatar_state["velocity"] = knockback_velocity.limit_length(6.8)
 	avatar_state["grounded"] = false
+	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
+	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
 	run_avatar_state[peer_id] = avatar_state
+	_apply_peer_health_damage(peer_id, AVATAR_OVERBOARD_ENTRY_DAMAGE, 1.0)
 	_refresh_run_avatar_runtime_fields(peer_id)
 	var peer_reaction: Dictionary = reaction_state.get(peer_id, {})
 	if not peer_reaction.is_empty():
@@ -1459,6 +1505,7 @@ func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockb
 		reaction_state[peer_id] = peer_reaction
 	run_state["overboard_incidents"] = int(run_state.get("overboard_incidents", 0)) + 1
 	_refresh_overboard_run_metrics()
+	_refresh_crew_vitals_metrics()
 	_peer_inputs[peer_id] = {
 		"throttle": 0.0,
 		"steer": 0.0,
@@ -1515,6 +1562,8 @@ func _attempt_overboard_recovery(peer_id: int) -> void:
 	avatar_state["deck_position"] = get_nearest_run_avatar_deck_position(recovery_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
 	avatar_state["velocity"] = Vector3.ZERO
 	avatar_state["grounded"] = true
+	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
+	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
 	run_avatar_state[peer_id] = avatar_state
 	_refresh_run_avatar_runtime_fields(peer_id)
 	var peer_reaction: Dictionary = reaction_state.get(peer_id, {})
@@ -1531,6 +1580,44 @@ func _attempt_overboard_recovery(peer_id: int) -> void:
 	_set_status("%s climbed back aboard via the %s." % [
 		_get_peer_name(peer_id),
 		str(recovery_target.get("label", "recovery line")),
+	])
+
+func _attempt_assist_rally(source_peer_id: int, target_peer_id: int) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
+	if str(run_state.get("phase", "running")) != "running":
+		return
+	if source_peer_id == target_peer_id:
+		return
+	var source_state: Dictionary = run_avatar_state.get(source_peer_id, {})
+	var target_state: Dictionary = run_avatar_state.get(target_peer_id, {})
+	if source_state.is_empty() or target_state.is_empty():
+		return
+	if _peer_has_reaction_lock(source_peer_id):
+		return
+	if _is_peer_overboard(source_peer_id) or _is_peer_downed(source_peer_id):
+		return
+	if _is_peer_overboard(target_peer_id) or not _is_peer_downed(target_peer_id):
+		return
+	var source_position: Vector3 = source_state.get("deck_position", Vector3.ZERO)
+	var target_position: Vector3 = target_state.get("deck_position", Vector3.ZERO)
+	if source_position.distance_to(target_position) > AVATAR_ASSIST_RALLY_RANGE:
+		_set_status("%s needs to get closer to %s before helping." % [
+			_get_peer_name(source_peer_id),
+			_get_peer_name(target_peer_id),
+		])
+		return
+	if not _spend_peer_stamina(source_peer_id, AVATAR_ASSIST_STAMINA_COST, true):
+		_set_status("%s is too winded to rally a crewmate yet." % _get_peer_name(source_peer_id))
+		return
+	if not _recover_peer_from_downed(target_peer_id):
+		return
+	_refresh_crew_vitals_metrics()
+	_broadcast_run_avatar_state()
+	_broadcast_run_state()
+	_set_status("%s rallied %s back onto their feet." % [
+		_get_peer_name(source_peer_id),
+		_get_peer_name(target_peer_id),
 	])
 
 func _peer_has_reaction_lock(peer_id: int) -> bool:
@@ -1581,6 +1668,7 @@ func _reset_connected_run_avatars() -> void:
 		run_avatar_state[peer_id] = _make_default_run_avatar_state(index)
 		_refresh_run_avatar_runtime_fields(peer_id)
 	_refresh_overboard_run_metrics()
+	_refresh_crew_vitals_metrics()
 	_broadcast_run_avatar_state()
 
 func _make_default_hangar_avatar_state(spawn_index: int) -> Dictionary:
@@ -1617,6 +1705,16 @@ func _make_default_run_avatar_state(spawn_index: int) -> Dictionary:
 		"recovery_target_id": "",
 		"recovery_target_label": "",
 		"recovery_ready": false,
+		"health": AVATAR_MAX_HEALTH,
+		"max_health": AVATAR_MAX_HEALTH,
+		"stamina": AVATAR_MAX_STAMINA,
+		"max_stamina": AVATAR_MAX_STAMINA,
+		"downed_timer": 0.0,
+		"last_damage_time": 0.0,
+		"stamina_regen_delay": 0.0,
+		"stamina_exhausted": false,
+		"overboard_attrition_delay": AVATAR_OVERBOARD_ATTRITION_DELAY,
+		"overboard_attrition_timer": AVATAR_OVERBOARD_ATTRITION_INTERVAL,
 	}
 
 func _run_local_to_world(local_position: Vector3) -> Vector3:
@@ -1791,6 +1889,16 @@ func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
 	if avatar_state.is_empty():
 		return
 	var avatar_mode := str(avatar_state.get("mode", RUN_AVATAR_MODE_DECK))
+	var max_health := maxf(1.0, float(avatar_state.get("max_health", AVATAR_MAX_HEALTH)))
+	var max_stamina := maxf(1.0, float(avatar_state.get("max_stamina", AVATAR_MAX_STAMINA)))
+	var min_health := 1.0 if avatar_mode == RUN_AVATAR_MODE_OVERBOARD else 0.0
+	avatar_state["max_health"] = max_health
+	avatar_state["health"] = clampf(float(avatar_state.get("health", max_health)), min_health, max_health)
+	avatar_state["max_stamina"] = max_stamina
+	avatar_state["stamina"] = clampf(float(avatar_state.get("stamina", max_stamina)), 0.0, max_stamina)
+	avatar_state["downed_timer"] = maxf(0.0, float(avatar_state.get("downed_timer", 0.0)))
+	if bool(avatar_state.get("stamina_exhausted", false)) and float(avatar_state.get("stamina", max_stamina)) >= AVATAR_STAMINA_EXHAUSTED_RECOVERY_THRESHOLD:
+		avatar_state["stamina_exhausted"] = false
 	if avatar_mode == RUN_AVATAR_MODE_OVERBOARD:
 		var world_position := _sanitize_overboard_world_position(avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO)))
 		var recovery_target := _get_best_overboard_recovery_target(world_position)
@@ -1799,6 +1907,18 @@ func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
 		avatar_state["recovery_target_label"] = str(recovery_target.get("label", ""))
 		avatar_state["recovery_ready"] = bool(recovery_target.get("ready", false))
 		avatar_state["deck_position"] = get_nearest_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
+		avatar_state["overboard_attrition_delay"] = maxf(0.0, float(avatar_state.get("overboard_attrition_delay", AVATAR_OVERBOARD_ATTRITION_DELAY)))
+		avatar_state["overboard_attrition_timer"] = maxf(0.0, float(avatar_state.get("overboard_attrition_timer", AVATAR_OVERBOARD_ATTRITION_INTERVAL)))
+	elif avatar_mode == RUN_AVATAR_MODE_DOWNED:
+		var downed_position := sanitize_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
+		avatar_state["mode"] = RUN_AVATAR_MODE_DOWNED
+		avatar_state["deck_position"] = downed_position
+		avatar_state["world_position"] = _run_local_to_world(downed_position)
+		avatar_state["velocity"] = Vector3.ZERO
+		avatar_state["grounded"] = true
+		avatar_state["recovery_target_id"] = ""
+		avatar_state["recovery_target_label"] = ""
+		avatar_state["recovery_ready"] = false
 	else:
 		var deck_position := sanitize_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
 		avatar_state["mode"] = RUN_AVATAR_MODE_DECK
@@ -1812,12 +1932,269 @@ func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
 func _is_peer_overboard(peer_id: int) -> bool:
 	return str(run_avatar_state.get(peer_id, {}).get("mode", RUN_AVATAR_MODE_DECK)) == RUN_AVATAR_MODE_OVERBOARD
 
+func _is_peer_downed(peer_id: int) -> bool:
+	return str(run_avatar_state.get(peer_id, {}).get("mode", RUN_AVATAR_MODE_DECK)) == RUN_AVATAR_MODE_DOWNED
+
 func _refresh_overboard_run_metrics() -> void:
 	var overboard_count := 0
 	for peer_id_variant in run_avatar_state.keys():
 		if _is_peer_overboard(int(peer_id_variant)):
 			overboard_count += 1
 	run_state["overboard_count"] = overboard_count
+
+func _refresh_crew_vitals_metrics() -> bool:
+	var previous_downed := int(run_state.get("crew_downed_count", 0))
+	var previous_critical := int(run_state.get("crew_critical_count", 0))
+	var previous_exhausted := int(run_state.get("crew_exhausted_count", 0))
+	var downed_count := 0
+	var critical_count := 0
+	var exhausted_count := 0
+	for peer_id_variant in run_avatar_state.keys():
+		var avatar_state: Dictionary = run_avatar_state.get(int(peer_id_variant), {})
+		if avatar_state.is_empty():
+			continue
+		if str(avatar_state.get("mode", RUN_AVATAR_MODE_DECK)) == RUN_AVATAR_MODE_DOWNED:
+			downed_count += 1
+		elif float(avatar_state.get("health", AVATAR_MAX_HEALTH)) <= AVATAR_CRITICAL_THRESHOLD:
+			critical_count += 1
+		if bool(avatar_state.get("stamina_exhausted", false)):
+			exhausted_count += 1
+	run_state["crew_downed_count"] = downed_count
+	run_state["crew_critical_count"] = critical_count
+	run_state["crew_exhausted_count"] = exhausted_count
+	return previous_downed != downed_count or previous_critical != critical_count or previous_exhausted != exhausted_count
+
+func _spend_peer_stamina(peer_id: int, amount: float, require_recovered_threshold: bool = false) -> bool:
+	if amount <= 0.0:
+		return true
+	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+	if avatar_state.is_empty():
+		return false
+	var current_stamina := float(avatar_state.get("stamina", AVATAR_MAX_STAMINA))
+	if require_recovered_threshold and bool(avatar_state.get("stamina_exhausted", false)):
+		return false
+	if current_stamina < amount:
+		return false
+	current_stamina = maxf(0.0, current_stamina - amount)
+	avatar_state["stamina"] = current_stamina
+	avatar_state["stamina_regen_delay"] = AVATAR_STAMINA_REGEN_DELAY
+	if current_stamina <= 0.01:
+		avatar_state["stamina"] = 0.0
+		avatar_state["stamina_exhausted"] = true
+	run_avatar_state[peer_id] = avatar_state
+	_refresh_run_avatar_runtime_fields(peer_id)
+	return true
+
+func _set_peer_downed(peer_id: int) -> bool:
+	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+	if avatar_state.is_empty():
+		return false
+	if _is_peer_overboard(peer_id):
+		return false
+	var station_id := get_peer_station_id(peer_id)
+	if not station_id.is_empty():
+		_release_station(peer_id, false)
+		_broadcast_station_state()
+		_broadcast_boat_state()
+	avatar_state["mode"] = RUN_AVATAR_MODE_DOWNED
+	avatar_state["health"] = 0.0
+	avatar_state["downed_timer"] = AVATAR_DOWNED_SELF_RECOVERY_SECONDS
+	avatar_state["velocity"] = Vector3.ZERO
+	avatar_state["grounded"] = true
+	run_avatar_state[peer_id] = avatar_state
+	_refresh_run_avatar_runtime_fields(peer_id)
+	return true
+
+func _recover_peer_from_downed(peer_id: int, health: float = AVATAR_RALLY_HEALTH, stamina: float = AVATAR_RALLY_STAMINA) -> bool:
+	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+	if avatar_state.is_empty():
+		return false
+	var max_health := maxf(1.0, float(avatar_state.get("max_health", AVATAR_MAX_HEALTH)))
+	var max_stamina := maxf(1.0, float(avatar_state.get("max_stamina", AVATAR_MAX_STAMINA)))
+	avatar_state["mode"] = RUN_AVATAR_MODE_DECK
+	avatar_state["health"] = clampf(health, 1.0, max_health)
+	avatar_state["stamina"] = clampf(stamina, 0.0, max_stamina)
+	avatar_state["stamina_exhausted"] = float(avatar_state.get("stamina", max_stamina)) < AVATAR_STAMINA_EXHAUSTED_RECOVERY_THRESHOLD
+	avatar_state["stamina_regen_delay"] = AVATAR_STAMINA_REGEN_DELAY
+	avatar_state["downed_timer"] = 0.0
+	avatar_state["velocity"] = Vector3.ZERO
+	avatar_state["grounded"] = true
+	run_avatar_state[peer_id] = avatar_state
+	_refresh_run_avatar_runtime_fields(peer_id)
+	return true
+
+func _restore_all_crew_vitals() -> bool:
+	var changed := false
+	for peer_id_variant in run_avatar_state.keys():
+		var peer_id := int(peer_id_variant)
+		var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+		if avatar_state.is_empty():
+			continue
+		var max_health := maxf(1.0, float(avatar_state.get("max_health", AVATAR_MAX_HEALTH)))
+		var max_stamina := maxf(1.0, float(avatar_state.get("max_stamina", AVATAR_MAX_STAMINA)))
+		avatar_state["health"] = max_health
+		avatar_state["stamina"] = max_stamina
+		avatar_state["stamina_exhausted"] = false
+		avatar_state["stamina_regen_delay"] = 0.0
+		avatar_state["downed_timer"] = 0.0
+		if str(avatar_state.get("mode", RUN_AVATAR_MODE_DECK)) == RUN_AVATAR_MODE_DOWNED:
+			avatar_state["mode"] = RUN_AVATAR_MODE_DECK
+			avatar_state["velocity"] = Vector3.ZERO
+			avatar_state["grounded"] = true
+		run_avatar_state[peer_id] = avatar_state
+		_refresh_run_avatar_runtime_fields(peer_id)
+		changed = true
+	return changed
+
+func _apply_peer_health_damage(peer_id: int, amount: float, floor_health: float = 0.0) -> bool:
+	if amount <= 0.0:
+		return false
+	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+	if avatar_state.is_empty():
+		return false
+	avatar_state["last_damage_time"] = float(run_state.get("elapsed_time", 0.0))
+	if _is_peer_downed(peer_id):
+		avatar_state["downed_timer"] = AVATAR_DOWNED_SELF_RECOVERY_SECONDS
+		run_avatar_state[peer_id] = avatar_state
+		_refresh_run_avatar_runtime_fields(peer_id)
+		return true
+	var max_health := maxf(1.0, float(avatar_state.get("max_health", AVATAR_MAX_HEALTH)))
+	var current_health := float(avatar_state.get("health", max_health))
+	var next_health := clampf(current_health - amount, floor_health, max_health)
+	avatar_state["health"] = next_health
+	run_avatar_state[peer_id] = avatar_state
+	if next_health <= 0.0 and floor_health <= 0.0:
+		return _set_peer_downed(peer_id)
+	_refresh_run_avatar_runtime_fields(peer_id)
+	return not is_equal_approx(current_health, next_health)
+
+func _find_exposed_peer_for_impact(impact_local: Vector3) -> int:
+	var nearest_peer_id := 0
+	var nearest_distance := INF
+	for peer_id_variant in run_avatar_state.keys():
+		var peer_id := int(peer_id_variant)
+		if _is_peer_overboard(peer_id):
+			continue
+		var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+		if avatar_state.is_empty():
+			continue
+		var deck_position: Vector3 = avatar_state.get("deck_position", Vector3.ZERO)
+		deck_position.y = 0.0
+		var distance := Vector3(impact_local.x, 0.0, impact_local.z).distance_to(deck_position)
+		if distance >= nearest_distance:
+			continue
+		nearest_distance = distance
+		nearest_peer_id = peer_id
+	return nearest_peer_id
+
+func _apply_avatar_impact_damage(was_braced: bool, impact_local: Vector3) -> bool:
+	var damage := AVATAR_IMPACT_DAMAGE_BRACED if was_braced else AVATAR_IMPACT_DAMAGE_UNBRACED
+	var changed := false
+	for peer_id_variant in run_avatar_state.keys():
+		var peer_id := int(peer_id_variant)
+		if _is_peer_overboard(peer_id):
+			continue
+		changed = _apply_peer_health_damage(peer_id, damage) or changed
+	if not was_braced:
+		var exposed_peer_id := _find_exposed_peer_for_impact(impact_local)
+		if exposed_peer_id > 0:
+			changed = _apply_peer_health_damage(exposed_peer_id, AVATAR_IMPACT_EXPOSED_BONUS) or changed
+	return changed
+
+func _apply_salvage_backlash_avatar_damage() -> bool:
+	var changed := false
+	for peer_id_variant in run_avatar_state.keys():
+		var peer_id := int(peer_id_variant)
+		if _is_peer_overboard(peer_id):
+			continue
+		var damage := AVATAR_SALVAGE_BACKLASH_PRIMARY_DAMAGE if get_peer_station_id(peer_id) == "grapple" else AVATAR_SALVAGE_BACKLASH_SPLASH_DAMAGE
+		changed = _apply_peer_health_damage(peer_id, damage) or changed
+	return changed
+
+func _process_run_avatar_vitals(delta: float) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
+	if str(run_state.get("phase", "running")) != "running":
+		return
+	var avatar_changed := false
+	for peer_id_variant in run_avatar_state.keys():
+		var peer_id := int(peer_id_variant)
+		var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+		if avatar_state.is_empty():
+			continue
+		var avatar_mode := str(avatar_state.get("mode", RUN_AVATAR_MODE_DECK))
+		var state_changed := false
+		if avatar_mode == RUN_AVATAR_MODE_DOWNED:
+			var downed_timer := maxf(0.0, float(avatar_state.get("downed_timer", AVATAR_DOWNED_SELF_RECOVERY_SECONDS)) - delta)
+			if not is_equal_approx(downed_timer, float(avatar_state.get("downed_timer", 0.0))):
+				avatar_state["downed_timer"] = downed_timer
+				state_changed = true
+			if downed_timer <= 0.0:
+				run_avatar_state[peer_id] = avatar_state
+				state_changed = _recover_peer_from_downed(peer_id) or state_changed
+				if state_changed:
+					_set_status("%s got back on their feet." % _get_peer_name(peer_id))
+				avatar_changed = avatar_changed or state_changed
+				continue
+		else:
+			var regen_delay := maxf(0.0, float(avatar_state.get("stamina_regen_delay", 0.0)) - delta)
+			if not is_equal_approx(regen_delay, float(avatar_state.get("stamina_regen_delay", 0.0))):
+				avatar_state["stamina_regen_delay"] = regen_delay
+				state_changed = true
+			var current_stamina := float(avatar_state.get("stamina", AVATAR_MAX_STAMINA))
+			var max_stamina := maxf(1.0, float(avatar_state.get("max_stamina", AVATAR_MAX_STAMINA)))
+			var move_velocity: Vector3 = avatar_state.get("velocity", Vector3.ZERO)
+			move_velocity.y = 0.0
+			var drain_rate := 0.0
+			if avatar_mode == RUN_AVATAR_MODE_DECK and move_velocity.length() > RUN_AVATAR_MOVE_SPEED * 1.05:
+				drain_rate = AVATAR_SPRINT_STAMINA_DRAIN
+			elif avatar_mode == RUN_AVATAR_MODE_OVERBOARD and move_velocity.length() > RUN_SWIM_MOVE_SPEED * 1.05:
+				drain_rate = AVATAR_SWIM_BURST_STAMINA_DRAIN
+			if drain_rate > 0.0 and current_stamina > 0.0:
+				current_stamina = maxf(0.0, current_stamina - drain_rate * delta)
+				avatar_state["stamina"] = current_stamina
+				avatar_state["stamina_regen_delay"] = AVATAR_STAMINA_REGEN_DELAY
+				if current_stamina <= 0.01:
+					avatar_state["stamina"] = 0.0
+					avatar_state["stamina_exhausted"] = true
+				state_changed = true
+			elif regen_delay <= 0.0 and current_stamina < max_stamina:
+				var regen_rate := AVATAR_STAMINA_REGEN_OVERBOARD if avatar_mode == RUN_AVATAR_MODE_OVERBOARD else AVATAR_STAMINA_REGEN_DECK
+				current_stamina = minf(max_stamina, current_stamina + regen_rate * delta)
+				avatar_state["stamina"] = current_stamina
+				if bool(avatar_state.get("stamina_exhausted", false)) and current_stamina >= AVATAR_STAMINA_EXHAUSTED_RECOVERY_THRESHOLD:
+					avatar_state["stamina_exhausted"] = false
+				state_changed = true
+			if avatar_mode == RUN_AVATAR_MODE_OVERBOARD:
+				var attrition_delay := maxf(0.0, float(avatar_state.get("overboard_attrition_delay", AVATAR_OVERBOARD_ATTRITION_DELAY)) - delta)
+				avatar_state["overboard_attrition_delay"] = attrition_delay
+				state_changed = true
+				if attrition_delay <= 0.0:
+					var attrition_timer := maxf(0.0, float(avatar_state.get("overboard_attrition_timer", AVATAR_OVERBOARD_ATTRITION_INTERVAL)) - delta)
+					avatar_state["overboard_attrition_timer"] = attrition_timer
+					if attrition_timer <= 0.0:
+						avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+						run_avatar_state[peer_id] = avatar_state
+						state_changed = _apply_peer_health_damage(peer_id, AVATAR_OVERBOARD_ATTRITION_DAMAGE, 1.0) or state_changed
+					else:
+						run_avatar_state[peer_id] = avatar_state
+				else:
+					run_avatar_state[peer_id] = avatar_state
+			else:
+				var current_health := float(avatar_state.get("health", AVATAR_MAX_HEALTH))
+				var max_health := maxf(1.0, float(avatar_state.get("max_health", AVATAR_MAX_HEALTH)))
+				var last_damage_time := float(avatar_state.get("last_damage_time", 0.0))
+				if current_health > 0.0 and current_health < minf(max_health, AVATAR_HEALTH_REGEN_CAP) and float(run_state.get("elapsed_time", 0.0)) - last_damage_time >= AVATAR_HEALTH_REGEN_DELAY:
+					avatar_state["health"] = minf(AVATAR_HEALTH_REGEN_CAP, current_health + AVATAR_HEALTH_REGEN_RATE * delta)
+					state_changed = true
+				run_avatar_state[peer_id] = avatar_state
+		if state_changed:
+			_refresh_run_avatar_runtime_fields(peer_id)
+			avatar_changed = true
+	if avatar_changed:
+		_broadcast_run_avatar_state()
+	if _refresh_crew_vitals_metrics():
+		_broadcast_run_state()
 
 func _is_station_claimable(station_id: String) -> bool:
 	return STATION_CLAIMABLE_ORDER.has(station_id)
@@ -2046,6 +2423,10 @@ func _initialize_generated_run_state(repair_capacity: int, cargo_capacity: int, 
 		"overboard_count": 0,
 		"overboard_incidents": 0,
 		"recoveries_completed": 0,
+		"crew_downed_count": 0,
+		"crew_critical_count": 0,
+		"crew_exhausted_count": 0,
+		"elapsed_time": 0.0,
 		"launch_loose_chunks": int(blueprint_stats.get("loose_blocks", 0)),
 	}
 	boat_state["position"] = generated_world.get("spawn_position", Vector3.ZERO)
@@ -2844,6 +3225,10 @@ func _clear_run_state_for_hangar() -> void:
 		"repair_actions": 0,
 		"repair_supplies": 0,
 		"repair_supplies_max": 0,
+		"crew_downed_count": 0,
+		"crew_critical_count": 0,
+		"crew_exhausted_count": 0,
+		"elapsed_time": 0.0,
 		"reward_gold": 0,
 		"reward_salvage": 0,
 		"result_title": "",
@@ -3371,7 +3756,7 @@ func _receive_boat_input(peer_id: int, throttle: float, steer: float) -> void:
 		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
-	if _is_peer_overboard(peer_id):
+	if _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
 		_peer_inputs[peer_id] = {
 			"throttle": 0.0,
 			"steer": 0.0,
@@ -3405,13 +3790,18 @@ func _begin_brace(peer_id: int) -> void:
 		return
 	if not run_avatar_state.has(peer_id):
 		return
-	if _is_peer_overboard(peer_id):
+	if _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
 		return
 	if float(boat_state.get("brace_cooldown", 0.0)) > 0.0:
+		return
+	if not _spend_peer_stamina(peer_id, AVATAR_BRACE_STAMINA_COST, true):
 		return
 
 	boat_state["brace_timer"] = BRACE_ACTIVE_SECONDS
 	boat_state["brace_cooldown"] = BRACE_COOLDOWN_SECONDS
+	if _refresh_crew_vitals_metrics():
+		_broadcast_run_state()
+	_broadcast_run_avatar_state()
 	_broadcast_boat_state()
 	_set_status("%s braced for impact." % _get_peer_name(peer_id))
 
@@ -3422,7 +3812,7 @@ func _process_repair(peer_id: int) -> void:
 		return
 	if _peer_has_reaction_lock(peer_id):
 		return
-	if _is_peer_overboard(peer_id):
+	if _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
 		return
 	if float(boat_state.get("repair_cooldown", 0.0)) > 0.0:
 		return
@@ -3439,6 +3829,8 @@ func _process_repair(peer_id: int) -> void:
 	if repair_target.is_empty():
 		_set_status("%s needs to move closer to the damaged hull to patch it." % _get_peer_name(peer_id))
 		return
+	if not _spend_peer_stamina(peer_id, AVATAR_REPAIR_STAMINA_COST, true):
+		return
 
 	boat_state["breach_stacks"] = maxi(0, breach_stacks - 1)
 	boat_state["hull_integrity"] = minf(max_hull_integrity, hull_integrity + REPAIR_HULL_RECOVERY)
@@ -3446,6 +3838,9 @@ func _process_repair(peer_id: int) -> void:
 	run_state["repair_actions"] = int(run_state.get("repair_actions", 0)) + 1
 	run_state["repair_supplies"] = maxi(0, int(run_state.get("repair_supplies", 0)) - 1)
 	_heal_runtime_blocks_around(repair_target.get("local_position", Vector3.ZERO), REPAIR_HULL_RECOVERY)
+	if _refresh_crew_vitals_metrics():
+		_broadcast_run_state()
+	_broadcast_run_avatar_state()
 	_broadcast_runtime_boat_state()
 	_broadcast_boat_state()
 	_broadcast_run_state()
@@ -3533,7 +3928,7 @@ func _process_grapple(peer_id: int) -> void:
 		return
 	if _peer_has_reaction_lock(peer_id):
 		return
-	if _is_peer_overboard(peer_id):
+	if _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
 		return
 	if get_peer_station_id(peer_id) != "grapple":
 		return
@@ -3627,6 +4022,9 @@ func _process_grapple(peer_id: int) -> void:
 				false,
 				"grapple"
 			)
+			if _apply_salvage_backlash_avatar_damage():
+				_refresh_crew_vitals_metrics()
+				_broadcast_run_avatar_state()
 			if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
 				_sync_generated_world_runtime_metrics()
 				_broadcast_loot_state()
@@ -3668,6 +4066,9 @@ func _process_resupply_cache_grapple() -> bool:
 	)
 	run_state["bonus_gold_bank"] = int(run_state.get("bonus_gold_bank", 0)) + int(cache_site.get("bonus_gold", RESUPPLY_CACHE_GOLD_BONUS))
 	run_state["bonus_salvage_bank"] = int(run_state.get("bonus_salvage_bank", 0)) + int(cache_site.get("bonus_salvage", RESUPPLY_CACHE_SALVAGE_BONUS))
+	if _restore_all_crew_vitals():
+		_refresh_crew_vitals_metrics()
+		_broadcast_run_avatar_state()
 	_sync_generated_world_runtime_metrics()
 	_broadcast_run_state()
 	_set_status("Recovered %s: +%d gold, +%d salvage, +%d patch kit." % [
@@ -3735,6 +4136,9 @@ func _process_rescue_hold(delta: float) -> void:
 			)
 			run_state["bonus_gold_bank"] = int(run_state.get("bonus_gold_bank", 0)) + int(rescue_site.get("bonus_gold", RESCUE_GOLD_BONUS_MIN))
 			run_state["bonus_salvage_bank"] = int(run_state.get("bonus_salvage_bank", 0)) + int(rescue_site.get("bonus_salvage", RESCUE_SALVAGE_BONUS_MIN))
+			if _restore_all_crew_vitals():
+				_refresh_crew_vitals_metrics()
+				_broadcast_run_avatar_state()
 			_set_status("%s completed: +%d gold, +%d salvage, +%d patch kit." % [
 				str(rescue_site.get("label", "Rescue")),
 				int(rescue_site.get("bonus_gold", RESCUE_GOLD_BONUS_MIN)),
@@ -3811,6 +4215,9 @@ func _resolve_squall_pulse(band: Dictionary) -> void:
 		false,
 		"squall"
 	)
+	if _apply_avatar_impact_damage(was_braced, impact_local):
+		_refresh_crew_vitals_metrics()
+		_broadcast_run_avatar_state()
 	_broadcast_run_state()
 	_broadcast_boat_state()
 	if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
@@ -3864,6 +4271,9 @@ func _process_hazard_collisions() -> void:
 			was_braced,
 			not was_braced
 		)
+		if _apply_avatar_impact_damage(was_braced, impact_local):
+			_refresh_crew_vitals_metrics()
+			_broadcast_run_avatar_state()
 
 		_respawn_hazard(index)
 		_broadcast_hazard_state()
@@ -4035,6 +4445,7 @@ func _on_peer_disconnected(peer_id: int) -> void:
 	reaction_state.erase(peer_id)
 	if multiplayer.is_server() and session_phase == SESSION_PHASE_RUN:
 		_refresh_overboard_run_metrics()
+		_refresh_crew_vitals_metrics()
 	var expired_pair_keys: Array = []
 	for pair_key_variant in _hangar_bump_pair_cooldowns.keys():
 		var pair_key := str(pair_key_variant)
@@ -4098,6 +4509,7 @@ func server_register_player(player_name: String) -> void:
 		run_avatar_state[peer_id] = _make_default_run_avatar_state(run_avatar_state.size())
 		_refresh_run_avatar_runtime_fields(peer_id)
 		_refresh_overboard_run_metrics()
+		_refresh_crew_vitals_metrics()
 	_send_bootstrap(peer_id)
 	_broadcast_peer_snapshot()
 	_broadcast_hangar_avatar_state()
@@ -4158,6 +4570,14 @@ func server_request_overboard_recovery() -> void:
 
 	var peer_id := multiplayer.get_remote_sender_id()
 	_attempt_overboard_recovery(peer_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_assist_rally(target_peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_attempt_assist_rally(peer_id, target_peer_id)
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_request_debug_overboard() -> void:
@@ -4399,15 +4819,22 @@ func _receive_run_avatar_state(peer_id: int, deck_position: Vector3, world_posit
 	var existing_state: Dictionary = run_avatar_state.get(peer_id, _make_default_run_avatar_state(run_avatar_state.size()))
 	var normalized_mode := str(existing_state.get("mode", RUN_AVATAR_MODE_DECK))
 	existing_state["mode"] = normalized_mode
-	existing_state["deck_position"] = sanitize_run_avatar_deck_position(
-		deck_position,
-		existing_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
-	)
-	existing_state["velocity"] = velocity.limit_length(9.5)
-	existing_state["facing_y"] = facing_y
-	existing_state["grounded"] = grounded
 	if normalized_mode == RUN_AVATAR_MODE_OVERBOARD:
+		existing_state["velocity"] = velocity.limit_length(9.5)
+		existing_state["facing_y"] = facing_y
+		existing_state["grounded"] = grounded
 		existing_state["world_position"] = _sanitize_overboard_world_position(world_position)
+	elif normalized_mode == RUN_AVATAR_MODE_DOWNED:
+		existing_state["velocity"] = Vector3.ZERO
+		existing_state["grounded"] = true
+	else:
+		existing_state["deck_position"] = sanitize_run_avatar_deck_position(
+			deck_position,
+			existing_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
+		)
+		existing_state["velocity"] = velocity.limit_length(9.5)
+		existing_state["facing_y"] = facing_y
+		existing_state["grounded"] = grounded
 	run_avatar_state[peer_id] = existing_state
 	_refresh_run_avatar_runtime_fields(peer_id)
 	_refresh_overboard_run_metrics()

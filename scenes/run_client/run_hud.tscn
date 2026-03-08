@@ -173,6 +173,44 @@ theme_override_font_sizes/font_size = 14
 text = "BOAT PLATE"
 vertical_alignment = 1
 
+[node name="HealthMeterRow" type="HBoxContainer" parent="SurvivalPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="HealthMeterLabel" type="Label" parent="SurvivalPanel/Margin/Layout/HealthMeterRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(64, 0)
+theme_override_font_sizes/font_size = 10
+text = "HEALTH"
+vertical_alignment = 1
+
+[node name="HealthMeterBar" type="ProgressBar" parent="SurvivalPanel/Margin/Layout/HealthMeterRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+custom_minimum_size = Vector2(0, 10)
+max_value = 100.0
+show_percentage = false
+value = 100.0
+
+[node name="StaminaMeterRow" type="HBoxContainer" parent="SurvivalPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="StaminaMeterLabel" type="Label" parent="SurvivalPanel/Margin/Layout/StaminaMeterRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(64, 0)
+theme_override_font_sizes/font_size = 10
+text = "STAMINA"
+vertical_alignment = 1
+
+[node name="StaminaMeterBar" type="ProgressBar" parent="SurvivalPanel/Margin/Layout/StaminaMeterRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+custom_minimum_size = Vector2(0, 10)
+max_value = 100.0
+show_percentage = false
+value = 100.0
+
 [node name="BoatLabel" type="Label" parent="SurvivalPanel/Margin/Layout"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 14

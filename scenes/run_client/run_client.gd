@@ -26,7 +26,10 @@ const RUN_AVATAR_MOVE_SPEED := 4.9
 const RUN_AVATAR_ACCELERATION := 15.0
 const RUN_SWIM_MOVE_SPEED := 2.6
 const RUN_SWIM_ACCELERATION := 8.5
+const RUN_AVATAR_SPRINT_MULTIPLIER := 1.35
+const RUN_SWIM_BURST_MULTIPLIER := 1.25
 const RUN_AVATAR_SYNC_INTERVAL := 0.05
+const ASSIST_RALLY_HOLD_SECONDS := 1.5
 const WATER_SURFACE_Y := -0.12
 const WATER_SURFACE_SIZE := 640.0
 const WATER_SURFACE_SUBDIVISIONS := 180
@@ -62,6 +65,10 @@ var station_label: Label
 var interaction_label: Label
 var roster_label: Label
 var boat_label: Label
+var health_meter_label: Label
+var stamina_meter_label: Label
+var health_meter_bar: ProgressBar
+var stamina_meter_bar: ProgressBar
 var event_callout_label: Label
 var toolbelt_label: Label
 var inventory_label: Label
@@ -169,10 +176,14 @@ var last_hud_cargo_lost_to_sea := 0
 var last_hud_rescue_completed := false
 var last_hud_cache_recovered := false
 var last_hud_overboard_count := 0
+var last_hud_downed_count := 0
 var last_hud_phase := "running"
 var last_local_overboard := false
+var last_local_downed := false
 var selected_run_tool_index := 0
 var inventory_panel_visible := false
+var assist_rally_hold_target_peer_id := 0
+var assist_rally_hold_seconds := 0.0
 var hud_icons := HudIconLibrary.new()
 var objective_icon: TextureRect
 var extraction_panel_icon: TextureRect
@@ -263,8 +274,11 @@ func _physics_process(delta: float) -> void:
 		NetworkRuntime.request_repair()
 	if bool(input_state.get("request_recover", false)):
 		NetworkRuntime.request_overboard_recovery()
+	var assist_target_peer_id := int(input_state.get("assist_target_peer_id", 0))
+	if assist_target_peer_id > 0:
+		NetworkRuntime.request_assist_rally(assist_target_peer_id)
 
-	if not _is_local_overboard() and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
+	if not _is_local_overboard() and not _is_local_downed() and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
 		NetworkRuntime.send_local_boat_input(
 			float(input_state.get("throttle", 0.0)),
 			float(input_state.get("steer", 0.0))
@@ -1050,8 +1064,14 @@ func _get_local_run_avatar_target() -> Vector3:
 		return local_run_avatar_position
 	return NetworkRuntime.get_station_position(local_station_id) + Vector3(0.0, 0.18, 0.0)
 
+func _get_local_run_avatar_state() -> Dictionary:
+	return NetworkRuntime.get_run_avatar_state().get(_get_local_peer_id(), {})
+
 func _is_local_overboard() -> bool:
 	return local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+
+func _is_local_downed() -> bool:
+	return local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_DOWNED
 
 func _get_local_avatar_world_position() -> Vector3:
 	if _is_local_overboard():
@@ -1069,7 +1089,7 @@ func _clamp_local_swim_world_position(world_position: Vector3) -> Vector3:
 	return sanitized_position
 
 func _get_local_recovery_target() -> Dictionary:
-	var local_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(_get_local_peer_id(), {})
+	var local_state := _get_local_run_avatar_state()
 	if local_state.is_empty():
 		return {}
 	var target_id := str(local_state.get("recovery_target_id", ""))
@@ -1087,6 +1107,63 @@ func _get_local_recovery_target() -> Dictionary:
 		normalized["ready"] = bool(local_state.get("recovery_ready", false))
 		return normalized
 	return {}
+
+func _get_local_rally_target() -> Dictionary:
+	if _is_local_overboard() or _is_local_downed():
+		return {}
+	var best_target: Dictionary = {}
+	var best_distance := INF
+	for peer_id in NetworkRuntime.get_player_peer_ids():
+		if int(peer_id) == _get_local_peer_id():
+			continue
+		var avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
+		if str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) != NetworkRuntime.RUN_AVATAR_MODE_DOWNED:
+			continue
+		var target_position: Vector3 = avatar_state.get("deck_position", Vector3.ZERO)
+		var distance := local_run_avatar_position.distance_to(target_position)
+		if distance > NetworkRuntime.AVATAR_ASSIST_RALLY_RANGE or distance >= best_distance:
+			continue
+		best_distance = distance
+		best_target = {
+			"peer_id": int(peer_id),
+			"distance": distance,
+			"name": str(NetworkRuntime.peer_snapshot.get(int(peer_id), {}).get("name", "Crew")),
+		}
+	return best_target
+
+func _can_local_use_stamina_action(cost: float) -> bool:
+	if _is_local_downed():
+		return false
+	var local_state := _get_local_run_avatar_state()
+	if local_state.is_empty():
+		return false
+	if bool(local_state.get("stamina_exhausted", false)):
+		return false
+	return float(local_state.get("stamina", NetworkRuntime.AVATAR_MAX_STAMINA)) >= cost
+
+func _show_local_action_blocked(text: String) -> void:
+	_push_event_callout(text, HUD_TEXT_WARNING, 1.3)
+
+func _get_avatar_status_badges(avatar_state: Dictionary) -> PackedStringArray:
+	var badges := PackedStringArray()
+	var mode := str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
+	if mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
+		badges.append("Overboard")
+	elif mode == NetworkRuntime.RUN_AVATAR_MODE_DOWNED:
+		badges.append("Downed")
+	var health := float(avatar_state.get("health", NetworkRuntime.AVATAR_MAX_HEALTH))
+	if mode != NetworkRuntime.RUN_AVATAR_MODE_DOWNED and health > 0.0:
+		if health <= NetworkRuntime.AVATAR_CRITICAL_THRESHOLD:
+			badges.append("Critical")
+		elif health <= NetworkRuntime.AVATAR_WOUNDED_THRESHOLD:
+			badges.append("Wounded")
+	if bool(avatar_state.get("stamina_exhausted", false)):
+		badges.append("Exhausted")
+	return badges
+
+func _format_avatar_badges(avatar_state: Dictionary) -> String:
+	var badges := _get_avatar_status_badges(avatar_state)
+	return " | ".join(badges)
 
 func _scripted_move_local_avatar_toward_world(target_world_position: Vector3, delta: float) -> void:
 	if delta <= 0.0:
@@ -1451,6 +1528,10 @@ func _build_hud() -> void:
 	roster_label = hud.get_node("CrewPanel/Margin/Layout/RosterLabel") as Label
 	onboarding_label = hud.get_node("CrewPanel/Margin/Layout/OnboardingLabel") as Label
 	survival_panel_icon = hud.get_node("SurvivalPanel/Margin/Layout/Header/SurvivalPanelIcon") as TextureRect
+	health_meter_label = hud.get_node("SurvivalPanel/Margin/Layout/HealthMeterRow/HealthMeterLabel") as Label
+	stamina_meter_label = hud.get_node("SurvivalPanel/Margin/Layout/StaminaMeterRow/StaminaMeterLabel") as Label
+	health_meter_bar = hud.get_node("SurvivalPanel/Margin/Layout/HealthMeterRow/HealthMeterBar") as ProgressBar
+	stamina_meter_bar = hud.get_node("SurvivalPanel/Margin/Layout/StaminaMeterRow/StaminaMeterBar") as ProgressBar
 	boat_label = hud.get_node("SurvivalPanel/Margin/Layout/BoatLabel") as Label
 	interaction_label = hud.get_node("SurvivalPanel/Margin/Layout/InteractionLabel") as Label
 	status_label = hud.get_node("SurvivalPanel/Margin/Layout/StatusLabel") as Label
@@ -1487,11 +1568,15 @@ func _build_hud() -> void:
 	onboarding_label.modulate = HUD_TEXT_PRIMARY
 	footer_label.modulate = HUD_TEXT_MUTED
 	survival_heading.modulate = HUD_TEXT_SUCCESS
+	health_meter_label.modulate = HUD_TEXT_MUTED
+	stamina_meter_label.modulate = HUD_TEXT_MUTED
 	boat_label.modulate = HUD_TEXT_PRIMARY
 	interaction_label.modulate = HUD_TEXT_MUTED
 	status_label.modulate = HUD_TEXT_MUTED
 	toolbelt_label.modulate = HUD_TEXT_PRIMARY
 	inventory_label.modulate = HUD_TEXT_PRIMARY
+	_apply_meter_bar_style(health_meter_bar, HUD_TEXT_SUCCESS)
+	_apply_meter_bar_style(stamina_meter_bar, HUD_TEXT_WARNING)
 
 func _apply_hud_panel_style(panel: PanelContainer, border_color: Color, background_color: Color) -> void:
 	var style := StyleBoxFlat.new()
@@ -1505,6 +1590,25 @@ func _apply_hud_panel_style(panel: PanelContainer, border_color: Color, backgrou
 	style.shadow_color = Color(0.0, 0.0, 0.0, 0.28)
 	style.shadow_size = 4
 	panel.add_theme_stylebox_override("panel", style)
+
+func _apply_meter_bar_style(bar: ProgressBar, fill_color: Color) -> void:
+	if bar == null:
+		return
+	bar.show_percentage = false
+	var background := StyleBoxFlat.new()
+	background.bg_color = Color(0.14, 0.20, 0.24, 0.82)
+	background.corner_radius_top_left = 8
+	background.corner_radius_top_right = 8
+	background.corner_radius_bottom_left = 8
+	background.corner_radius_bottom_right = 8
+	bar.add_theme_stylebox_override("background", background)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = fill_color
+	fill.corner_radius_top_left = 8
+	fill.corner_radius_top_right = 8
+	fill.corner_radius_bottom_left = 8
+	fill.corner_radius_bottom_right = 8
+	bar.add_theme_stylebox_override("fill", fill)
 
 func _build_result_overlay() -> void:
 	result_layer = get_node("ResultOverlay") as CanvasLayer
@@ -1632,11 +1736,18 @@ func _refresh_world() -> void:
 
 func _refresh_hud() -> void:
 	var local_peer_id := _get_local_peer_id()
-	var local_avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(local_peer_id, {})
-	var local_overboard := str(local_avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+	var local_avatar_state := _get_local_run_avatar_state()
+	var local_mode := str(local_avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
+	var local_overboard := local_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+	var local_downed := local_mode == NetworkRuntime.RUN_AVATAR_MODE_DOWNED
 	var local_station_id := NetworkRuntime.get_peer_station_id(local_peer_id)
 	var selected_station_id := _get_selected_station_id()
 	var active_tool_id := _get_selected_run_tool_id()
+	var local_health := float(local_avatar_state.get("health", NetworkRuntime.AVATAR_MAX_HEALTH))
+	var local_max_health := maxf(1.0, float(local_avatar_state.get("max_health", NetworkRuntime.AVATAR_MAX_HEALTH)))
+	var local_stamina := float(local_avatar_state.get("stamina", NetworkRuntime.AVATAR_MAX_STAMINA))
+	var local_max_stamina := maxf(1.0, float(local_avatar_state.get("max_stamina", NetworkRuntime.AVATAR_MAX_STAMINA)))
+	var local_stamina_exhausted := bool(local_avatar_state.get("stamina_exhausted", false))
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var nearest_salvage := _get_nearest_poi_site(RunWorldGenerator.SITE_SALVAGE, true)
 	var nearest_rescue := _get_nearest_poi_site(RunWorldGenerator.SITE_DISTRESS, true)
@@ -1661,6 +1772,9 @@ func _refresh_hud() -> void:
 	var cargo_lost_to_sea := int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
 	var overboard_count := int(NetworkRuntime.run_state.get("overboard_count", 0))
 	var recoveries_completed := int(NetworkRuntime.run_state.get("recoveries_completed", 0))
+	var crew_downed_count := int(NetworkRuntime.run_state.get("crew_downed_count", 0))
+	var crew_critical_count := int(NetworkRuntime.run_state.get("crew_critical_count", 0))
+	var crew_exhausted_count := int(NetworkRuntime.run_state.get("crew_exhausted_count", 0))
 	var rescue_progress: float = float(NetworkRuntime.run_state.get("rescue_progress", 0.0))
 	var rescue_duration: float = float(NetworkRuntime.run_state.get("rescue_duration", 1.0))
 	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
@@ -1672,6 +1786,7 @@ func _refresh_hud() -> void:
 	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
 	var layout_label := str(NetworkRuntime.run_state.get("layout_label", "Open Sea"))
 	var revealed_extractions := _get_revealed_extraction_sites()
+	var rally_target := _get_local_rally_target()
 	var extraction_distance_text := "?"
 	if not nearest_extraction.is_empty():
 		extraction_distance_text = "%.1fm" % extraction_distance
@@ -1695,6 +1810,31 @@ func _refresh_hud() -> void:
 	else:
 		objective_label.modulate = HUD_TEXT_PRIMARY
 
+	var health_meter_color := HUD_TEXT_SUCCESS
+	if local_downed or local_health <= NetworkRuntime.AVATAR_CRITICAL_THRESHOLD:
+		health_meter_color = HUD_TEXT_DANGER
+	elif local_health <= NetworkRuntime.AVATAR_WOUNDED_THRESHOLD:
+		health_meter_color = HUD_TEXT_WARNING
+	var stamina_meter_color := HUD_TEXT_WARNING if local_stamina_exhausted else HUD_TEXT_SUCCESS
+	if local_stamina <= 0.0:
+		stamina_meter_color = HUD_TEXT_DANGER
+	elif local_stamina <= 25.0:
+		stamina_meter_color = HUD_TEXT_WARNING
+	if health_meter_label != null:
+		health_meter_label.text = "HEALTH %d" % int(round(local_health))
+		health_meter_label.modulate = health_meter_color
+	if stamina_meter_label != null:
+		stamina_meter_label.text = "STAM %d" % int(round(local_stamina))
+		stamina_meter_label.modulate = stamina_meter_color
+	if health_meter_bar != null:
+		health_meter_bar.max_value = local_max_health
+		health_meter_bar.value = local_health
+		_apply_meter_bar_style(health_meter_bar, health_meter_color)
+	if stamina_meter_bar != null:
+		stamina_meter_bar.max_value = local_max_stamina
+		stamina_meter_bar.value = local_stamina
+		_apply_meter_bar_style(stamina_meter_bar, stamina_meter_color)
+
 	resource_label.text = "Cargo %d/%d | Reveal %d | Extract %.1f/%.1fs | Dist %s\nPatch Kits %d/%d | Bonus %dg / %ds" % [
 		current_cargo,
 		cargo_capacity,
@@ -1715,6 +1855,12 @@ func _refresh_hud() -> void:
 			recoveries_completed,
 			target_label,
 		]
+	elif local_downed:
+		resource_label.text = "Downed | Recoveries %d | Crew Downed %d\nSelf recover %.1fs | Hold steady for a rally" % [
+			recoveries_completed,
+			crew_downed_count,
+			float(local_avatar_state.get("downed_timer", 0.0)),
+		]
 
 	var pressure_lines := PackedStringArray()
 	pressure_lines.append("%s | Biome %s | Loot %d left" % [layout_label, current_biome.replace("_", " "), loot_remaining])
@@ -1734,6 +1880,12 @@ func _refresh_hud() -> void:
 		pressure_lines.append("Cargo washed overboard: %d" % cargo_lost_to_sea)
 	if overboard_count > 0:
 		pressure_lines.append("Crew overboard: %d" % overboard_count)
+	if crew_downed_count > 0:
+		pressure_lines.append("Crew downed: %d" % crew_downed_count)
+	if crew_critical_count > 0:
+		pressure_lines.append("Crew critical: %d" % crew_critical_count)
+	if crew_exhausted_count > 0:
+		pressure_lines.append("Crew exhausted: %d" % crew_exhausted_count)
 	run_label.text = "\n".join(pressure_lines)
 
 	var station_lines := PackedStringArray()
@@ -1749,6 +1901,8 @@ func _refresh_hud() -> void:
 	station_lines.append("  Patch Nearby Hull")
 	if local_overboard:
 		station_lines.append("  Swim To Ladder")
+	elif local_downed:
+		station_lines.append("  Wait For Rally")
 	station_label.text = "Deck Jobs | Tool %s\n%s" % [_get_run_tool_label(active_tool_id), ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")]
 
 	var local_hint := _build_onboarding_text(selected_station_id, local_station_id).trim_prefix("Onboarding: ").strip_edges()
@@ -1771,6 +1925,11 @@ func _refresh_hud() -> void:
 	]
 	if overboard_count > 0:
 		boat_label.text += "\nOverboard %d | Recoveries %d" % [overboard_count, recoveries_completed]
+	boat_label.text += "\nCrew Downed %d | Critical %d | Exhausted %d" % [
+		crew_downed_count,
+		crew_critical_count,
+		crew_exhausted_count,
+	]
 	var hull_ratio := hull_integrity / maxf(1.0, max_hull_integrity)
 	hud_icons.set_icon(survival_panel_icon, "brace" if hull_ratio <= 0.6 or detached_chunk_count > 0 or breach_stacks > 0 else "repair-kit")
 	if hull_ratio <= 0.3 or detached_chunk_count > 0:
@@ -1784,7 +1943,10 @@ func _refresh_hud() -> void:
 	var selected_label := NetworkRuntime.get_station_label(selected_station_id) if not selected_station_id.is_empty() else "No station"
 	var local_label := NetworkRuntime.get_station_label(local_station_id) if not local_station_id.is_empty() else "Free Roam"
 	interaction_lines.append("Selected %s | You %s" % [selected_label, local_label])
-	if local_overboard:
+	if local_downed:
+		interaction_lines.append("You are downed. Hold still and avoid fresh hits while the timer runs.")
+		interaction_lines.append("A nearby crewmate can hold F to rally you back with partial health and stamina.")
+	elif local_overboard:
 		var recovery_target := _get_local_recovery_target()
 		if recovery_target.is_empty():
 			interaction_lines.append("Swim toward a ladder or stern line before the boat drifts farther away.")
@@ -1792,6 +1954,13 @@ func _refresh_hud() -> void:
 			interaction_lines.append("Grabbed %s. Press F to climb back aboard." % str(recovery_target.get("label", "Recovery Point")))
 		else:
 			interaction_lines.append("Swim to the %s and press F once you reach it." % str(recovery_target.get("label", "Recovery Point")))
+	elif not rally_target.is_empty():
+		var rally_progress := assist_rally_hold_seconds if assist_rally_hold_target_peer_id == int(rally_target.get("peer_id", 0)) else 0.0
+		interaction_lines.append("Hold F to rally %s (%.1f/%.1fs)." % [
+			str(rally_target.get("name", "Crew")),
+			rally_progress,
+			ASSIST_RALLY_HOLD_SECONDS,
+		])
 	elif not selected_station_id.is_empty() and local_station_id.is_empty():
 		if _is_local_near_station(selected_station_id):
 			interaction_lines.append("Press F to take %s from this deck position." % selected_label)
@@ -1805,6 +1974,12 @@ func _refresh_hud() -> void:
 		interaction_lines.append("You are close enough to patch this section. Spend kits only when the trade is worth it.")
 	else:
 		interaction_lines.append("Move to the helm or grapple crane, brace anywhere, and patch damage up close.")
+	if local_stamina_exhausted:
+		interaction_lines.append("Too winded to brace, patch, or rally until stamina climbs back above 20.")
+	elif local_stamina < NetworkRuntime.AVATAR_REPAIR_STAMINA_COST:
+		interaction_lines.append("Stamina is low. Save your next burst for the moment that matters.")
+	if not local_downed and local_health <= NetworkRuntime.AVATAR_CRITICAL_THRESHOLD:
+		interaction_lines.append("Critical - recover or play safe before the next slam.")
 	interaction_label.text = "\n".join(interaction_lines)
 
 	var crew_lines := PackedStringArray()
@@ -1816,8 +1991,9 @@ func _refresh_hud() -> void:
 		var reaction_text := ""
 		if not peer_reaction.is_empty():
 			reaction_text = " | %s" % str(peer_reaction.get("type", "reacting")).capitalize()
-		if str(crew_avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
-			reaction_text += " | Overboard"
+		var badge_text := _format_avatar_badges(crew_avatar_state)
+		if not badge_text.is_empty():
+			reaction_text += " | %s" % badge_text
 		crew_lines.append("%s - %s%s" % [
 			str(peer_data.get("name", "Unknown")),
 			NetworkRuntime.get_station_label(crew_station) if not crew_station.is_empty() else "Free",
@@ -1830,9 +2006,15 @@ func _refresh_hud() -> void:
 		phase.capitalize(),
 		NetworkRuntime.status_message,
 	]
+	status_label.text += "\nVital %.0f/%.0f HP | %.0f/%.0f STA" % [
+		local_health,
+		local_max_health,
+		local_stamina,
+		local_max_stamina,
+	]
 	status_label.modulate = HUD_TEXT_MUTED
 	if footer_label != null:
-		footer_label.text = "Mouse aim | 1-5 tools | I inventory | Q/E stations | F use/claim | Space brace | G grapple | R patch"
+		footer_label.text = "Mouse aim | Shift burst | 1-5 tools | I inventory | Q/E stations | F use/claim/rally | Space brace | G grapple | R patch"
 	toolbelt_label.text = _build_run_toolbelt_text()
 	inventory_label.text = _build_run_inventory_text()
 	if inventory_panel != null:
@@ -2181,6 +2363,7 @@ func _refresh_crew_visuals() -> void:
 		var station_id := NetworkRuntime.get_peer_station_id(int(peer_id))
 		var avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
 		var overboard := str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+		var downed := str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_DOWNED
 		if overboard:
 			crew_member.top_level = true
 			crew_container.add_child(crew_member)
@@ -2210,6 +2393,8 @@ func _refresh_crew_visuals() -> void:
 			material.albedo_color = Color(0.30, 0.82, 0.52)
 		elif overboard:
 			material.albedo_color = Color(0.36, 0.74, 0.96)
+		elif downed:
+			material.albedo_color = Color(0.84, 0.34, 0.30)
 		elif station_id == "helm":
 			material.albedo_color = Color(0.94, 0.76, 0.18)
 		else:
@@ -2218,8 +2403,11 @@ func _refresh_crew_visuals() -> void:
 		crew_member.add_child(body)
 
 		var nameplate := Label3D.new()
-		var role_label := "Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew")
+		var role_label := "Downed" if downed else ("Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"))
+		var badge_text := _format_avatar_badges(avatar_state)
 		nameplate.text = "%s - %s" % [str(peer_data.get("name", "Crew")), role_label]
+		if not badge_text.is_empty():
+			nameplate.text += " [%s]" % badge_text
 		nameplate.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		nameplate.font_size = 18
 		nameplate.position = Vector3(0.0, 0.96, 0.0)
@@ -2575,8 +2763,10 @@ func _prime_run_hud_event_state() -> void:
 	last_hud_rescue_completed = bool(NetworkRuntime.run_state.get("rescue_completed", false))
 	last_hud_cache_recovered = bool(NetworkRuntime.run_state.get("cache_recovered", false))
 	last_hud_overboard_count = int(NetworkRuntime.run_state.get("overboard_count", 0))
+	last_hud_downed_count = int(NetworkRuntime.run_state.get("crew_downed_count", 0))
 	last_hud_phase = str(NetworkRuntime.run_state.get("phase", "running"))
 	last_local_overboard = _is_local_overboard()
+	last_local_downed = _is_local_downed()
 
 func _push_event_callout(text: String, color: Color, duration: float = 1.9) -> void:
 	if event_callout_label == null:
@@ -2641,6 +2831,7 @@ func _update_crew_visuals(delta: float) -> void:
 		var station_id := NetworkRuntime.get_peer_station_id(int(peer_id))
 		var avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
 		var overboard := str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+		var downed := str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_DOWNED
 		var target_position: Vector3 = IDLE_CREW_SLOTS[idle_slot_index % IDLE_CREW_SLOTS.size()]
 		var target_yaw := float(avatar_state.get("facing_y", PI))
 		if overboard:
@@ -2673,19 +2864,29 @@ func _update_crew_visuals(delta: float) -> void:
 			crew_root.rotation.z = lerp_angle(crew_root.rotation.z, clampf(local_knockback.x * 0.04 * intensity, -0.18, 0.18), minf(1.0, delta * 10.0))
 		else:
 			crew_root.top_level = false
+			if downed:
+				target_position.y = maxf(0.34, target_position.y - 0.38)
+			crew_root.scale.y = lerpf(crew_root.scale.y, 0.55 if downed else 1.0, minf(1.0, delta * 8.0))
 			crew_root.position = crew_root.position.lerp(target_position, minf(1.0, delta * 8.5))
 			crew_root.rotation.y = lerp_angle(crew_root.rotation.y, target_yaw, minf(1.0, delta * 10.0))
-			crew_root.rotation.x = lerp_angle(crew_root.rotation.x, clampf(local_knockback.z * -0.05 * intensity, -0.42, 0.42), minf(1.0, delta * 12.0))
-			crew_root.rotation.z = lerp_angle(crew_root.rotation.z, clampf(local_knockback.x * 0.055 * intensity, -0.48, 0.48), minf(1.0, delta * 12.0))
+			crew_root.rotation.x = lerp_angle(crew_root.rotation.x, -0.42 if downed else clampf(local_knockback.z * -0.05 * intensity, -0.42, 0.42), minf(1.0, delta * 12.0))
+			crew_root.rotation.z = lerp_angle(crew_root.rotation.z, 1.08 if downed else clampf(local_knockback.x * 0.055 * intensity, -0.48, 0.48), minf(1.0, delta * 12.0))
 		var nameplate := visual.get("nameplate") as Label3D
 		if nameplate != null:
 			var peer_data: Dictionary = NetworkRuntime.peer_snapshot.get(int(peer_id), {})
-			var role_label := "Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew")
+			var role_label := "Downed" if downed else ("Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"))
 			nameplate.text = "%s - %s" % [str(peer_data.get("name", "Crew")), role_label]
 			if not peer_reaction.is_empty():
 				nameplate.text += " [%s]" % str(peer_reaction.get("type", "reacting")).capitalize()
+			var badge_text := _format_avatar_badges(avatar_state)
+			if not badge_text.is_empty():
+				nameplate.text += " [%s]" % badge_text
 
 func _process_local_run_avatar_movement(delta: float) -> void:
+	if _is_local_downed():
+		local_run_avatar_velocity = Vector3.ZERO
+		local_run_avatar_world_position = _get_local_avatar_world_position()
+		return
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 	if not _is_local_overboard() and not local_station_id.is_empty() and _station_anchors_avatar(local_station_id):
 		local_run_avatar_position = _get_local_run_avatar_target()
@@ -2719,15 +2920,18 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 	var local_reaction := _get_reaction_visual(_get_local_peer_id())
 	var active_reaction := float(local_reaction.get("active_time", 0.0)) > 0.0
 	var recovering := float(local_reaction.get("recovery_time", 0.0)) > 0.0
+	var local_avatar_state := _get_local_run_avatar_state()
+	var burst_active := Input.is_key_pressed(KEY_SHIFT) and float(local_avatar_state.get("stamina", NetworkRuntime.AVATAR_MAX_STAMINA)) > 0.0
 	if active_reaction:
 		move_direction_world = Vector3.ZERO
 	elif recovering:
 		move_direction_world *= 0.35
 
 	if _is_local_overboard():
+		var swim_speed := RUN_SWIM_MOVE_SPEED * (RUN_SWIM_BURST_MULTIPLIER if burst_active else 1.0)
 		if move_direction_world.length() > 0.001:
-			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_world.x * RUN_SWIM_MOVE_SPEED, RUN_SWIM_ACCELERATION * delta)
-			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_world.z * RUN_SWIM_MOVE_SPEED, RUN_SWIM_ACCELERATION * delta)
+			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_world.x * swim_speed, RUN_SWIM_ACCELERATION * delta)
+			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_world.z * swim_speed, RUN_SWIM_ACCELERATION * delta)
 		else:
 			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, RUN_SWIM_ACCELERATION * delta)
 			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, RUN_SWIM_ACCELERATION * delta)
@@ -2742,8 +2946,9 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 		move_direction_local = move_direction_local.normalized()
 
 	if move_direction_local.length() > 0.001:
-		local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_local.x * RUN_AVATAR_MOVE_SPEED, RUN_AVATAR_ACCELERATION * delta)
-		local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_local.z * RUN_AVATAR_MOVE_SPEED, RUN_AVATAR_ACCELERATION * delta)
+		var move_speed := RUN_AVATAR_MOVE_SPEED * (RUN_AVATAR_SPRINT_MULTIPLIER if burst_active else 1.0)
+		local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_local.x * move_speed, RUN_AVATAR_ACCELERATION * delta)
+		local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_local.z * move_speed, RUN_AVATAR_ACCELERATION * delta)
 	else:
 		local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, RUN_AVATAR_ACCELERATION * delta)
 		local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, RUN_AVATAR_ACCELERATION * delta)
@@ -2774,35 +2979,40 @@ func _collect_input_state(delta: float) -> Dictionary:
 		"request_grapple": false,
 		"request_repair": false,
 		"request_recover": false,
+		"assist_target_peer_id": 0,
 		"throttle": 0.0,
 		"steer": 0.0,
 	}
 	var local_reaction := _get_reaction_visual(_get_local_peer_id())
 	var active_reaction := float(local_reaction.get("active_time", 0.0)) > 0.0
 	var recovering := float(local_reaction.get("recovery_time", 0.0)) > 0.0
+	var local_downed := _is_local_downed()
 
-	if not active_reaction:
+	if not active_reaction and not local_downed:
 		_collect_station_selection_input()
-		_collect_station_interaction_input(input_state)
+		_collect_station_interaction_input(delta, input_state)
 		if not recovering:
 			_collect_action_input(input_state)
 		_collect_drive_input(input_state)
 		if recovering:
 			input_state["throttle"] = float(input_state.get("throttle", 0.0)) * 0.35
 			input_state["steer"] = float(input_state.get("steer", 0.0)) * 0.35
+	else:
+		assist_rally_hold_target_peer_id = 0
+		assist_rally_hold_seconds = 0.0
 
 	var autorun_role := str(launch_overrides.get("autorun_role", ""))
-	if not active_reaction and not autorun_role.is_empty():
+	if not active_reaction and not local_downed and not autorun_role.is_empty():
 		_apply_autorun_role(delta, autorun_role, input_state)
-	elif not active_reaction and bool(launch_overrides.get("autorun_demo", false)):
+	elif not active_reaction and not local_downed and bool(launch_overrides.get("autorun_demo", false)):
 		_apply_autorun_demo(delta, input_state)
-	elif not active_reaction:
+	elif not active_reaction and not local_downed:
 		_apply_scripted_station_input(delta, input_state)
 
 	return input_state
 
 func _collect_station_selection_input() -> void:
-	if _is_local_overboard():
+	if _is_local_overboard() or _is_local_downed():
 		station_prev_latched = Input.is_key_pressed(KEY_Q)
 		station_next_latched = Input.is_key_pressed(KEY_E)
 		return
@@ -2816,21 +3026,49 @@ func _collect_station_selection_input() -> void:
 		_cycle_selected_station(1)
 	station_next_latched = next_pressed
 
-func _collect_station_interaction_input(input_state: Dictionary) -> void:
+func _collect_station_interaction_input(delta: float, input_state: Dictionary) -> void:
 	var interact_pressed := Input.is_key_pressed(KEY_F)
+	var rally_target := _get_local_rally_target()
+	if not interact_pressed or rally_target.is_empty():
+		assist_rally_hold_target_peer_id = 0
+		assist_rally_hold_seconds = 0.0
+	if interact_pressed and not rally_target.is_empty():
+		var target_peer_id := int(rally_target.get("peer_id", 0))
+		if assist_rally_hold_target_peer_id != target_peer_id:
+			assist_rally_hold_target_peer_id = target_peer_id
+			assist_rally_hold_seconds = 0.0
+		assist_rally_hold_seconds += delta
+		if assist_rally_hold_seconds >= ASSIST_RALLY_HOLD_SECONDS:
+			if _can_local_use_stamina_action(NetworkRuntime.AVATAR_ASSIST_STAMINA_COST):
+				input_state["assist_target_peer_id"] = target_peer_id
+			else:
+				_show_local_action_blocked("Too winded to rally")
+			assist_rally_hold_target_peer_id = 0
+			assist_rally_hold_seconds = 0.0
+		interact_latched = interact_pressed
+		return
 	if interact_pressed and not interact_latched:
 		var active_tool_id := _get_selected_run_tool_id()
 		if _is_local_overboard():
 			input_state["request_recover"] = true
 			interact_latched = interact_pressed
 			return
+		if _is_local_downed():
+			interact_latched = interact_pressed
+			return
 		match active_tool_id:
 			"brace":
-				input_state["request_brace"] = true
+				if _can_local_use_stamina_action(NetworkRuntime.AVATAR_BRACE_STAMINA_COST):
+					input_state["request_brace"] = true
+				else:
+					_show_local_action_blocked("Too winded to brace")
 				interact_latched = interact_pressed
 				return
 			"repair":
-				input_state["request_repair"] = true
+				if _can_local_use_stamina_action(NetworkRuntime.AVATAR_REPAIR_STAMINA_COST):
+					input_state["request_repair"] = true
+				else:
+					_show_local_action_blocked("Too winded to patch")
 				interact_latched = interact_pressed
 				return
 		var selected_station_id := _get_selected_station_id()
@@ -2843,7 +3081,7 @@ func _collect_station_interaction_input(input_state: Dictionary) -> void:
 	interact_latched = interact_pressed
 
 func _collect_action_input(input_state: Dictionary) -> void:
-	if _is_local_overboard():
+	if _is_local_overboard() or _is_local_downed():
 		brace_request_latched = Input.is_key_pressed(KEY_SPACE)
 		grapple_request_latched = Input.is_key_pressed(KEY_G)
 		repair_request_latched = Input.is_key_pressed(KEY_R)
@@ -2852,7 +3090,10 @@ func _collect_action_input(input_state: Dictionary) -> void:
 
 	var brace_pressed := Input.is_key_pressed(KEY_SPACE)
 	if brace_pressed and not brace_request_latched:
-		input_state["request_brace"] = true
+		if _can_local_use_stamina_action(NetworkRuntime.AVATAR_BRACE_STAMINA_COST):
+			input_state["request_brace"] = true
+		else:
+			_show_local_action_blocked("Too winded to brace")
 	brace_request_latched = brace_pressed
 
 	var grapple_pressed := Input.is_key_pressed(KEY_G)
@@ -2862,7 +3103,10 @@ func _collect_action_input(input_state: Dictionary) -> void:
 
 	var repair_pressed := Input.is_key_pressed(KEY_R)
 	if repair_pressed and not repair_request_latched:
-		input_state["request_repair"] = true
+		if _can_local_use_stamina_action(NetworkRuntime.AVATAR_REPAIR_STAMINA_COST):
+			input_state["request_repair"] = true
+		else:
+			_show_local_action_blocked("Too winded to patch")
 	repair_request_latched = repair_pressed
 
 func _collect_drive_input(input_state: Dictionary) -> void:
@@ -3824,13 +4068,27 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 		_push_event_callout("Back On Deck", HUD_TEXT_SUCCESS, 2.1)
 		_spawn_splash_burst(_get_local_avatar_world_position(), 0.72, Color(0.80, 0.92, 0.98), Color(0.44, 0.68, 0.78))
 	last_local_overboard = local_overboard
+	var local_downed := _is_local_downed()
+	if local_downed and not last_local_downed:
+		_push_event_callout("Downed!", HUD_TEXT_DANGER, 2.0)
+	elif not local_downed and last_local_downed:
+		_push_event_callout("Recovered", HUD_TEXT_SUCCESS, 1.8)
+	last_local_downed = local_downed
 	var overboard_count := 0
+	var downed_count := 0
 	for peer_id_variant in snapshot.keys():
-		if str(Dictionary(snapshot.get(peer_id_variant, {})).get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK)) == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
+		var avatar_state: Dictionary = snapshot.get(peer_id_variant, {})
+		var avatar_mode := str(avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
+		if avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
 			overboard_count += 1
+		elif avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_DOWNED:
+			downed_count += 1
 	if overboard_count > last_hud_overboard_count:
 		_push_event_callout("Crew Overboard", HUD_TEXT_WARNING, 2.0)
+	if downed_count > last_hud_downed_count:
+		_push_event_callout("Crew Downed", HUD_TEXT_DANGER, 2.0)
 	last_hud_overboard_count = overboard_count
+	last_hud_downed_count = downed_count
 	_refresh_crew_visuals()
 	_refresh_hud()
 
@@ -3943,6 +4201,8 @@ func _build_objective_text() -> String:
 		return "Objective: Return to the hangar and bank the haul."
 	if phase == "failed":
 		return "Objective: Return to the hangar and review the loss."
+	if _is_local_downed():
+		return "Objective: Hold position until you self-recover, or let a nearby crewmate rally you."
 	if _is_local_overboard():
 		return "Objective: Swim to a ladder or stern line and press F to climb back aboard."
 
@@ -3998,6 +4258,8 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 		return "Onboarding: Press Enter or Continue to return to the hangar and spend the rewards."
 	if phase == "failed":
 		return "Onboarding: Failed runs lose unbanked cargo. Rebuild and try a safer route."
+	if _is_local_downed():
+		return "Onboarding: You are downed. Stay clear of fresh impacts and wait out the timer, or have a nearby crewmate hold F to rally you faster."
 	if _is_local_overboard():
 		return "Onboarding: You went overboard. Swim to the nearest ladder marker, then press F to climb back onto the boat."
 
