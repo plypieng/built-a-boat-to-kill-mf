@@ -19,6 +19,7 @@ static var motion_cache_ready := false
 
 @export_group("Presentation")
 @export_range(0.5, 2.0, 0.01) var avatar_scale := 1.15
+@export_range(-180.0, 180.0, 0.1) var model_yaw_offset_degrees := 180.0
 @export var nameplate_height := 2.05
 @export var tool_offset := Vector3(0.36, 1.0, -0.10)
 @export_range(1.0, 14.0, 0.1) var locomotion_blend_response := 7.5
@@ -46,6 +47,7 @@ func _ready() -> void:
 	_ensure_nodes()
 	_ensure_avatar_rig()
 	_apply_avatar_scale()
+	_apply_model_orientation()
 	_apply_highlight()
 	_apply_tool_color()
 	_apply_nameplate()
@@ -320,6 +322,10 @@ func _find_hips_position_track(animation: Animation) -> int:
 func _apply_avatar_scale() -> void:
 	_ensure_nodes()
 	model_root.scale = Vector3.ONE * avatar_scale
+
+func _apply_model_orientation() -> void:
+	_ensure_nodes()
+	model_root.rotation_degrees = Vector3(0.0, model_yaw_offset_degrees, 0.0)
 
 func _apply_highlight() -> void:
 	_ensure_nodes()
