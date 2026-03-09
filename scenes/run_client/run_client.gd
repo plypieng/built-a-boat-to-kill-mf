@@ -5,6 +5,10 @@ const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
 const RUN_PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/run_player_controller.tscn")
 const RUN_STATION_MARKER_SCENE := preload("res://scenes/run_client/markers/run_station_marker.tscn")
 const RUN_RECOVERY_MARKER_SCENE := preload("res://scenes/run_client/markers/run_recovery_marker.tscn")
+const SALVAGE_SITE_MARKER_SCENE := preload("res://scenes/run_client/sites/salvage_site_marker.tscn")
+const DISTRESS_SITE_MARKER_SCENE := preload("res://scenes/run_client/sites/distress_site_marker.tscn")
+const RESUPPLY_SITE_MARKER_SCENE := preload("res://scenes/run_client/sites/resupply_site_marker.tscn")
+const EXTRACTION_OUTPOST_MARKER_SCENE := preload("res://scenes/run_client/sites/extraction_outpost_marker.tscn")
 const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
@@ -2870,60 +2874,32 @@ func _refresh_loot_visuals() -> void:
 		label.position = Vector3(0.0, 0.75, 0.0)
 		loot_node.add_child(label)
 
-func _make_site_ring_root(container: Node3D, site: Dictionary, color: Color, body_color: Color, body_kind: String) -> Dictionary:
-	var root := Node3D.new()
+func _spawn_site_marker(
+	scene: PackedScene,
+	container: Node3D,
+	site: Dictionary,
+	ring_color: Color,
+	body_color: Color
+) -> Dictionary:
+	var root := scene.instantiate() as Node3D
+	if root == null:
+		root = Node3D.new()
 	root.name = "%s_%s" % [str(site.get("site_type", "site")), str(site.get("id", "site"))]
 	container.add_child(root)
-	var ring := MeshInstance3D.new()
-	var ring_mesh := CylinderMesh.new()
-	ring_mesh.height = 0.08
-	ring_mesh.top_radius = float(site.get("radius", 4.0))
-	ring_mesh.bottom_radius = ring_mesh.top_radius
-	ring.mesh = ring_mesh
-	ring.position = Vector3(0.0, 0.05, 0.0)
-	var ring_material := StandardMaterial3D.new()
-	ring_material.albedo_color = color
-	ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	ring.material_override = ring_material
-	root.add_child(ring)
-
+	if root.has_method("set_ring_radius"):
+		root.call("set_ring_radius", float(site.get("radius", 4.0)))
+	if root.has_method("set_ring_color"):
+		root.call("set_ring_color", ring_color)
+	if root.has_method("set_body_color"):
+		root.call("set_body_color", body_color)
 	var foam := _ensure_contact_foam_plane(root, "ContactFoam", Vector2(1.0, 1.0))
 	foam.position = Vector3(0.0, WATER_SURFACE_Y + 0.05, 0.0)
-	foam.scale = Vector3(ring_mesh.top_radius * 0.72, 1.0, ring_mesh.top_radius * 0.72)
+	var radius := float(site.get("radius", 4.0))
+	foam.scale = Vector3(radius * 0.72, 1.0, radius * 0.72)
 	var foam_material := foam.material_override as ShaderMaterial
-
-	var body := MeshInstance3D.new()
-	if body_kind == "crate":
-		var crate_mesh := BoxMesh.new()
-		crate_mesh.size = Vector3(0.95, 0.72, 0.95)
-		body.mesh = crate_mesh
-	elif body_kind == "outpost":
-		var outpost_mesh := CylinderMesh.new()
-		outpost_mesh.height = 2.2
-		outpost_mesh.top_radius = 0.95
-		outpost_mesh.bottom_radius = 1.2
-		body.mesh = outpost_mesh
-	else:
-		var hull_mesh := BoxMesh.new()
-		hull_mesh.size = Vector3(1.1, 0.75, 1.8)
-		body.mesh = hull_mesh
-	body.position = Vector3(0.0, 0.55, 0.0)
-	var body_material := StandardMaterial3D.new()
-	body_material.albedo_color = body_color
-	body.material_override = body_material
-	root.add_child(body)
-
-	var label := Label3D.new()
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.font_size = 20
-	label.position = Vector3(0.0, 1.7, 0.0)
-	root.add_child(label)
 	return {
 		"root": root,
-		"ring_material": ring_material,
 		"foam_material": foam_material,
-		"body_material": body_material,
-		"label": label,
 	}
 
 func _refresh_wreck_visual() -> void:
@@ -2940,12 +2916,12 @@ func _refresh_wreck_visual() -> void:
 		var chunk_key := _chunk_coord_key(site.get("coord", []))
 		if not active_lookup.has(chunk_key):
 			continue
-		salvage_site_visuals[str(site.get("id", ""))] = _make_site_ring_root(
+		salvage_site_visuals[str(site.get("id", ""))] = _spawn_site_marker(
+			SALVAGE_SITE_MARKER_SCENE,
 			salvage_site_container,
 			site,
 			Color(0.23, 0.79, 0.57, 0.26),
-			Color(0.45, 0.29, 0.18),
-			"wreck"
+			Color(0.45, 0.29, 0.18)
 		)
 
 func _refresh_rescue_visual() -> void:
@@ -2962,12 +2938,12 @@ func _refresh_rescue_visual() -> void:
 		var chunk_key := _chunk_coord_key(site.get("coord", []))
 		if not active_lookup.has(chunk_key):
 			continue
-		distress_site_visuals[str(site.get("id", ""))] = _make_site_ring_root(
+		distress_site_visuals[str(site.get("id", ""))] = _spawn_site_marker(
+			DISTRESS_SITE_MARKER_SCENE,
 			distress_site_container,
 			site,
 			Color(0.93, 0.72, 0.28, 0.28),
-			Color(0.86, 0.46, 0.18),
-			"wreck"
+			Color(0.86, 0.46, 0.18)
 		)
 
 func _refresh_squall_visuals() -> void:
@@ -3066,12 +3042,12 @@ func _refresh_cache_visual() -> void:
 		var chunk_key := _chunk_coord_key(site.get("coord", []))
 		if not active_lookup.has(chunk_key):
 			continue
-		resupply_site_visuals[str(site.get("id", ""))] = _make_site_ring_root(
+		resupply_site_visuals[str(site.get("id", ""))] = _spawn_site_marker(
+			RESUPPLY_SITE_MARKER_SCENE,
 			resupply_site_container,
 			site,
 			Color(0.23, 0.71, 0.84, 0.24),
-			Color(0.21, 0.54, 0.62),
-			"crate"
+			Color(0.21, 0.54, 0.62)
 		)
 
 func _refresh_extraction_visual() -> void:
@@ -3088,12 +3064,12 @@ func _refresh_extraction_visual() -> void:
 		var chunk_key := _chunk_coord_key(site.get("coord", []))
 		if not active_lookup.has(chunk_key):
 			continue
-		extraction_site_visuals[str(site.get("id", ""))] = _make_site_ring_root(
+		extraction_site_visuals[str(site.get("id", ""))] = _spawn_site_marker(
+			EXTRACTION_OUTPOST_MARKER_SCENE,
 			extraction_site_container,
 			site,
 			Color(0.30, 0.62, 0.86, 0.24),
-			Color(0.72, 0.80, 0.88),
-			"outpost"
+			Color(0.72, 0.80, 0.88)
 		)
 
 func _refresh_result_overlay() -> void:
@@ -4111,12 +4087,9 @@ func _update_wreck_visual() -> void:
 		root.position = site.get("position", Vector3.ZERO) + Vector3(0.0, sin(connect_time_seconds * 0.72 + float(root.get_index())) * 0.06, 0.0)
 		var in_zone := boat_position.distance_to(site.get("position", Vector3.ZERO)) <= float(site.get("radius", 4.4))
 		var ready_color := Color(0.23, 0.79, 0.57) if in_zone and boat_speed <= float(site.get("max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)) else Color(0.87, 0.56, 0.19)
-		var ring_material := visual.get("ring_material") as StandardMaterial3D
 		var foam_material := visual.get("foam_material") as ShaderMaterial
-		var body_material := visual.get("body_material") as StandardMaterial3D
-		var label := visual.get("label") as Label3D
-		if ring_material != null:
-			ring_material.albedo_color = ready_color
+		if root.has_method("set_ring_color"):
+			root.call("set_ring_color", ready_color)
 		if foam_material != null:
 			foam_material.set_shader_parameter("core_color", Color(0.88, 0.95, 1.0))
 			foam_material.set_shader_parameter("edge_color", ready_color)
@@ -4126,15 +4099,16 @@ func _update_wreck_visual() -> void:
 			foam_material.set_shader_parameter("soft_fill", 0.11)
 			foam_material.set_shader_parameter("breakup_strength", 0.22)
 			foam_material.set_shader_parameter("scroll_speed", 0.38)
-		if body_material != null:
-			body_material.albedo_color = Color(0.38, 0.24, 0.18).lerp(Color(0.58, 0.32, 0.18), 0.18 if in_zone else 0.0)
-		if label != null:
-			label.text = "%s\nLoot %d | Max Speed %.1f" % [
+		if root.has_method("set_body_color"):
+			root.call("set_body_color", Color(0.38, 0.24, 0.18).lerp(Color(0.58, 0.32, 0.18), 0.18 if in_zone else 0.0))
+		if root.has_method("set_label_text"):
+			root.call("set_label_text", "%s\nLoot %d | Max Speed %.1f" % [
 				str(site.get("label", "Wreck Salvage")),
 				int(site.get("loot_remaining", 0)),
 				float(site.get("max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)),
-			]
-			label.modulate = ready_color.lightened(0.18)
+			])
+		if root.has_method("set_label_color"):
+			root.call("set_label_color", ready_color.lightened(0.18))
 
 func _update_rescue_visual() -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
@@ -4155,12 +4129,9 @@ func _update_rescue_visual() -> void:
 			ready_color = Color(0.95, 0.84, 0.36)
 		elif in_zone and boat_speed <= float(site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED)):
 			ready_color = Color(0.98, 0.86, 0.36)
-		var ring_material := visual.get("ring_material") as StandardMaterial3D
 		var foam_material := visual.get("foam_material") as ShaderMaterial
-		var body_material := visual.get("body_material") as StandardMaterial3D
-		var label := visual.get("label") as Label3D
-		if ring_material != null:
-			ring_material.albedo_color = ready_color
+		if root.has_method("set_ring_color"):
+			root.call("set_ring_color", ready_color)
 		if foam_material != null:
 			foam_material.set_shader_parameter("core_color", Color(0.92, 0.97, 1.0))
 			foam_material.set_shader_parameter("edge_color", ready_color)
@@ -4170,21 +4141,23 @@ func _update_rescue_visual() -> void:
 			foam_material.set_shader_parameter("soft_fill", 0.14)
 			foam_material.set_shader_parameter("breakup_strength", 0.28)
 			foam_material.set_shader_parameter("scroll_speed", 0.52)
-		if body_material != null:
-			body_material.albedo_color = Color(0.56, 0.37, 0.18).lerp(Color(0.93, 0.56, 0.18), 0.7 if bool(site.get("available", false)) else 0.2)
-		if label != null:
-			label.text = "%s\nHold %.1f/%.1fs | Max Speed %.1f" % [
+		if root.has_method("set_body_color"):
+			root.call("set_body_color", Color(0.56, 0.37, 0.18).lerp(Color(0.93, 0.56, 0.18), 0.7 if bool(site.get("available", false)) else 0.2))
+		var label_text := "%s\nHold %.1f/%.1fs | Max Speed %.1f" % [
+			str(site.get("label", "Distress Rescue")),
+			float(site.get("progress", 0.0)),
+			float(site.get("duration", 1.0)),
+			float(site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED)),
+		]
+		if bool(site.get("completed", false)):
+			label_text = "%s\nSecured gold, recovery materials, and %d kit" % [
 				str(site.get("label", "Distress Rescue")),
-				float(site.get("progress", 0.0)),
-				float(site.get("duration", 1.0)),
-				float(site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED)),
+				int(site.get("patch_kit_bonus", 0)),
 			]
-			if bool(site.get("completed", false)):
-				label.text = "%s\nSecured gold, recovery materials, and %d kit" % [
-					str(site.get("label", "Distress Rescue")),
-					int(site.get("patch_kit_bonus", 0)),
-				]
-			label.modulate = ready_color.lightened(0.16)
+		if root.has_method("set_label_text"):
+			root.call("set_label_text", label_text)
+		if root.has_method("set_label_color"):
+			root.call("set_label_color", ready_color.lightened(0.16))
 
 func _update_cache_visual() -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
@@ -4200,12 +4173,9 @@ func _update_cache_visual() -> void:
 		var ready_color := Color(0.21, 0.82, 0.57) if bool(site.get("available", false)) and in_zone and boat_speed <= float(site.get("max_speed", NetworkRuntime.RESUPPLY_CACHE_MAX_SPEED)) else Color(0.23, 0.71, 0.84)
 		if not bool(site.get("available", false)):
 			ready_color = Color(0.44, 0.50, 0.56)
-		var ring_material := visual.get("ring_material") as StandardMaterial3D
 		var foam_material := visual.get("foam_material") as ShaderMaterial
-		var body_material := visual.get("body_material") as StandardMaterial3D
-		var label := visual.get("label") as Label3D
-		if ring_material != null:
-			ring_material.albedo_color = ready_color
+		if root.has_method("set_ring_color"):
+			root.call("set_ring_color", ready_color)
 		if foam_material != null:
 			foam_material.set_shader_parameter("core_color", Color(0.84, 0.96, 1.0))
 			foam_material.set_shader_parameter("edge_color", ready_color)
@@ -4215,17 +4185,19 @@ func _update_cache_visual() -> void:
 			foam_material.set_shader_parameter("soft_fill", 0.10)
 			foam_material.set_shader_parameter("breakup_strength", 0.20)
 			foam_material.set_shader_parameter("scroll_speed", 0.34)
-		if body_material != null:
-			body_material.albedo_color = Color(0.19, 0.48, 0.58).lerp(Color(0.50, 0.55, 0.60), 1.0 if not bool(site.get("available", false)) else 0.0)
-		if label != null:
-			label.text = "%s\nGold, cache materials, and %d patch kit | Max Speed %.1f" % [
-				str(site.get("label", "Resupply Cache")),
-				int(site.get("supply_grant", NetworkRuntime.RESUPPLY_CACHE_SUPPLY_GRANT)),
-				float(site.get("max_speed", NetworkRuntime.RESUPPLY_CACHE_MAX_SPEED)),
-			]
-			if not bool(site.get("available", false)):
-				label.text = "%s\nRecovered" % str(site.get("label", "Resupply Cache"))
-			label.modulate = ready_color.lightened(0.18)
+		if root.has_method("set_body_color"):
+			root.call("set_body_color", Color(0.19, 0.48, 0.58).lerp(Color(0.50, 0.55, 0.60), 1.0 if not bool(site.get("available", false)) else 0.0))
+		var label_text := "%s\nGold, cache materials, and %d patch kit | Max Speed %.1f" % [
+			str(site.get("label", "Resupply Cache")),
+			int(site.get("supply_grant", NetworkRuntime.RESUPPLY_CACHE_SUPPLY_GRANT)),
+			float(site.get("max_speed", NetworkRuntime.RESUPPLY_CACHE_MAX_SPEED)),
+		]
+		if not bool(site.get("available", false)):
+			label_text = "%s\nRecovered" % str(site.get("label", "Resupply Cache"))
+		if root.has_method("set_label_text"):
+			root.call("set_label_text", label_text)
+		if root.has_method("set_label_color"):
+			root.call("set_label_color", ready_color.lightened(0.18))
 
 func _update_squall_visuals() -> void:
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
@@ -4279,12 +4251,9 @@ func _update_extraction_visual(_delta: float) -> void:
 			extraction_color = EXTRACTION_FAILED_COLOR
 		elif phase == "success":
 			extraction_color = EXTRACTION_READY_COLOR
-		var ring_material := visual.get("ring_material") as StandardMaterial3D
 		var foam_material := visual.get("foam_material") as ShaderMaterial
-		var body_material := visual.get("body_material") as StandardMaterial3D
-		var label := visual.get("label") as Label3D
-		if ring_material != null:
-			ring_material.albedo_color = extraction_color
+		if root.has_method("set_ring_color"):
+			root.call("set_ring_color", extraction_color)
 		if foam_material != null:
 			foam_material.set_shader_parameter("core_color", Color(0.88, 0.97, 1.0))
 			foam_material.set_shader_parameter("edge_color", extraction_color)
@@ -4294,16 +4263,18 @@ func _update_extraction_visual(_delta: float) -> void:
 			foam_material.set_shader_parameter("soft_fill", 0.14)
 			foam_material.set_shader_parameter("breakup_strength", 0.24)
 			foam_material.set_shader_parameter("scroll_speed", 0.42)
-		if body_material != null:
-			body_material.albedo_color = extraction_color
-		if label != null:
-			label.text = "%s\nCargo %d | %.1f/%.1fs" % [
-				str(site.get("label", "Extraction")),
-				cargo_count,
-				float(NetworkRuntime.run_state.get("extraction_progress", 0.0)),
-				float(NetworkRuntime.run_state.get("extraction_duration", 1.0)),
-			]
-			label.modulate = extraction_color.lightened(0.18)
+		if root.has_method("set_body_color"):
+			root.call("set_body_color", extraction_color)
+		var label_text := "%s\nCargo %d | %.1f/%.1fs" % [
+			str(site.get("label", "Extraction")),
+			cargo_count,
+			float(NetworkRuntime.run_state.get("extraction_progress", 0.0)),
+			float(NetworkRuntime.run_state.get("extraction_duration", 1.0)),
+		]
+		if root.has_method("set_label_text"):
+			root.call("set_label_text", label_text)
+		if root.has_method("set_label_color"):
+			root.call("set_label_color", extraction_color.lightened(0.18))
 
 func _update_camera(delta: float) -> void:
 	if camera == null:
