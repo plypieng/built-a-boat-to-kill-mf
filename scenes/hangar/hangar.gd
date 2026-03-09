@@ -459,15 +459,27 @@ func _configure_player_controller_visual(controller: Node, display_name: String,
 	var nameplate_color := body_color.lightened(0.35) if not is_local else Color(0.96, 0.99, 0.96)
 	var highlight_color := body_color.lightened(0.08)
 	var tool_color := body_color.lightened(0.28)
+	_apply_player_controller_presentation(controller, display_name, highlight_color, tool_color, nameplate_color, "")
+
+func _apply_player_controller_presentation(
+	controller: Node,
+	display_name: String,
+	highlight_color: Color,
+	tool_color: Color,
+	nameplate_color: Color,
+	secondary_text: String
+) -> void:
+	if controller == null:
+		return
 	if controller.has_method("configure_presentation"):
-		controller.call("configure_presentation", display_name, highlight_color, tool_color, nameplate_color, "")
+		controller.call("configure_presentation", display_name, highlight_color, tool_color, nameplate_color, secondary_text)
 		return
 	var visual_root := controller.get_node_or_null("AvatarVisual") as Node3D
 	if visual_root == null:
-		visual_root = _create_avatar_visual(display_name, body_color, is_local)
+		visual_root = _create_avatar_visual(display_name, highlight_color.darkened(0.08), false)
 		controller.add_child(visual_root)
 	if visual_root.has_method("set_display_text"):
-		visual_root.call("set_display_text", display_name)
+		visual_root.call("set_display_text", display_name, secondary_text)
 	if visual_root.has_method("set_highlight_color"):
 		visual_root.call("set_highlight_color", highlight_color)
 	if visual_root.has_method("set_tool_color"):
@@ -559,9 +571,16 @@ func _create_placeholder_avatar_visual(display_name: String, body_color: Color, 
 	return root
 
 func _create_remote_presence_entry(peer_id: int, display_name: String, body_color: Color) -> Dictionary:
-	var avatar_root := Node3D.new()
+	var avatar_root := PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
+	if avatar_root == null:
+		avatar_root = CharacterBody3D.new()
 	avatar_root.name = "RemoteAvatar%d" % peer_id
-	avatar_root.add_child(_create_avatar_visual(display_name, body_color, false))
+	avatar_root.collision_layer = 0
+	avatar_root.collision_mask = 0
+	var collision_shape := avatar_root.get_node_or_null("CollisionShape3D") as CollisionShape3D
+	if collision_shape != null:
+		collision_shape.disabled = true
+	_configure_player_controller_visual(avatar_root, display_name, body_color, false)
 	avatar_container.add_child(avatar_root)
 
 	var ghost_root := Node3D.new()
@@ -2099,34 +2118,18 @@ func _update_remote_avatar_visuals(delta: float) -> void:
 		var selected_block_color: Color = selected_block_def.get("color", peer_color)
 		var presence_state := str(avatar_state.get("target_feedback_state", "hidden"))
 		var presence_text := _get_builder_presence_summary(avatar_state)
-		var avatar_visual := avatar_root.get_node_or_null("AvatarVisual") as Node3D
-		if avatar_visual == null:
-			avatar_visual = avatar_root.find_child("AvatarVisual", true, false) as Node3D
-		if avatar_visual != null:
-			if avatar_visual.has_method("set_display_text"):
-				avatar_visual.call("set_display_text", str(peer_data.get("name", "Crew")), presence_text)
-			if avatar_visual.has_method("set_nameplate_color"):
-				avatar_visual.call("set_nameplate_color", _get_presence_feedback_color(peer_color, presence_state).lightened(0.12))
-			if avatar_visual.has_method("set_highlight_color"):
-				avatar_visual.call("set_highlight_color", peer_color)
-			if avatar_visual.has_method("set_tool_color"):
-				avatar_visual.call("set_tool_color", selected_block_color.lightened(0.14))
-			if avatar_visual.has_method("set_motion_blend"):
-				avatar_visual.call("set_motion_blend", _get_hangar_avatar_motion_blend(avatar_state.get("velocity", Vector3.ZERO)))
-			elif avatar_visual.has_method("set_motion_state"):
-				avatar_visual.call("set_motion_state", _get_hangar_avatar_motion_state(avatar_state.get("velocity", Vector3.ZERO)))
-		var nameplate := avatar_root.get_node_or_null("Nameplate") as Label3D
-		if nameplate == null:
-			nameplate = avatar_root.find_child("Nameplate", true, false) as Label3D
-		if nameplate != null:
-			nameplate.text = "%s\n%s" % [str(peer_data.get("name", "Crew")), presence_text]
-			nameplate.modulate = _get_presence_feedback_color(peer_color, presence_state).lightened(0.12)
-		var tool := avatar_root.find_child("Tool", true, false) as MeshInstance3D
-		if tool != null:
-			var tool_material := StandardMaterial3D.new()
-			tool_material.albedo_color = selected_block_color.lightened(0.14)
-			tool_material.roughness = 0.24
-			tool.material_override = tool_material
+		_apply_player_controller_presentation(
+			avatar_root,
+			str(peer_data.get("name", "Crew")),
+			peer_color,
+			selected_block_color.lightened(0.14),
+			_get_presence_feedback_color(peer_color, presence_state).lightened(0.12),
+			presence_text
+		)
+		if avatar_root.has_method("set_motion_blend"):
+			avatar_root.call("set_motion_blend", _get_hangar_avatar_motion_blend(avatar_state.get("velocity", Vector3.ZERO)))
+		elif avatar_root.has_method("set_motion_state"):
+			avatar_root.call("set_motion_state", _get_hangar_avatar_motion_state(avatar_state.get("velocity", Vector3.ZERO)))
 		if ghost_root != null and ghost_mesh != null and ghost_ring != null:
 			var has_target := bool(avatar_state.get("has_target", false))
 			ghost_root.visible = has_target
