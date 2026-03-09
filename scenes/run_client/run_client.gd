@@ -3,6 +3,8 @@ extends Node3D
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
 const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
 const RUN_PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/run_player_controller.tscn")
+const RUN_STATION_MARKER_SCENE := preload("res://scenes/run_client/markers/run_station_marker.tscn")
+const RUN_RECOVERY_MARKER_SCENE := preload("res://scenes/run_client/markers/run_recovery_marker.tscn")
 const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
@@ -1615,41 +1617,13 @@ func _build_station_visuals() -> void:
 		child.queue_free()
 	station_visuals = {}
 	for station_id in NetworkRuntime.get_station_ids():
-		var station_node := Node3D.new()
+		var station_node := RUN_STATION_MARKER_SCENE.instantiate() as Node3D
+		if station_node == null:
+			station_node = Node3D.new()
 		station_node.position = NetworkRuntime.get_station_position(station_id)
 		station_container.add_child(station_node)
-
-		var base_mesh := MeshInstance3D.new()
-		base_mesh.name = "Base"
-		var cylinder := CylinderMesh.new()
-		cylinder.height = 0.12
-		cylinder.top_radius = 0.24
-		cylinder.bottom_radius = 0.28
-		base_mesh.mesh = cylinder
-		base_mesh.position = Vector3(0.0, 0.06, 0.0)
-		station_node.add_child(base_mesh)
-
-		var beacon_mesh := MeshInstance3D.new()
-		beacon_mesh.name = "Beacon"
-		var beacon_shape := SphereMesh.new()
-		beacon_shape.radius = 0.18
-		beacon_shape.height = 0.36
-		beacon_mesh.mesh = beacon_shape
-		beacon_mesh.position = Vector3(0.0, 0.34, 0.0)
-		station_node.add_child(beacon_mesh)
-
-		var label := Label3D.new()
-		label.name = "Label"
-		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		label.font_size = 22
-		label.position = Vector3(0.0, 0.92, 0.0)
-		station_node.add_child(label)
-
 		station_visuals[station_id] = {
 			"root": station_node,
-			"base": base_mesh,
-			"beacon": beacon_mesh,
-			"label": label,
 		}
 
 func _build_recovery_visuals() -> void:
@@ -1659,43 +1633,16 @@ func _build_recovery_visuals() -> void:
 		child.queue_free()
 	for target_variant in NetworkRuntime.get_run_recovery_points():
 		var target: Dictionary = target_variant
-		var target_node := Node3D.new()
+		var target_node := RUN_RECOVERY_MARKER_SCENE.instantiate() as Node3D
+		if target_node == null:
+			target_node = Node3D.new()
 		target_node.name = "%sMarker" % str(target.get("id", "Recovery"))
 		target_node.position = target.get("water_position", Vector3.ZERO)
 		recovery_container.add_child(target_node)
-
-		var ring_mesh_instance := MeshInstance3D.new()
-		var ring_mesh := CylinderMesh.new()
-		ring_mesh.height = 0.05
-		ring_mesh.top_radius = 0.34
-		ring_mesh.bottom_radius = 0.34
-		ring_mesh_instance.mesh = ring_mesh
-		ring_mesh_instance.position = Vector3(0.0, 0.03, 0.0)
-		var ring_material := StandardMaterial3D.new()
-		ring_material.albedo_color = Color(0.20, 0.70, 0.74, 0.74)
-		ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		ring_material.roughness = 0.18
-		ring_mesh_instance.material_override = ring_material
-		target_node.add_child(ring_mesh_instance)
-
-		var pole_mesh_instance := MeshInstance3D.new()
-		var pole_mesh := CylinderMesh.new()
-		pole_mesh.height = 0.95
-		pole_mesh.top_radius = 0.05
-		pole_mesh.bottom_radius = 0.05
-		pole_mesh_instance.mesh = pole_mesh
-		pole_mesh_instance.position = Vector3(0.0, 0.48, 0.0)
-		var pole_material := StandardMaterial3D.new()
-		pole_material.albedo_color = Color(0.86, 0.89, 0.92)
-		pole_mesh_instance.material_override = pole_material
-		target_node.add_child(pole_mesh_instance)
-
-		var label := Label3D.new()
-		label.text = str(target.get("label", "Recovery"))
-		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		label.font_size = 18
-		label.position = Vector3(0.0, 1.18, 0.0)
-		target_node.add_child(label)
+		if target_node.has_method("set_marker_text"):
+			target_node.call("set_marker_text", str(target.get("label", "Recovery")))
+		if target_node.has_method("set_marker_color"):
+			target_node.call("set_marker_color", Color(0.20, 0.70, 0.74))
 
 func _build_wreck_visual() -> void:
 	var ring_mesh_instance := MeshInstance3D.new()
@@ -2762,10 +2709,8 @@ func _refresh_station_visuals() -> void:
 
 	for station_id in NetworkRuntime.get_station_ids():
 		var station_visual: Dictionary = station_visuals.get(station_id, {})
-		var base_mesh := station_visual.get("base") as MeshInstance3D
-		var beacon_mesh := station_visual.get("beacon") as MeshInstance3D
-		var label := station_visual.get("label") as Label3D
-		if base_mesh == null or beacon_mesh == null or label == null:
+		var station_root := station_visual.get("root") as Node3D
+		if station_root == null:
 			continue
 
 		var station_data: Dictionary = NetworkRuntime.station_state.get(station_id, {})
@@ -2784,27 +2729,23 @@ func _refresh_station_visuals() -> void:
 		else:
 			color = color.lerp(STATION_SELECTED_COLOR, 0.18)
 
-		var base_material := StandardMaterial3D.new()
-		base_material.albedo_color = color.darkened(0.08)
-		base_mesh.material_override = base_material
-
-		var beacon_material := StandardMaterial3D.new()
-		beacon_material.albedo_color = color
-		beacon_mesh.material_override = beacon_material
-
 		var occupant_name := NetworkRuntime.get_station_occupant_name(station_id)
+		var label_text := ""
 		if claimable:
-			label.text = NetworkRuntime.get_station_label(station_id)
+			label_text = NetworkRuntime.get_station_label(station_id)
 			if occupant_peer_id != 0:
-				label.text += "\n%s" % occupant_name
+				label_text += "\n%s" % occupant_name
 		else:
-			label.text = NetworkRuntime.get_station_label(station_id)
+			label_text = NetworkRuntime.get_station_label(station_id)
 			var burst_action := str(station_data.get("burst_action", ""))
 			if not burst_action.is_empty():
-				label.text += "\n%s" % burst_action.capitalize()
+				label_text += "\n%s" % burst_action.capitalize()
 		if not bool(station_data.get("active", true)):
-			label.text += "\nOffline"
-		label.modulate = color.lightened(0.22)
+			label_text += "\nOffline"
+		if station_root.has_method("set_marker_color"):
+			station_root.call("set_marker_color", color)
+		if station_root.has_method("set_marker_text"):
+			station_root.call("set_marker_text", label_text)
 
 func _refresh_crew_visuals() -> void:
 	if crew_container == null or not is_instance_valid(crew_container) or not crew_container.is_inside_tree():
