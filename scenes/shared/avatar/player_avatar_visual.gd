@@ -4,10 +4,6 @@ const STATE_IDLE := "idle"
 const STATE_WALK := "walk"
 const STATE_RUN := "run"
 
-const IDLE_SCENE: PackedScene = preload("res://assets/characters/player/source/idle_with_skin.glb")
-const WALK_SCENE: PackedScene = preload("res://assets/characters/player/source/walk_with_skin.glb")
-const RUN_SCENE: PackedScene = preload("res://assets/characters/player/source/run_with_skin.glb")
-
 const HIPS_TRACK_PATH := NodePath("Armature/Skeleton3D:Hips")
 const BLEND_PARAMETER_PATH := "parameters/blend_position"
 const WALK_BLEND_POSITION := 0.45
@@ -15,6 +11,13 @@ const WALK_BLEND_POSITION := 0.45
 static var cached_motion_animations: Dictionary = {}
 static var motion_cache_ready := false
 
+@export_group("Meshy Sources")
+@export var base_rig_scene: PackedScene = preload("res://assets/characters/player/meshy/meshy_idle.glb")
+@export var idle_scene: PackedScene = preload("res://assets/characters/player/meshy/meshy_idle.glb")
+@export var walk_scene: PackedScene = preload("res://assets/characters/player/meshy/meshy_walk.glb")
+@export var run_scene: PackedScene = preload("res://assets/characters/player/meshy/meshy_run.glb")
+
+@export_group("Presentation")
 @export_range(0.5, 2.0, 0.01) var avatar_scale := 1.15
 @export var nameplate_height := 2.05
 @export var tool_offset := Vector3(0.36, 1.0, -0.10)
@@ -156,16 +159,21 @@ func _ensure_avatar_rig() -> void:
 	if rig_root == null:
 		rig_root = model_root.get_node_or_null("Rig") as Node3D
 	if rig_root == null:
-		var idle_instance := IDLE_SCENE.instantiate() as Node3D
-		if idle_instance == null:
+		var rig_scene := base_rig_scene if base_rig_scene != null else idle_scene
+		if rig_scene == null:
 			return
-		idle_instance.name = "Rig"
-		model_root.add_child(idle_instance)
-		rig_root = idle_instance
+		var rig_instance := rig_scene.instantiate() as Node3D
+		if rig_instance == null:
+			return
+		rig_instance.name = "Rig"
+		model_root.add_child(rig_instance)
+		rig_root = rig_instance
 
 	animation_player = _find_animation_player(rig_root)
 	if animation_player == null:
-		return
+		animation_player = AnimationPlayer.new()
+		animation_player.name = "AnimationPlayer"
+		rig_root.add_child(animation_player)
 	animation_player.stop()
 
 	animation_library = animation_player.get_animation_library("")
@@ -173,13 +181,13 @@ func _ensure_avatar_rig() -> void:
 		animation_library = AnimationLibrary.new()
 		animation_player.add_animation_library("", animation_library)
 
-	var idle_source_name := _get_first_animation_name(animation_player)
 	var reference_position := Vector3.ZERO
-	if not idle_source_name.is_empty():
-		var idle_animation := animation_player.get_animation(idle_source_name)
-		if idle_animation != null:
-			reference_position = _get_hips_reference_position(idle_animation)
-			_register_animation_clip(STATE_IDLE, idle_animation, reference_position)
+	var idle_animation := _get_first_animation(animation_player)
+	if idle_animation == null:
+		idle_animation = _load_animation_from_scene(idle_scene)
+	if idle_animation != null:
+		reference_position = _get_hips_reference_position(idle_animation)
+		_register_animation_clip(STATE_IDLE, idle_animation, reference_position)
 
 	_ensure_motion_cache(reference_position)
 	_register_cached_animation_clip(STATE_WALK, reference_position)
@@ -190,32 +198,18 @@ func _ensure_motion_cache(reference_position: Vector3) -> void:
 	if motion_cache_ready:
 		return
 	cached_motion_animations.clear()
-	_cache_animation_from_scene(STATE_WALK, WALK_SCENE, reference_position)
-	_cache_animation_from_scene(STATE_RUN, RUN_SCENE, reference_position)
+	_cache_animation_from_scene(STATE_WALK, walk_scene, reference_position)
+	_cache_animation_from_scene(STATE_RUN, run_scene, reference_position)
 	motion_cache_ready = true
 
 func _cache_animation_from_scene(clip_name: String, scene: PackedScene, reference_position: Vector3) -> void:
-	if scene == null:
-		return
-	var source_instance := scene.instantiate()
-	if source_instance == null:
-		return
-	var source_player := _find_animation_player(source_instance)
-	if source_player == null:
-		source_instance.free()
-		return
-	var source_animation_name := _get_first_animation_name(source_player)
-	if source_animation_name.is_empty():
-		source_instance.free()
-		return
-	var source_animation := source_player.get_animation(source_animation_name)
+	var source_animation := _load_animation_from_scene(scene)
 	if source_animation != null:
 		var cached_animation := source_animation.duplicate(true) as Animation
 		if cached_animation != null:
 			cached_animation.loop_mode = Animation.LOOP_LINEAR
 			_align_hips_track(cached_animation, reference_position)
 			cached_motion_animations[clip_name] = cached_animation
-	source_instance.free()
 
 func _register_cached_animation_clip(clip_name: String, reference_position: Vector3) -> void:
 	var cached_animation := cached_motion_animations.get(clip_name) as Animation
@@ -263,6 +257,14 @@ func _make_animation_node(animation_name: String) -> AnimationNodeAnimation:
 	animation_node.animation = animation_name
 	return animation_node
 
+func _get_first_animation(source_player: AnimationPlayer) -> Animation:
+	if source_player == null:
+		return null
+	var animation_name := _get_first_animation_name(source_player)
+	if animation_name.is_empty():
+		return null
+	return source_player.get_animation(animation_name)
+
 func _get_first_animation_name(source_player: AnimationPlayer) -> String:
 	if source_player == null:
 		return ""
@@ -270,6 +272,21 @@ func _get_first_animation_name(source_player: AnimationPlayer) -> String:
 	if animation_list.is_empty():
 		return ""
 	return str(animation_list[0])
+
+func _load_animation_from_scene(scene: PackedScene) -> Animation:
+	if scene == null:
+		return null
+	var source_instance := scene.instantiate()
+	if source_instance == null:
+		return null
+	var source_player := _find_animation_player(source_instance)
+	var source_animation := _get_first_animation(source_player)
+	if source_animation == null:
+		source_instance.free()
+		return null
+	var animation_copy := source_animation.duplicate(true) as Animation
+	source_instance.free()
+	return animation_copy
 
 func _get_hips_reference_position(animation: Animation) -> Vector3:
 	var track_index := _find_hips_position_track(animation)

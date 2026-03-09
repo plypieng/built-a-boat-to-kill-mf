@@ -1,6 +1,34 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://scenes/shared/avatar/player_avatar_visual.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://assets/characters/player/meshy/meshy_idle.glb" id="2_rig"]
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_ring"]
+top_radius = 0.38
+bottom_radius = 0.42
+height = 0.05
+
+[sub_resource type="BoxMesh" id="BoxMesh_tool"]
+size = Vector3(0.18, 0.18, 0.85)
 
 [node name="AvatarVisual" type="Node3D"]
 script = ExtResource("1_script")
+
+[node name="ModelRoot" type="Node3D" parent="."]
+
+[node name="Rig" parent="ModelRoot" instance=ExtResource("2_rig")]
+
+[node name="FootRing" type="MeshInstance3D" parent="."]
+mesh = SubResource("CylinderMesh_ring")
+position = Vector3(0, 0.05, 0)
+
+[node name="Tool" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_tool")
+position = Vector3(0.36, 1, -0.1)
+rotation_degrees = Vector3(0, 18, -18)
+
+[node name="Nameplate" type="Label3D" parent="."]
+position = Vector3(0, 2.05, 0)
+billboard = 1
+font_size = 16
+outline_size = 8

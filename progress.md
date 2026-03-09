@@ -1030,3 +1030,13 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - autohost launch smoke on seed `9191`, confirming the game reaches the generated run with the new chunk scenes active and no chunk-scene script errors
 - Remaining check:
   - the longer autorun still timed out before a full extraction, so this pass is signed off as a clean launch/runtime rendering refactor rather than a full end-to-end gameplay revalidation
+
+## 2026-03-10 - Meshy rig integrated into scene-based player visuals
+
+- Imported the user-provided Meshy character and idle/walk/run GLBs into `assets/characters/player/meshy/`
+- Converted `scenes/shared/avatar/player_avatar_visual.tscn` from an almost-empty runtime shell into a real authored scene with `ModelRoot`, `Rig`, `FootRing`, `Tool`, and `Nameplate`
+- Updated `scenes/shared/avatar/player_avatar_visual.gd` so the shared player visual scene now reads its base rig and locomotion clips from the Meshy asset set instead of the older placeholder animation files
+- Verified:
+  - `godot --headless --path . --quit-after 2`
+  - editor-side import of the new Meshy GLBs with `godot --headless --editor --import --path .`
+  - autohost hangar boot and visual capture at `/tmp/meshy-hangar-v2.png`
