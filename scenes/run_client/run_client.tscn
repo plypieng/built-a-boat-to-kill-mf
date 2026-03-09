@@ -1,9 +1,10 @@
-[gd_scene load_steps=11 format=3]
+[gd_scene load_steps=12 format=3]
 
 [ext_resource type="Script" path="res://scenes/run_client/run_client.gd" id="1"]
 [ext_resource type="PackedScene" path="res://scenes/run_client/run_environment.tscn" id="2_env"]
 [ext_resource type="PackedScene" path="res://scenes/run_client/run_hud.tscn" id="3_hud"]
 [ext_resource type="PackedScene" path="res://scenes/run_client/run_result_overlay.tscn" id="4_overlay"]
+[ext_resource type="PackedScene" path="res://scenes/shared/avatar/player_controller_3d.tscn" id="5_player"]
 
 [sub_resource type="BoxMesh" id="hull_mesh"]
 size = Vector3(3.3, 0.72, 6.2)
@@ -73,6 +74,9 @@ position = Vector3(0, 2, -0.2)
 [node name="StationContainer" type="Node3D" parent="BoatRoot"]
 
 [node name="CrewContainer" type="Node3D" parent="BoatRoot"]
+
+[node name="LocalAvatar" parent="BoatRoot" instance=ExtResource("5_player")]
+position = Vector3(0, 0.92, 1.35)
 
 [node name="RunCamera" type="Camera3D" parent="."]
 position = Vector3(0, 5.5, 10.5)

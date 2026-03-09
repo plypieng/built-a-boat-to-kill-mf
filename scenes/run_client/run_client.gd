@@ -2,6 +2,7 @@ extends Node3D
 
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
 const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
+const PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/player_controller_3d.tscn")
 const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
 const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
@@ -93,6 +94,7 @@ var mast_mesh_instance: MeshInstance3D
 var main_block_container: Node3D
 var sinking_chunk_container: Node3D
 var crew_container: Node3D
+var local_run_avatar_controller: CharacterBody3D
 var wake_root: Node3D
 var wake_mesh_instance: MeshInstance3D
 var wake_material: ShaderMaterial
@@ -377,6 +379,7 @@ func _build_world() -> void:
 	_build_recovery_visuals()
 
 	crew_container = _ensure_child_node3d(boat_root, "CrewContainer")
+	_build_local_run_avatar_controller()
 	wake_root = _ensure_child_node3d(boat_root, "WakeRoot")
 	_ensure_sea_fx()
 
@@ -1314,6 +1317,97 @@ func _prime_local_run_avatar_state() -> void:
 	local_run_avatar_velocity = snapshot.get("velocity", Vector3.ZERO)
 	local_run_avatar_mode = str(snapshot.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
 	local_avatar_facing_y = float(snapshot.get("facing_y", PI))
+	_refresh_local_run_avatar_controller()
+
+func _build_local_run_avatar_controller() -> void:
+	local_run_avatar_controller = boat_root.get_node_or_null("LocalAvatar") as CharacterBody3D
+	if local_run_avatar_controller == null:
+		local_run_avatar_controller = PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
+		if local_run_avatar_controller == null:
+			return
+		local_run_avatar_controller.name = "LocalAvatar"
+		boat_root.add_child(local_run_avatar_controller)
+	local_run_avatar_controller.collision_layer = 0
+	local_run_avatar_controller.collision_mask = 0
+	var collision_shape := local_run_avatar_controller.get_node_or_null("CollisionShape3D") as CollisionShape3D
+	if collision_shape != null:
+		collision_shape.disabled = true
+	if local_run_avatar_controller.has_method("set_tool_visible"):
+		local_run_avatar_controller.call("set_tool_visible", false)
+	_refresh_local_run_avatar_controller()
+
+func _refresh_local_run_avatar_controller() -> void:
+	if local_run_avatar_controller == null:
+		return
+	var local_state := _get_local_run_avatar_state()
+	var station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
+	var overboard := _is_local_overboard()
+	var downed := _is_local_downed()
+	var badge_text := _format_avatar_badges(local_state)
+	var role_label := "Downed" if downed else ("Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"))
+	if not badge_text.is_empty():
+		role_label += " [%s]" % badge_text
+	var display_name := str(NetworkRuntime.peer_snapshot.get(_get_local_peer_id(), {}).get("name", "You"))
+	var highlight_color := _get_run_avatar_highlight_color(_get_local_peer_id(), station_id, overboard, downed)
+	if local_run_avatar_controller.has_method("configure_presentation"):
+		local_run_avatar_controller.call(
+			"configure_presentation",
+			display_name,
+			highlight_color,
+			highlight_color.lightened(0.22),
+			Color(0.96, 0.98, 1.0),
+			role_label
+		)
+	else:
+		var avatar_visual := local_run_avatar_controller.get_node_or_null("AvatarVisual") as Node3D
+		if avatar_visual != null and avatar_visual.has_method("set_display_text"):
+			avatar_visual.call("set_display_text", display_name, role_label)
+	if local_run_avatar_controller.has_method("set_tool_visible"):
+		local_run_avatar_controller.call("set_tool_visible", false)
+
+func _update_local_run_avatar_controller(delta: float) -> void:
+	if local_run_avatar_controller == null:
+		return
+	var local_state := _get_local_run_avatar_state()
+	var station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
+	var overboard := _is_local_overboard()
+	var downed := _is_local_downed()
+	var local_reaction := _get_reaction_visual(_get_local_peer_id())
+	var local_knockback := Vector3.ZERO
+	var intensity := 0.0
+	if not local_reaction.is_empty():
+		var active_time := float(local_reaction.get("active_time", 0.0))
+		var recovery_time := float(local_reaction.get("recovery_time", 0.0))
+		var recovery_duration := maxf(0.01, float(local_reaction.get("recovery_duration", 0.01)))
+		intensity = 1.0 if active_time > 0.0 else clampf(recovery_time / recovery_duration, 0.0, 1.0) * 0.55
+		var knockback: Vector3 = local_reaction.get("knockback_velocity", Vector3.ZERO)
+		local_knockback = boat_root.global_transform.basis.inverse() * knockback
+	var target_yaw := local_avatar_facing_y
+	if overboard:
+		var target_world_position: Vector3 = local_state.get("world_position", _get_local_avatar_world_position())
+		target_world_position.y += sin(connect_time_seconds * 2.8 + float(_get_local_peer_id())) * 0.05
+		local_run_avatar_controller.top_level = true
+		local_run_avatar_controller.global_position = local_run_avatar_controller.global_position.lerp(target_world_position, minf(1.0, delta * 8.0))
+		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
+		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, 0.12 + clampf(local_knockback.z * -0.03 * intensity, -0.18, 0.18), minf(1.0, delta * 10.0))
+		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, clampf(local_knockback.x * 0.04 * intensity, -0.18, 0.18), minf(1.0, delta * 10.0))
+	else:
+		var target_position := _get_local_run_avatar_target() if not station_id.is_empty() and _station_anchors_avatar(station_id) else local_run_avatar_position
+		target_position += local_knockback * 0.08 * intensity
+		target_position.y += sin(connect_time_seconds * 22.0 + float(_get_local_peer_id())) * 0.06 * intensity
+		local_run_avatar_controller.top_level = false
+		if downed:
+			target_position.y = maxf(0.34, target_position.y - 0.38)
+		local_run_avatar_controller.scale.y = lerpf(local_run_avatar_controller.scale.y, 0.55 if downed else 1.0, minf(1.0, delta * 8.0))
+		local_run_avatar_controller.position = local_run_avatar_controller.position.lerp(target_position, minf(1.0, delta * 8.5))
+		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
+		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, -0.42 if downed else clampf(local_knockback.z * -0.05 * intensity, -0.42, 0.42), minf(1.0, delta * 12.0))
+		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, 1.08 if downed else clampf(local_knockback.x * 0.055 * intensity, -0.48, 0.48), minf(1.0, delta * 12.0))
+	local_run_avatar_controller.velocity = local_run_avatar_velocity
+	if local_run_avatar_controller.has_method("set_motion_blend"):
+		local_run_avatar_controller.call("set_motion_blend", _get_run_avatar_motion_blend(local_state, overboard, downed))
+	elif local_run_avatar_controller.has_method("set_motion_state"):
+		local_run_avatar_controller.call("set_motion_state", _get_run_avatar_motion_state(local_state, overboard, downed))
 
 func _sanitize_local_run_avatar_position(deck_position: Vector3, fallback_position = null) -> Vector3:
 	return NetworkRuntime.sanitize_run_avatar_deck_position(deck_position, fallback_position)
@@ -1993,6 +2087,7 @@ func _refresh_world() -> void:
 	_refresh_runtime_block_visuals()
 	_refresh_sinking_chunk_visuals()
 	_refresh_station_visuals()
+	_refresh_local_run_avatar_controller()
 	_refresh_crew_visuals()
 	_refresh_hazard_visuals()
 	_refresh_loot_visuals()
@@ -2705,6 +2800,8 @@ func _refresh_crew_visuals() -> void:
 
 	var idle_slot_index := 0
 	for peer_id in NetworkRuntime.get_player_peer_ids():
+		if int(peer_id) == _get_local_peer_id():
+			continue
 		var peer_data: Dictionary = NetworkRuntime.peer_snapshot[peer_id]
 		var crew_member := Node3D.new()
 		var station_id := NetworkRuntime.get_peer_station_id(int(peer_id))
@@ -3175,8 +3272,11 @@ func _consume_local_reaction_impulse() -> void:
 		_spawn_splash_burst(NetworkRuntime.boat_state.get("position", Vector3.ZERO), clampf(float(local_reaction.get("strength", 0.5)) * 1.1, 0.45, 1.2))
 
 func _update_crew_visuals(delta: float) -> void:
+	_update_local_run_avatar_controller(delta)
 	var idle_slot_index := 0
 	for peer_id in NetworkRuntime.get_player_peer_ids():
+		if int(peer_id) == _get_local_peer_id():
+			continue
 		var visual: Dictionary = crew_visuals.get(int(peer_id), {})
 		var crew_root := visual.get("root") as Node3D
 		if crew_root == null:
@@ -4480,6 +4580,7 @@ func _on_session_phase_changed(phase: String) -> void:
 		get_tree().change_scene_to_file(LOADING_SCENE)
 
 func _on_peer_snapshot_changed(_snapshot: Dictionary) -> void:
+	_refresh_local_run_avatar_controller()
 	_refresh_crew_visuals()
 	_refresh_station_visuals()
 	_refresh_hud()
@@ -4535,6 +4636,7 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 		_push_event_callout("Crew Downed", HUD_TEXT_DANGER, 2.0)
 	last_hud_overboard_count = overboard_count
 	last_hud_downed_count = downed_count
+	_refresh_local_run_avatar_controller()
 	_refresh_crew_visuals()
 	_refresh_hud()
 
