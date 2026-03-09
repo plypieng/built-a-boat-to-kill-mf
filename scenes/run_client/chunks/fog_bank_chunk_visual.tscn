@@ -1,0 +1,5 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/run_client/chunks/run_chunk_visual.tscn" id="1_base"]
+
+[node name="FogBankChunkVisual" instance=ExtResource("1_base")]

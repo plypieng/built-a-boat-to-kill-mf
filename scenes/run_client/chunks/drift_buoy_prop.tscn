@@ -1,0 +1,13 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scenes/run_client/chunks/run_chunk_prop.gd" id="1_script"]
+
+[sub_resource type="SphereMesh" id="SphereMesh_buoy"]
+radius = 0.26
+height = 0.52
+
+[node name="DriftBuoyProp" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="Body" type="MeshInstance3D" parent="."]
+mesh = SubResource("SphereMesh_buoy")

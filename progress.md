@@ -1018,3 +1018,15 @@ Original prompt: Analyze the feasibility of a browser-based multiplayer 3D ocean
   - `godot --headless --path . --quit-after 2`
   - visual capture at `/tmp/builtaboat-sea-danger-v3.png`
   - generated-world end-to-end regression on seed `9191` with successful extraction and clean hangar return
+
+## 2026-03-10 - Scene-based biome chunk visuals
+
+- Replaced the ad-hoc run chunk tile/prop construction in `scenes/run_client/run_client.gd` with reusable chunk scenes under `scenes/run_client/chunks/`
+- Added reusable biome chunk scene variants for `open_ocean`, `reef_waters`, `fog_bank`, `storm_belt`, and `graveyard_waters`
+- Added reusable prop scenes for open-water drift buoys, reef spires, and graveyard spars
+- Kept world generation procedural: the server still decides chunk descriptors and prop placement from the run seed, while the client now instantiates scene assets for the generated biome/prop types
+- Verified:
+  - `godot --headless --path . --quit-after 2`
+  - autohost launch smoke on seed `9191`, confirming the game reaches the generated run with the new chunk scenes active and no chunk-scene script errors
+- Remaining check:
+  - the longer autorun still timed out before a full extraction, so this pass is signed off as a clean launch/runtime rendering refactor rather than a full end-to-end gameplay revalidation

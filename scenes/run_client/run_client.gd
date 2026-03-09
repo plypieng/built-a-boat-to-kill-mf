@@ -5,6 +5,14 @@ const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
 const RUN_PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/run_player_controller.tscn")
 const RUN_STATION_MARKER_SCENE := preload("res://scenes/run_client/markers/run_station_marker.tscn")
 const RUN_RECOVERY_MARKER_SCENE := preload("res://scenes/run_client/markers/run_recovery_marker.tscn")
+const OPEN_OCEAN_CHUNK_SCENE := preload("res://scenes/run_client/chunks/open_ocean_chunk_visual.tscn")
+const REEF_CHUNK_SCENE := preload("res://scenes/run_client/chunks/reef_chunk_visual.tscn")
+const FOG_BANK_CHUNK_SCENE := preload("res://scenes/run_client/chunks/fog_bank_chunk_visual.tscn")
+const STORM_BELT_CHUNK_SCENE := preload("res://scenes/run_client/chunks/storm_belt_chunk_visual.tscn")
+const GRAVEYARD_CHUNK_SCENE := preload("res://scenes/run_client/chunks/graveyard_chunk_visual.tscn")
+const DRIFT_BUOY_PROP_SCENE := preload("res://scenes/run_client/chunks/drift_buoy_prop.tscn")
+const REEF_SPIRE_PROP_SCENE := preload("res://scenes/run_client/chunks/reef_spire_prop.tscn")
+const GRAVEYARD_SPAR_PROP_SCENE := preload("res://scenes/run_client/chunks/graveyard_spar_prop.tscn")
 const SALVAGE_SITE_MARKER_SCENE := preload("res://scenes/run_client/sites/salvage_site_marker.tscn")
 const DISTRESS_SITE_MARKER_SCENE := preload("res://scenes/run_client/sites/distress_site_marker.tscn")
 const RESUPPLY_SITE_MARKER_SCENE := preload("res://scenes/run_client/sites/resupply_site_marker.tscn")
@@ -1080,7 +1088,10 @@ func _refresh_chunk_visuals() -> void:
 		var descriptor: Dictionary = descriptor_variant
 		var coord_key := _chunk_coord_key(descriptor.get("coord", [0, 0]))
 		var coord := RunWorldGenerator._coord_from_variant(descriptor.get("coord", [0, 0]))
-		var chunk_root := Node3D.new()
+		var biome_id := str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN))
+		var chunk_root := _get_chunk_visual_scene(biome_id).instantiate() as Node3D
+		if chunk_root == null:
+			chunk_root = Node3D.new()
 		chunk_root.name = "Chunk_%d_%d" % [coord.x, coord.y]
 		chunk_root.position = descriptor.get("world_center", Vector3.ZERO)
 		chunk_container.add_child(chunk_root)
@@ -1088,31 +1099,15 @@ func _refresh_chunk_visuals() -> void:
 			"root": chunk_root,
 			"descriptor": descriptor.duplicate(true),
 		}
-
-		var tile := MeshInstance3D.new()
-		var tile_mesh := BoxMesh.new()
 		var chunk_size := float(NetworkRuntime.run_state.get("chunk_size_m", RunWorldGenerator.CHUNK_SIZE_M))
-		tile_mesh.size = Vector3(chunk_size * 0.98, 0.08, chunk_size * 0.98)
-		tile.mesh = tile_mesh
-		tile.position = Vector3(0.0, -0.82, 0.0)
-		var tile_material := StandardMaterial3D.new()
-		tile_material.albedo_color = _get_chunk_biome_color(str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN)))
-		tile_material.roughness = 0.38
-		tile_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		tile.material_override = tile_material
-		chunk_root.add_child(tile)
-
-		var border_ring := MeshInstance3D.new()
-		var ring_mesh := BoxMesh.new()
-		ring_mesh.size = Vector3(chunk_size * 0.96, 0.05, chunk_size * 0.96)
-		border_ring.mesh = ring_mesh
-		border_ring.position = Vector3(0.0, -0.58, 0.0)
-		var ring_material := StandardMaterial3D.new()
-		ring_material.albedo_color = _get_chunk_outline_color(str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN)))
-		ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		border_ring.material_override = ring_material
-		chunk_root.add_child(border_ring)
-
+		if chunk_root.has_method("set_chunk_size"):
+			chunk_root.call("set_chunk_size", chunk_size)
+		if chunk_root.has_method("set_tile_color"):
+			chunk_root.call("set_tile_color", _get_chunk_biome_color(biome_id))
+		if chunk_root.has_method("set_outline_color"):
+			chunk_root.call("set_outline_color", _get_chunk_outline_color(biome_id))
+		if chunk_root.has_method("clear_props"):
+			chunk_root.call("clear_props")
 		_build_chunk_props(chunk_root, descriptor)
 
 	_update_chunk_environment()
@@ -1122,33 +1117,53 @@ func _build_chunk_props(parent: Node3D, descriptor: Dictionary) -> void:
 	var richness := float(descriptor.get("richness_level", 0.5))
 	var hazard_level := float(descriptor.get("hazard_level", 0.5))
 	var prop_count := 1 + int(round((richness + hazard_level) * 1.5))
+	var props_root := parent
+	if parent.has_method("get_props_root"):
+		props_root = parent.call("get_props_root") as Node3D
+		if props_root == null:
+			props_root = parent
 	for prop_index in range(prop_count):
-		var prop := MeshInstance3D.new()
+		var prop := _get_chunk_prop_scene(biome_id).instantiate() as Node3D
+		if prop == null:
+			prop = Node3D.new()
 		var props_seed := int(descriptor.get("props_seed", 0)) + prop_index * 53
 		if biome_id == RunWorldGenerator.BIOME_REEF_WATERS:
-			var reef_mesh := CylinderMesh.new()
-			reef_mesh.height = 0.8 + float((props_seed % 3)) * 0.35
-			reef_mesh.top_radius = 0.22
-			reef_mesh.bottom_radius = 0.36
-			prop.mesh = reef_mesh
+			prop.scale = Vector3.ONE * (0.86 + float((props_seed % 3)) * 0.22)
 		elif biome_id == RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
-			var spar_mesh := BoxMesh.new()
-			spar_mesh.size = Vector3(0.28, 1.2, 1.7)
-			prop.mesh = spar_mesh
+			prop.scale = Vector3(1.0, 0.92 + float((props_seed % 4)) * 0.16, 1.0)
 		else:
-			var buoy_mesh := SphereMesh.new()
-			buoy_mesh.radius = 0.22 + float((props_seed % 4)) * 0.05
-			buoy_mesh.height = buoy_mesh.radius * 2.0
-			prop.mesh = buoy_mesh
+			prop.scale = Vector3.ONE * (0.88 + float((props_seed % 4)) * 0.12)
 		prop.position = Vector3(
 			sin(float(props_seed % 360)) * 6.5,
 			0.42,
 			cos(float((props_seed * 3) % 360)) * 6.1
 		)
-		var material := StandardMaterial3D.new()
-		material.albedo_color = _get_chunk_prop_color(biome_id, prop_index)
-		prop.material_override = material
-		parent.add_child(prop)
+		prop.rotation.y = deg_to_rad(float(props_seed % 360))
+		props_root.add_child(prop)
+		if prop.has_method("set_prop_color"):
+			prop.call("set_prop_color", _get_chunk_prop_color(biome_id, prop_index))
+
+func _get_chunk_visual_scene(biome_id: String) -> PackedScene:
+	match biome_id:
+		RunWorldGenerator.BIOME_REEF_WATERS:
+			return REEF_CHUNK_SCENE
+		RunWorldGenerator.BIOME_FOG_BANK:
+			return FOG_BANK_CHUNK_SCENE
+		RunWorldGenerator.BIOME_STORM_BELT:
+			return STORM_BELT_CHUNK_SCENE
+		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			return GRAVEYARD_CHUNK_SCENE
+		_:
+			return OPEN_OCEAN_CHUNK_SCENE
+
+func _get_chunk_prop_scene(biome_id: String) -> PackedScene:
+	match biome_id:
+		RunWorldGenerator.BIOME_REEF_WATERS:
+			return REEF_SPIRE_PROP_SCENE
+		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			return GRAVEYARD_SPAR_PROP_SCENE
+		_:
+			return DRIFT_BUOY_PROP_SCENE
 
 func _get_chunk_biome_color(biome_id: String) -> Color:
 	match biome_id:
