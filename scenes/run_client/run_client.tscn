@@ -4,7 +4,7 @@
 [ext_resource type="PackedScene" path="res://scenes/run_client/run_environment.tscn" id="2_env"]
 [ext_resource type="PackedScene" path="res://scenes/run_client/run_hud.tscn" id="3_hud"]
 [ext_resource type="PackedScene" path="res://scenes/run_client/run_result_overlay.tscn" id="4_overlay"]
-[ext_resource type="PackedScene" path="res://scenes/shared/avatar/player_controller_3d.tscn" id="5_player"]
+[ext_resource type="PackedScene" path="res://scenes/shared/avatar/run_player_controller.tscn" id="5_player"]
 
 [sub_resource type="BoxMesh" id="hull_mesh"]
 size = Vector3(3.3, 0.72, 6.2)

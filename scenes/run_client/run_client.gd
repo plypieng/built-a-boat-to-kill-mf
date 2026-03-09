@@ -2,7 +2,7 @@ extends Node3D
 
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
 const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
-const PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/player_controller_3d.tscn")
+const RUN_PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/run_player_controller.tscn")
 const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
@@ -1321,7 +1321,7 @@ func _prime_local_run_avatar_state() -> void:
 func _build_local_run_avatar_controller() -> void:
 	local_run_avatar_controller = boat_root.get_node_or_null("LocalAvatar") as CharacterBody3D
 	if local_run_avatar_controller == null:
-		local_run_avatar_controller = PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
+		local_run_avatar_controller = RUN_PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
 		if local_run_avatar_controller == null:
 			return
 		local_run_avatar_controller.name = "LocalAvatar"
@@ -2820,7 +2820,7 @@ func _refresh_crew_visuals() -> void:
 		if int(peer_id) == _get_local_peer_id():
 			continue
 		var peer_data: Dictionary = NetworkRuntime.peer_snapshot[peer_id]
-		var crew_member := PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
+		var crew_member := RUN_PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
 		if crew_member == null:
 			continue
 		crew_member.name = "RemoteAvatar%d" % int(peer_id)

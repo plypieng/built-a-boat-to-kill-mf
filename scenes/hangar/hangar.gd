@@ -4,7 +4,7 @@ const CLIENT_BOOT_SCENE := "res://scenes/boot/client_boot.tscn"
 const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
-const PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/player_controller_3d.tscn")
+const HANGAR_PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/hangar_player_controller.tscn")
 const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
 const BLOCK_CELL_SIZE := 1.25
 const CURSOR_OK_COLOR := Color(0.34, 0.82, 0.58, 0.55)
@@ -435,7 +435,7 @@ func _build_hangar_props(parent: Node3D) -> void:
 func _build_local_avatar() -> void:
 	local_avatar_body = get_node_or_null("AvatarContainer/LocalAvatar") as CharacterBody3D
 	if local_avatar_body == null:
-		local_avatar_body = PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
+		local_avatar_body = HANGAR_PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
 		if local_avatar_body == null:
 			return
 		local_avatar_body.name = "LocalAvatar"
@@ -571,7 +571,7 @@ func _create_placeholder_avatar_visual(display_name: String, body_color: Color, 
 	return root
 
 func _create_remote_presence_entry(peer_id: int, display_name: String, body_color: Color) -> Dictionary:
-	var avatar_root := PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
+	var avatar_root := HANGAR_PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
 	if avatar_root == null:
 		avatar_root = CharacterBody3D.new()
 	avatar_root.name = "RemoteAvatar%d" % peer_id
