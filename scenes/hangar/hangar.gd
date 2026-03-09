@@ -4,6 +4,7 @@ const CLIENT_BOOT_SCENE := "res://scenes/boot/client_boot.tscn"
 const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
+const PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/player_controller_3d.tscn")
 const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
 const BLOCK_CELL_SIZE := 1.25
 const CURSOR_OK_COLOR := Color(0.34, 0.82, 0.58, 0.55)
@@ -432,20 +433,14 @@ func _build_hangar_props(parent: Node3D) -> void:
 		parent.add_child(lamp)
 
 func _build_local_avatar() -> void:
-	local_avatar_body = CharacterBody3D.new()
-	local_avatar_body.name = "LocalAvatar"
-	avatar_container.add_child(local_avatar_body)
-
-	var collision_shape := CollisionShape3D.new()
-	var capsule_shape := CapsuleShape3D.new()
-	capsule_shape.radius = 0.34
-	capsule_shape.height = 1.08
-	collision_shape.shape = capsule_shape
-	collision_shape.position = Vector3(0.0, 0.9, 0.0)
-	local_avatar_body.add_child(collision_shape)
-
-	var visual_root := _create_avatar_visual("You", Color(0.32, 0.84, 0.56), true)
-	local_avatar_body.add_child(visual_root)
+	local_avatar_body = get_node_or_null("AvatarContainer/LocalAvatar") as CharacterBody3D
+	if local_avatar_body == null:
+		local_avatar_body = PLAYER_CONTROLLER_SCENE.instantiate() as CharacterBody3D
+		if local_avatar_body == null:
+			return
+		local_avatar_body.name = "LocalAvatar"
+		avatar_container.add_child(local_avatar_body)
+	_configure_player_controller_visual(local_avatar_body, "You", Color(0.32, 0.84, 0.56), true)
 
 	var local_state: Dictionary = NetworkRuntime.get_hangar_avatar_state().get(_get_local_peer_id(), {})
 	if not local_state.is_empty():
@@ -457,6 +452,28 @@ func _build_local_avatar() -> void:
 	_apply_autohangar_spawn_override()
 	local_avatar_body.rotation.y = local_avatar_facing_y
 	_send_local_hangar_presence(local_avatar_body.global_position, Vector3.ZERO, true)
+
+func _configure_player_controller_visual(controller: Node, display_name: String, body_color: Color, is_local: bool) -> void:
+	if controller == null:
+		return
+	var nameplate_color := body_color.lightened(0.35) if not is_local else Color(0.96, 0.99, 0.96)
+	var highlight_color := body_color.lightened(0.08)
+	var tool_color := body_color.lightened(0.28)
+	if controller.has_method("configure_presentation"):
+		controller.call("configure_presentation", display_name, highlight_color, tool_color, nameplate_color, "")
+		return
+	var visual_root := controller.get_node_or_null("AvatarVisual") as Node3D
+	if visual_root == null:
+		visual_root = _create_avatar_visual(display_name, body_color, is_local)
+		controller.add_child(visual_root)
+	if visual_root.has_method("set_display_text"):
+		visual_root.call("set_display_text", display_name)
+	if visual_root.has_method("set_highlight_color"):
+		visual_root.call("set_highlight_color", highlight_color)
+	if visual_root.has_method("set_tool_color"):
+		visual_root.call("set_tool_color", tool_color)
+	if visual_root.has_method("set_nameplate_color"):
+		visual_root.call("set_nameplate_color", nameplate_color)
 
 func _create_avatar_visual(display_name: String, body_color: Color, is_local: bool) -> Node3D:
 	var avatar_visual := PLAYER_AVATAR_VISUAL_SCENE.instantiate() as Node3D

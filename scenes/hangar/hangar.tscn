@@ -1,8 +1,9 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://scenes/hangar/hangar.gd" id="1_1v6uu"]
 [ext_resource type="PackedScene" path="res://scenes/hangar/hangar_environment.tscn" id="2_env"]
 [ext_resource type="PackedScene" path="res://scenes/hangar/hangar_hud.tscn" id="3_hud"]
+[ext_resource type="PackedScene" path="res://scenes/shared/avatar/player_controller_3d.tscn" id="4_player"]
 
 [node name="Hangar" type="Node3D"]
 script = ExtResource("1_1v6uu")
@@ -19,6 +20,9 @@ position = Vector3(0, 0.1, 0)
 [node name="CursorRoot" type="Node3D" parent="BoatRoot"]
 
 [node name="AvatarContainer" type="Node3D" parent="."]
+
+[node name="LocalAvatar" parent="AvatarContainer" instance=ExtResource("4_player")]
+position = Vector3(0, 0.55, 6.6)
 
 [node name="HangarCamera" type="Camera3D" parent="."]
 position = Vector3(0, 4.45, 6.4)
