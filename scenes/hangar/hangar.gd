@@ -91,6 +91,8 @@ var local_reaction_impulse := Vector3.ZERO
 var local_camera_jolt := Vector3.ZERO
 var last_local_reaction_id := 0
 var selected_store_index := 0
+var selected_donation_index := 0
+var selected_builder_overlay_index := 0
 var hud_details_visible := false
 var inventory_panel_visible := false
 var selected_hangar_tool_index := 0
@@ -188,8 +190,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cycle_store_selection(-1)
 		KEY_C:
 			_cycle_store_selection(1)
+		KEY_B:
+			_cycle_donation_selection(-1)
+		KEY_N:
+			_cycle_donation_selection(1)
+		KEY_T:
+			_cycle_builder_overlay(1)
 		KEY_V:
 			_purchase_selected_unlock()
+		KEY_G:
+			_donate_selected_resource()
 		KEY_R:
 			_rotate_selected_block()
 		KEY_F:
@@ -629,18 +639,63 @@ func _refresh_all() -> void:
 	_refresh_hangar_avatar_visuals()
 	_refresh_hud()
 
+func _get_selected_builder_overlay_mode() -> String:
+	var overlay_modes := NetworkRuntime.get_builder_overlay_modes()
+	if overlay_modes.is_empty():
+		return "none"
+	selected_builder_overlay_index = wrapi(selected_builder_overlay_index, 0, overlay_modes.size())
+	return str(overlay_modes[selected_builder_overlay_index])
+
+func _cycle_builder_overlay(direction: int) -> void:
+	var overlay_modes := NetworkRuntime.get_builder_overlay_modes()
+	if overlay_modes.is_empty():
+		return
+	selected_builder_overlay_index = wrapi(selected_builder_overlay_index + direction, 0, overlay_modes.size())
+	_refresh_blueprint_visuals()
+	_refresh_hud()
+
+func _get_builder_overlay_value(cell_key: String, overlay_mode: String) -> float:
+	if overlay_mode == "none":
+		return 0.0
+	var overlay_cells := NetworkRuntime.get_blueprint_overlay_cells()
+	var cell_data: Dictionary = overlay_cells.get(cell_key, {})
+	return clampf(float(cell_data.get(overlay_mode, 0.0)), 0.0, 1.0)
+
+func _get_builder_overlay_color(base_color: Color, cell_key: String, overlay_mode: String) -> Color:
+	var overlay_value := _get_builder_overlay_value(cell_key, overlay_mode)
+	if overlay_mode == "none":
+		return base_color
+	match overlay_mode:
+		"pathing":
+			return base_color.lerp(Color(0.92, 0.84, 0.28), overlay_value)
+		"recovery":
+			return base_color.lerp(Color(0.20, 0.76, 0.72), overlay_value)
+		"repair":
+			return base_color.lerp(Color(0.26, 0.80, 0.48), overlay_value)
+		"propulsion":
+			return base_color.lerp(Color(0.90, 0.32, 0.24), overlay_value)
+		"redundancy":
+			return base_color.lerp(Color(0.22, 0.64, 0.84), overlay_value)
+		"safety":
+			return base_color.lerp(Color(0.72, 0.86, 0.30), overlay_value)
+		_:
+			return base_color
+
 func _refresh_blueprint_visuals() -> void:
 	for child in block_container.get_children():
 		child.queue_free()
 	block_visuals.clear()
 
 	var loose_ids := Array(NetworkRuntime.boat_blueprint.get("loose_block_ids", []))
+	var overlay_mode := _get_selected_builder_overlay_mode()
 	for block_variant in Array(NetworkRuntime.boat_blueprint.get("blocks", [])):
 		var block: Dictionary = block_variant
 		var block_type := str(block.get("type", "structure"))
 		var block_def := NetworkRuntime.get_builder_block_definition(block_type)
+		var cell := _normalize_cell(block.get("cell", [0, 0, 0]))
+		var cell_key := "%d:%d:%d" % [int(cell[0]), int(cell[1]), int(cell[2])]
 		var block_node := Node3D.new()
-		block_node.position = _cell_to_local_position(block.get("cell", [0, 0, 0]))
+		block_node.position = _cell_to_local_position(cell)
 		block_node.rotation_degrees.y = float(int(block.get("rotation_steps", 0)) * 90)
 		block_container.add_child(block_node)
 
@@ -655,6 +710,7 @@ func _refresh_blueprint_visuals() -> void:
 			base_color = base_color.darkened(0.16).lerp(LOOSE_CHUNK_TINT, 0.28)
 		else:
 			base_color = base_color.lerp(MAIN_CHUNK_TINT, 0.08)
+		base_color = _get_builder_overlay_color(base_color, cell_key, overlay_mode)
 		material.albedo_color = base_color
 		material.roughness = 0.42
 		mesh_instance.material_override = material
@@ -784,12 +840,22 @@ func _refresh_hud() -> void:
 	var stats := NetworkRuntime.get_blueprint_stats()
 	var block_id := _get_selected_block_id()
 	var block_def := NetworkRuntime.get_builder_block_definition(block_id)
+	var overlay_mode := _get_selected_builder_overlay_mode()
 	var warnings := NetworkRuntime.get_blueprint_warnings()
 	var warning_lines := PackedStringArray()
 	for warning in warnings:
 		warning_lines.append("- %s" % str(warning))
 	if warning_lines.is_empty():
 		warning_lines.append("- No major warnings. This hull is ready to sail.")
+	var overlay_label := overlay_mode.replace("_", " ").capitalize()
+	var overlay_summary := "Overlay %s | Pathing %.0f | Recovery %.0f | Repair %.0f%% | Exposure %.0f | Redundancy %.0f" % [
+		overlay_label,
+		float(stats.get("pathing_score", 0.0)),
+		float(stats.get("recovery_access_rating", 0.0)),
+		float(stats.get("repair_coverage", 0.0)),
+		float(stats.get("propulsion_exposure_rating", 0.0)),
+		float(stats.get("damage_redundancy", 0.0)),
+	]
 
 	var palette_entries := PackedStringArray()
 	for palette_block_id_variant in NetworkRuntime.get_builder_block_ids():
@@ -824,7 +890,7 @@ func _refresh_hud() -> void:
 		_get_local_target_compact_text(),
 	]
 
-	builder_label.text = "Blueprint v%d | Blocks %d | Main %d | Loose %d | Components %d\nHull %.0f | Top Speed %.1f | Cargo %d | Patch Kits %d | Brace x%.2f | Margin %.1f" % [
+	builder_label.text = "Blueprint v%d | Blocks %d | Main %d | Loose %d | Components %d\nHull %.0f | Top Speed %.1f | Accel %.0f | Turn %.0f | Margin %.1f\n%s | Workload %.0f | Crew %d | Safety %.0f | Drive HP %.0f\nCargo %d | Patch Kits %d | Brace x%.2f | Stability %.0f | Repair %.0f%%\nRecovery %.0f | Exposure %.0f | Redundancy %.0f | Salvage %d | %s" % [
 		int(NetworkRuntime.boat_blueprint.get("version", 1)),
 		int(stats.get("block_count", 0)),
 		int(stats.get("main_chunk_blocks", 0)),
@@ -832,10 +898,24 @@ func _refresh_hud() -> void:
 		int(stats.get("component_count", 0)),
 		float(stats.get("max_hull_integrity", 0.0)),
 		float(stats.get("top_speed", 0.0)),
+		float(stats.get("acceleration", 0.0)),
+		float(stats.get("turn_authority", 0.0)),
+		float(stats.get("buoyancy_margin", 0.0)),
+		str(stats.get("propulsion_label", NetworkRuntime.get_propulsion_family_label(str(stats.get("propulsion_family", NetworkRuntime.PROPULSION_FAMILY_RAFT_PADDLES))))),
+		float(stats.get("workload", 0.0)),
+		int(stats.get("recommended_crew", 1)),
+		float(stats.get("crew_safety", 0.0)),
+		float(stats.get("propulsion_health_rating", 0.0)),
 		int(stats.get("cargo_capacity", 0)),
 		int(stats.get("repair_capacity", 0)),
 		float(stats.get("brace_multiplier", 1.0)),
-		float(stats.get("buoyancy_margin", 0.0)),
+		float(stats.get("storm_stability", 0.0)),
+		float(stats.get("repair_coverage", 0.0)),
+		float(stats.get("recovery_access_rating", 0.0)),
+		float(stats.get("propulsion_exposure_rating", 0.0)),
+		float(stats.get("damage_redundancy", 0.0)),
+		int(stats.get("salvage_station_count", 0)),
+		overlay_summary,
 	]
 	var readiness_snapshot := _get_launch_readiness_snapshot(stats, warnings)
 	hud_icons.set_icon(
@@ -847,7 +927,7 @@ func _refresh_hud() -> void:
 		str(readiness_snapshot.get("detail", "")),
 	]
 	launch_readiness_label.modulate = readiness_snapshot.get("color", Color(0.98, 0.97, 0.92))
-	warning_label.text = "Warnings And Tips\n%s" % "\n".join(warning_lines)
+	warning_label.text = "Warnings And Tips\n%s\n%s" % [overlay_summary, "\n".join(warning_lines)]
 	var mouse_hint := "Esc frees the cursor for buttons. RMB returns to build aim." if _is_mouse_captured() else "Cursor free: click buttons, then press Esc or RMB to return to aim."
 	status_label.text = "Build Session\n%s\n%s" % [NetworkRuntime.status_message, mouse_hint]
 	launch_button.disabled = NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR
@@ -855,48 +935,80 @@ func _refresh_hud() -> void:
 	launch_button.tooltip_text = "\n".join(warning_lines)
 
 	var progression_snapshot := _get_progression_snapshot()
+	var local_profile := DockState.get_local_profile_snapshot()
 	var total_runs := int(progression_snapshot.get("total_runs", 0))
 	var successful_runs := int(progression_snapshot.get("successful_runs", 0))
 	var extraction_rate := 0.0
 	if total_runs > 0:
 		extraction_rate = float(successful_runs) / float(total_runs) * 100.0
 	var unlocked_blocks := Array(progression_snapshot.get("unlocked_blocks", []))
+	var local_known_schematics := Array(local_profile.get("known_schematics", []))
+	var workshop_stock := Dictionary(progression_snapshot.get("workshop_stock", {}))
+	var repair_debt := Dictionary(progression_snapshot.get("repair_debt", {}))
 	hud_icons.set_icon(profile_icon, "gold")
-	profile_label.text = "Gold %d | Salvage %d | Runs %d | Extracted %d (%.0f%%)\nUnlocked %d/%d parts" % [
-		int(progression_snapshot.get("total_gold", 0)),
+	profile_label.text = "Stash %d gold | %d material units | Schematics %d\nHost Workshop %d gold | %d material units | Unlocked %d/%d parts\nRuns %d | Extracted %d (%.0f%%) | Debt %s" % [
+		int(local_profile.get("total_gold", 0)),
+		DockState.get_total_salvage(),
+		local_known_schematics.size(),
+		int(progression_snapshot.get("workshop_gold", 0)),
 		int(progression_snapshot.get("total_salvage", 0)),
+		unlocked_blocks.size(),
+		NetworkRuntime.BUILDER_BLOCK_ORDER.size(),
 		total_runs,
 		successful_runs,
 		extraction_rate,
-		unlocked_blocks.size(),
-		NetworkRuntime.BUILDER_BLOCK_ORDER.size(),
+		str(repair_debt.get("severity", "clear")).capitalize(),
 	]
 	var store_entries := NetworkRuntime.get_builder_store_entries()
 	if store_entries.is_empty():
 		hud_icons.set_icon(store_icon, "salvage")
-		store_label.text = "All prototype parts are already available."
+		store_label.text = "Workshop stocked. All current prototype parts are already craftable."
 		if unlock_button != null:
 			unlock_button.disabled = true
-			unlock_button.text = "All Parts Unlocked"
+			unlock_button.text = "All Parts Crafted"
 	else:
 		selected_store_index = wrapi(selected_store_index, 0, store_entries.size())
 		var selected_store_entry: Dictionary = store_entries[selected_store_index]
 		var selected_unlocked := bool(selected_store_entry.get("unlocked", false))
 		var selected_affordable := bool(selected_store_entry.get("affordable", false))
-		var entry_status := "Unlocked" if selected_unlocked else ("Ready" if selected_affordable else "Locked")
+		var schematic_text := "Known" if bool(selected_store_entry.get("schematic_known", true)) else "Missing"
+		var missing_tokens := PackedStringArray()
+		if int(selected_store_entry.get("missing_gold", 0)) > 0:
+			missing_tokens.append("%d gold" % int(selected_store_entry.get("missing_gold", 0)))
+		for material_id_variant in Dictionary(selected_store_entry.get("missing_materials", {})).keys():
+			var material_id := str(material_id_variant)
+			missing_tokens.append("%s x%d" % [
+				str(NetworkRuntime.MATERIAL_LABELS.get(material_id, material_id.capitalize())),
+				int(Dictionary(selected_store_entry.get("missing_materials", {})).get(material_id, 0)),
+			])
+		var entry_status := "Crafted" if selected_unlocked else ("Ready" if selected_affordable else "Blocked")
+		var cost_tokens := PackedStringArray()
+		var recipe_gold := int(selected_store_entry.get("recipe_gold", 0))
+		if recipe_gold > 0:
+			cost_tokens.append("%d gold" % recipe_gold)
+		for material_id_variant in Dictionary(selected_store_entry.get("recipe_materials", {})).keys():
+			var material_id := str(material_id_variant)
+			var quantity := int(Dictionary(selected_store_entry.get("recipe_materials", {})).get(material_id, 0))
+			if quantity <= 0:
+				continue
+			cost_tokens.append("%s x%d" % [str(NetworkRuntime.MATERIAL_LABELS.get(material_id, material_id.capitalize())), quantity])
+		var missing_text := "None" if missing_tokens.is_empty() else ", ".join(missing_tokens)
 		hud_icons.set_icon(store_icon, hud_icons.get_block_icon_id(str(selected_store_entry.get("block_id", ""))))
-		store_label.text = "Selection %d/%d\nSelected: %s\n%s\nStatus: %s\nCost: %d gold / %d salvage\nZ/C browse | V buy" % [
+		store_label.text = "Recipe %d/%d\nSelected: %s\nTier %d %s\n%s\nStatus: %s | Schematic %s\nCost: %s\nMissing: %s\nZ/C browse recipe | V craft" % [
 			selected_store_index + 1,
 			store_entries.size(),
 			str(selected_store_entry.get("label", "Part")),
+			int(selected_store_entry.get("unlock_tier", 0)),
+			str(selected_store_entry.get("category", "structure")).capitalize(),
 			str(selected_store_entry.get("description", "")),
 			entry_status,
-			int(selected_store_entry.get("unlock_cost_gold", 0)),
-			int(selected_store_entry.get("unlock_cost_salvage", 0)),
+			schematic_text,
+			", ".join(cost_tokens) if not cost_tokens.is_empty() else "Free",
+			missing_text,
 		]
 		if unlock_button != null:
 			unlock_button.disabled = NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR or selected_unlocked or not selected_affordable
-			unlock_button.text = "Already Unlocked" if selected_unlocked else "Unlock %s" % str(selected_store_entry.get("label", "Part"))
+			unlock_button.text = "Already Crafted" if selected_unlocked else "Craft %s" % str(selected_store_entry.get("label", "Part"))
 
 	var crew_lines := PackedStringArray()
 	var local_position := local_avatar_body.global_position if local_avatar_body != null and is_instance_valid(local_avatar_body) and local_avatar_body.is_inside_tree() else Vector3.ZERO
@@ -925,27 +1037,31 @@ func _refresh_hud() -> void:
 	var last_unlock := Dictionary(progression_snapshot.get("last_unlock", {}))
 	if last_run.is_empty():
 		hud_icons.set_icon(last_run_icon, "cargo")
-		last_run_label.text = "No extracted team runs recorded on this host yet."
+		last_run_label.text = "No extracted runs recorded on this machine yet."
 	else:
 		hud_icons.set_icon(last_run_icon, "salvage")
-		last_run_label.text = "%s\nGold %d | Salvage %d | Secured %d | Lost %d | Recorded %s" % [
+		var reward_items := Dictionary(last_run.get("reward_items", {}))
+		var lost_items := Dictionary(last_run.get("loot_lost_items", {}))
+		last_run_label.text = "%s\nGold %d | Materials %d | Schematics %d | Secured %d | Lost %d | Recorded %s" % [
 			str(last_run.get("title", "Run Complete")),
 			int(last_run.get("reward_gold", 0)),
-			int(last_run.get("reward_salvage", 0)),
+			NetworkRuntime._sum_material_dict_ui(reward_items),
+			Array(last_run.get("reward_schematics", [])).size(),
 			int(last_run.get("cargo_secured", 0)),
 			int(last_run.get("cargo_lost", 0)),
 			str(last_run.get("timestamp", "")),
 		]
+		if not lost_items.is_empty():
+			last_run_label.text += "\nLost Haul: %d material unit(s)" % NetworkRuntime._sum_material_dict_ui(lost_items)
 	if not last_unlock.is_empty():
-		last_run_label.text += "\nLast Unlock: %s for %d gold / %d salvage" % [
+		last_run_label.text += "\nLast Workshop Craft: %s for %d gold" % [
 			str(last_unlock.get("label", "Part")),
 			int(last_unlock.get("cost_gold", 0)),
-			int(last_unlock.get("cost_salvage", 0)),
 		]
 
 	toolbelt_label.text = _build_hangar_toolbelt_text()
 	inventory_label.text = _build_hangar_inventory_text()
-	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\n1 Build | 2 Remove | 3 Yard | I inventory\nQ / E parts | R rotate | F use tool | X remove\nZ / C unlocks | V buy | Enter launch\nEsc cursor toggle | RMB recapture aim"
+	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\n1 Build | 2 Remove | 3 Workshop | I inventory\nQ / E parts | R rotate | F use tool | X remove\nZ / C recipes | B / N donations | G donate stash | T overlay | V craft | Enter launch\nEsc cursor toggle | RMB recapture aim"
 	_apply_hud_visibility()
 
 func _build_onboarding_text() -> String:
@@ -960,8 +1076,8 @@ func _build_onboarding_text() -> String:
 	if int(stats.get("loose_blocks", 0)) > 0:
 		return "Onboarding: Loose chunks are allowed, but they will sink the moment the run starts."
 	if Array(NetworkRuntime.get_builder_store_entries()).size() > 0:
-		return "Onboarding: Z/C browses the unlock yard and V buys new parts for the whole crew."
-	return "Onboarding: Build something weird, keep the main chunk floaty, and launch when the crew likes the shape."
+		return "Onboarding: Z/C browses workshop recipes, B/N selects stash resources, G donates them, and V crafts parts for the host boat."
+	return "Onboarding: Build something weird, keep the main chunk floaty, and remember that the propulsion package and crew workload now matter as much as raw hull."
 
 func _get_hangar_tool_label(tool_id: String) -> String:
 	for tool_variant in _get_hangar_toolbelt_entries():
@@ -1005,43 +1121,85 @@ func _build_hangar_inventory_text() -> String:
 		])
 	if manifest_lines.is_empty():
 		manifest_lines.append("- No parts mounted yet.")
-	var unlocked_parts := PackedStringArray()
-	for unlocked_part_variant in snapshot.get("unlocked_parts", PackedStringArray()):
-		unlocked_parts.append(str(unlocked_part_variant))
-	if unlocked_parts.is_empty():
-		unlocked_parts.append("Core set only")
+	var local_stash_lines := PackedStringArray()
+	for entry_variant in Array(snapshot.get("local_stash_manifest", [])):
+		var entry: Dictionary = entry_variant
+		local_stash_lines.append("- %s x%d" % [
+			str(entry.get("label", "Resource")),
+			int(entry.get("quantity", 0)),
+		])
+	if local_stash_lines.is_empty():
+		local_stash_lines.append("- Personal stash is empty.")
+	var workshop_lines := PackedStringArray()
+	for entry_variant in Array(snapshot.get("workshop_manifest", [])):
+		var entry: Dictionary = entry_variant
+		workshop_lines.append("- %s x%d" % [
+			str(entry.get("label", "Resource")),
+			int(entry.get("quantity", 0)),
+		])
+	if workshop_lines.is_empty():
+		workshop_lines.append("- Host workshop is empty.")
+	var known_schematics := PackedStringArray()
+	for schematic_variant in Array(snapshot.get("local_known_schematics", [])):
+		var schematic_id := str(schematic_variant)
+		var block_def := NetworkRuntime.get_builder_block_definition(schematic_id)
+		known_schematics.append(str(block_def.get("label", schematic_id.capitalize())))
+	if known_schematics.is_empty():
+		known_schematics.append("None yet")
 	var store_entries := Array(snapshot.get("store_entries", []))
-	var next_unlock_text := "All current prototype parts unlocked."
+	var next_unlock_text := "All current prototype parts crafted."
 	if not store_entries.is_empty():
 		var next_entry: Dictionary = store_entries[selected_store_index % store_entries.size()]
-		next_unlock_text = "%s for %d gold / %d salvage" % [
+		var donation_entries := _get_donatable_resource_entries()
+		if not donation_entries.is_empty():
+			selected_donation_index = wrapi(selected_donation_index, 0, donation_entries.size())
+		var selected_donation: Dictionary = {}
+		if not donation_entries.is_empty():
+			selected_donation = donation_entries[selected_donation_index]
+		next_unlock_text = "%s for %d gold | Donate: %s x%d" % [
 			str(next_entry.get("label", "Part")),
-			int(next_entry.get("unlock_cost_gold", 0)),
-			int(next_entry.get("unlock_cost_salvage", 0)),
+			int(next_entry.get("recipe_gold", 0)),
+			str(selected_donation.get("label", "Nothing")),
+			int(selected_donation.get("quantity", 0)),
 		]
 	var stats: Dictionary = snapshot.get("stats", {})
-	return "On You\n%s\nDock Totals: %d gold | %d salvage\nMounted Parts\n%s\nUnlocked: %s\nNext Yard Pick: %s\nBlueprint: Cargo %d | Patch Kits %d | Main %d | Loose %d" % [
+	var repair_debt := Dictionary(snapshot.get("repair_debt", {}))
+	return "On You\n%s\nStash\n%s\nHost Workshop\n%s\nSchematics: %s\nMounted Parts\n%s\nNext Craft / Donation: %s\nRepair Debt: %s\nBlueprint: %s | Cargo %d | Patch Kits %d | Workload %.0f | Crew %d\nSafety %.0f | Drive HP %.0f | Recovery %.0f | Redundancy %.0f | Pathing %.0f\nMain %d | Loose %d" % [
 		"\n".join(tool_lines),
-		int(snapshot.get("gold", 0)),
-		int(snapshot.get("salvage", 0)),
+		"\n".join(local_stash_lines),
+		"\n".join(workshop_lines),
+		", ".join(known_schematics),
 		"\n".join(manifest_lines),
-		", ".join(unlocked_parts),
 		next_unlock_text,
+		str(repair_debt.get("summary", "No repair debt.")),
+		str(stats.get("propulsion_label", NetworkRuntime.get_propulsion_family_label(str(stats.get("propulsion_family", NetworkRuntime.PROPULSION_FAMILY_RAFT_PADDLES))))),
 		int(stats.get("cargo_capacity", 0)),
 		int(stats.get("repair_capacity", 0)),
+		float(stats.get("workload", 0.0)),
+		int(stats.get("recommended_crew", 1)),
+		float(stats.get("crew_safety", 0.0)),
+		float(stats.get("propulsion_health_rating", 0.0)),
+		float(stats.get("recovery_access_rating", 0.0)),
+		float(stats.get("damage_redundancy", 0.0)),
+		float(stats.get("pathing_score", 0.0)),
 		int(stats.get("main_chunk_blocks", 0)),
 		int(stats.get("loose_blocks", 0)),
 	]
 
 func _get_launch_readiness_snapshot(stats: Dictionary, warnings: Array) -> Dictionary:
 	var loose_blocks := int(stats.get("loose_blocks", 0))
-	var engine_count := int(stats.get("engine_count", 0))
 	var buoyancy_margin := float(stats.get("buoyancy_margin", 0.0))
+	var crew_safety := float(stats.get("crew_safety", 0.0))
+	var propulsion_health := float(stats.get("propulsion_health_rating", 0.0))
+	var workload := float(stats.get("workload", 0.0))
+	var recovery_access := float(stats.get("recovery_access_rating", 0.0))
+	var pathing_score := float(stats.get("pathing_score", 0.0))
+	var redundancy := float(stats.get("damage_redundancy", 0.0))
 	var seaworthy := bool(NetworkRuntime.boat_blueprint.get("seaworthy", false))
 	if not seaworthy:
 		return {
 			"title": "Risky Launch",
-			"detail": "Your main chunk is missing key float or drive support. It will still launch, but mistakes will hurt immediately.",
+			"detail": "Your main chunk is missing required machine support, float margin, or routeing. It will still launch, but one early mistake could collapse the run.",
 			"color": Color(0.98, 0.72, 0.42),
 			"button_text": "Launch Risky Build",
 		}
@@ -1052,16 +1210,16 @@ func _get_launch_readiness_snapshot(stats: Dictionary, warnings: Array) -> Dicti
 			"color": Color(0.96, 0.83, 0.42),
 			"button_text": "Launch With Loose Chunks",
 		}
-	if buoyancy_margin < 2.0 or engine_count <= 1 or not warnings.is_empty():
+	if buoyancy_margin < 2.0 or crew_safety < 45.0 or propulsion_health < 45.0 or recovery_access < 45.0 or pathing_score < 45.0 or redundancy < 40.0 or workload >= 70.0 or not warnings.is_empty():
 		return {
 			"title": "Ready, But Spicy",
-			"detail": "This boat can sail, but the margin for error is thin. Brace timing and repairs will matter.",
+			"detail": "This boat can sail, but the machine is demanding. Recovery routes, redundancy, propulsion protection, and repair timing will matter.",
 			"color": Color(0.86, 0.95, 0.61),
 			"button_text": "Launch Run",
 		}
 	return {
 		"title": "Ready To Sail",
-		"detail": "Main chunk is connected, powered, and stable enough for a clean first push.",
+		"detail": "Main chunk is connected, the propulsion package is readable, and the crew load looks manageable.",
 		"color": Color(0.72, 0.96, 0.78),
 		"button_text": "Launch Run",
 	}
@@ -1335,6 +1493,51 @@ func _cycle_store_selection(direction: int) -> void:
 		return
 	selected_store_index = wrapi(selected_store_index + direction, 0, store_entries.size())
 	_refresh_hud()
+
+func _get_donatable_resource_entries() -> Array:
+	var local_profile := DockState.get_local_profile_snapshot()
+	var entries: Array = []
+	var total_gold := int(local_profile.get("total_gold", 0))
+	if total_gold > 0:
+		entries.append({
+			"resource_id": "gold",
+			"label": "Gold",
+			"quantity": total_gold,
+		})
+	var stash_items := Dictionary(local_profile.get("stash_items", {}))
+	for material_id_variant in NetworkRuntime.MATERIAL_ORDER:
+		var material_id := str(material_id_variant)
+		var quantity := int(stash_items.get(material_id, 0))
+		if quantity <= 0:
+			continue
+		entries.append({
+			"resource_id": material_id,
+			"label": str(NetworkRuntime.MATERIAL_LABELS.get(material_id, material_id.capitalize())),
+			"quantity": quantity,
+		})
+	return entries
+
+func _cycle_donation_selection(direction: int) -> void:
+	var entries := _get_donatable_resource_entries()
+	if entries.is_empty():
+		return
+	selected_donation_index = wrapi(selected_donation_index + direction, 0, entries.size())
+	_refresh_hud()
+
+func _donate_selected_resource() -> void:
+	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
+		return
+	var entries := _get_donatable_resource_entries()
+	if entries.is_empty():
+		return
+	selected_donation_index = wrapi(selected_donation_index, 0, entries.size())
+	var selected_entry: Dictionary = entries[selected_donation_index]
+	var resource_id := str(selected_entry.get("resource_id", ""))
+	var quantity := int(selected_entry.get("quantity", 0))
+	if resource_id.is_empty() or quantity <= 0:
+		return
+	if NetworkRuntime.request_donate_workshop_resource(resource_id, quantity):
+		_refresh_hud()
 
 func _purchase_selected_unlock() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
@@ -1806,6 +2009,29 @@ func _initialize_autobuild() -> void:
 			autobuild_actions = [
 				{"type": "unlock", "block": "stabilizer"},
 				{"type": "place", "cell": [1, 1, 0], "block": "stabilizer"},
+			]
+		"builder_work_barge":
+			autobuild_actions = [
+				{"type": "place", "cell": [2, 0, 0], "block": "hull"},
+				{"type": "place", "cell": [2, 0, 1], "block": "cargo"},
+				{"type": "place", "cell": [1, 1, 1], "block": "utility"},
+				{"type": "place", "cell": [2, 1, 0], "block": "deck_plate"},
+				{"type": "launch"},
+			]
+		"builder_rescue_tug":
+			autobuild_actions = [
+				{"type": "place", "cell": [-2, 0, 0], "block": "hull"},
+				{"type": "place", "cell": [-2, 1, 0], "block": "ladder_rig"},
+				{"type": "place", "cell": [-1, 1, 1], "block": "deck_plate"},
+				{"type": "place", "cell": [1, 1, 1], "block": "utility"},
+				{"type": "launch"},
+			]
+		"builder_routeing_demo":
+			autobuild_actions = [
+				{"type": "place", "cell": [0, 1, 1], "block": "deck_plate"},
+				{"type": "place", "cell": [1, 1, 1], "block": "deck_plate"},
+				{"type": "place", "cell": [2, 1, 1], "block": "structure"},
+				{"type": "place", "cell": [2, 0, 1], "block": "cargo"},
 			]
 
 func _process_autobuild(delta: float) -> void:

@@ -43,7 +43,7 @@ func _on_heartbeat_timeout() -> void:
 	])
 	var progression_snapshot := NetworkRuntime.get_progression_state()
 	var last_unlock := Dictionary(progression_snapshot.get("last_unlock", {}))
-	print("Progression: gold=%d salvage=%d unlocked=%d lastUnlock=%s" % [
+	print("Workshop: gold=%d materials=%d unlocked=%d lastCraft=%s" % [
 		int(progression_snapshot.get("total_gold", 0)),
 		int(progression_snapshot.get("total_salvage", 0)),
 		Array(progression_snapshot.get("unlocked_blocks", [])).size(),

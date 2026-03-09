@@ -5,9 +5,14 @@ const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
 const OpenSeaWakeShader = preload("res://shaders/open_sea_wake.gdshader")
+const OpenSeaContactFoamShader = preload("res://shaders/open_sea_contact_foam.gdshader")
 const OpenSeaSplashShader = preload("res://shaders/open_sea_splash.gdshader")
 const SquallStreaksShader = preload("res://shaders/squall_streaks.gdshader")
 const StormWallShader = preload("res://shaders/storm_wall.gdshader")
+const SEA_HDRI_PATH := "res://assets/third_party/polyhaven/overcast_soil_puresky_2k.hdr"
+const SEA_FOAM_MASK_TEXTURE_PATH := "res://assets/third_party/ambientcg/Foam001_Opacity.jpg"
+const SEA_FOAM_COLOR_TEXTURE_PATH := "res://assets/third_party/ambientcg/Foam001_Color.jpg"
+const SEA_FOAM_SPRAY_TEXTURE_PATH := "res://assets/third_party/ambientcg/Foam001_RGBA.png"
 const IDLE_CREW_SLOTS := [
 	Vector3(0.0, 0.92, 1.35),
 	Vector3(-1.2, 0.92, 1.05),
@@ -32,7 +37,7 @@ const RUN_AVATAR_SYNC_INTERVAL := 0.05
 const ASSIST_RALLY_HOLD_SECONDS := 1.5
 const WATER_SURFACE_Y := -0.12
 const WATER_SURFACE_SIZE := 640.0
-const WATER_SURFACE_SUBDIVISIONS := 180
+const WATER_SURFACE_SUBDIVISIONS := 220
 const HUD_PANEL_BG := Color(0.05, 0.09, 0.13, 0.78)
 const HUD_PANEL_BG_SOFT := Color(0.07, 0.12, 0.17, 0.70)
 const HUD_BORDER_BLUE := Color(0.30, 0.53, 0.66, 0.92)
@@ -89,10 +94,15 @@ var crew_container: Node3D
 var wake_root: Node3D
 var wake_mesh_instance: MeshInstance3D
 var wake_material: ShaderMaterial
+var boat_contact_foam_mesh: MeshInstance3D
+var boat_contact_foam_material: ShaderMaterial
 var bow_spray_left: MeshInstance3D
 var bow_spray_left_material: ShaderMaterial
 var bow_spray_right: MeshInstance3D
 var bow_spray_right_material: ShaderMaterial
+var bow_spray_left_particles: GPUParticles3D
+var bow_spray_right_particles: GPUParticles3D
+var wake_mist_particles: GPUParticles3D
 var splash_container: Node3D
 var hazard_container: Node3D
 var squall_container: Node3D
@@ -199,6 +209,11 @@ var storm_audio_playback: AudioStreamGeneratorPlayback
 var wind_audio_time := 0.0
 var hull_audio_time := 0.0
 var storm_audio_time := 0.0
+var sea_hdri_texture: Texture2D
+var sea_foam_mask_texture: Texture2D
+var sea_foam_color_texture: Texture2D
+var sea_foam_spray_texture: Texture2D
+var sea_panorama_material: PanoramaSkyMaterial
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -272,6 +287,10 @@ func _physics_process(delta: float) -> void:
 		NetworkRuntime.request_grapple()
 	if bool(input_state.get("request_repair", false)):
 		NetworkRuntime.request_repair()
+	if bool(input_state.get("request_propulsion_primary", false)):
+		NetworkRuntime.request_propulsion_primary()
+	if bool(input_state.get("request_propulsion_secondary", false)):
+		NetworkRuntime.request_propulsion_secondary()
 	if bool(input_state.get("request_recover", false)):
 		NetworkRuntime.request_overboard_recovery()
 	var assist_target_peer_id := int(input_state.get("assist_target_peer_id", 0))
@@ -368,6 +387,27 @@ func _build_world() -> void:
 	camera.current = true
 	camera.look_at(Vector3(0.0, 0.6, 0.0), Vector3.UP)
 
+func _load_optional_texture(path: String) -> Texture2D:
+	var absolute_path := ProjectSettings.globalize_path(path)
+	if FileAccess.file_exists(absolute_path):
+		var image := Image.load_from_file(absolute_path)
+		if image != null and not image.is_empty():
+			return ImageTexture.create_from_image(image)
+	var resource := load(path)
+	if resource is Texture2D:
+		return resource as Texture2D
+	return null
+
+func _ensure_sea_reference_assets() -> void:
+	if sea_hdri_texture == null:
+		sea_hdri_texture = _load_optional_texture(SEA_HDRI_PATH)
+	if sea_foam_mask_texture == null:
+		sea_foam_mask_texture = _load_optional_texture(SEA_FOAM_MASK_TEXTURE_PATH)
+	if sea_foam_color_texture == null:
+		sea_foam_color_texture = _load_optional_texture(SEA_FOAM_COLOR_TEXTURE_PATH)
+	if sea_foam_spray_texture == null:
+		sea_foam_spray_texture = _load_optional_texture(SEA_FOAM_SPRAY_TEXTURE_PATH)
+
 func _ensure_world_environment() -> void:
 	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
 	if world_environment == null:
@@ -380,9 +420,21 @@ func _ensure_world_environment() -> void:
 	add_child(world_environment)
 
 func _make_default_environment_resource() -> Environment:
+	_ensure_sea_reference_assets()
 	var environment := Environment.new()
-	environment.background_mode = Environment.BG_COLOR
-	environment.background_color = Color(0.46, 0.71, 0.92)
+	environment.ambient_light_energy = 0.62
+	environment.ambient_light_color = Color(0.33, 0.41, 0.47)
+	if sea_hdri_texture != null:
+		var sky := Sky.new()
+		sea_panorama_material = PanoramaSkyMaterial.new()
+		sea_panorama_material.panorama = sea_hdri_texture
+		sea_panorama_material.energy_multiplier = 0.54
+		sky.sky_material = sea_panorama_material
+		environment.sky = sky
+		environment.background_mode = Environment.BG_SKY
+	else:
+		environment.background_mode = Environment.BG_COLOR
+		environment.background_color = Color(0.46, 0.71, 0.92)
 	return environment
 
 func _build_static_world_fallback() -> void:
@@ -410,6 +462,7 @@ func _build_static_world_fallback() -> void:
 	fallback_root.add_child(water)
 
 func _ensure_sea_fx() -> void:
+	_ensure_sea_reference_assets()
 	water_mesh_instance = get_node_or_null("Environment/Water") as MeshInstance3D
 	if water_mesh_instance == null:
 		water_mesh_instance = get_node_or_null("EnvironmentFallback/Water") as MeshInstance3D
@@ -426,6 +479,7 @@ func _ensure_sea_fx() -> void:
 			water_mesh_instance.material_override = water_shader_material
 		elif water_shader_material.shader == null:
 			water_shader_material.shader = OpenSeaWaterShader
+		_configure_open_sea_water_material(water_shader_material)
 
 	sun_light = get_node_or_null("Environment/SunLight") as DirectionalLight3D
 	if sun_light == null:
@@ -435,12 +489,105 @@ func _ensure_sea_fx() -> void:
 		return
 	wake_mesh_instance = _ensure_wake_plane("WakeTrail", Vector2(1.0, 1.0))
 	wake_material = wake_mesh_instance.material_override as ShaderMaterial
+	boat_contact_foam_mesh = _ensure_contact_foam_plane(boat_root, "BoatContactFoam", Vector2(1.0, 1.0))
+	boat_contact_foam_mesh.position = Vector3(0.0, WATER_SURFACE_Y + 0.06, 0.12)
+	boat_contact_foam_material = boat_contact_foam_mesh.material_override as ShaderMaterial
 	bow_spray_left = _ensure_wake_plane("BowSprayLeft", Vector2(1.0, 1.0))
 	bow_spray_left.position = Vector3(-0.9, 0.06, -2.55)
 	bow_spray_right = _ensure_wake_plane("BowSprayRight", Vector2(1.0, 1.0))
 	bow_spray_right.position = Vector3(0.9, 0.06, -2.55)
 	bow_spray_left_material = bow_spray_left.material_override as ShaderMaterial
 	bow_spray_right_material = bow_spray_right.material_override as ShaderMaterial
+	bow_spray_left_particles = _ensure_sea_spray_particles("BowSprayLeftParticles", Vector3(-0.92, 0.18, -2.56), Vector3(-0.22, 0.92, -0.72), Color(0.84, 0.93, 0.97, 0.84))
+	bow_spray_right_particles = _ensure_sea_spray_particles("BowSprayRightParticles", Vector3(0.92, 0.18, -2.56), Vector3(0.22, 0.92, -0.72), Color(0.84, 0.93, 0.97, 0.84))
+	wake_mist_particles = _ensure_sea_spray_particles("WakeMistParticles", Vector3(0.0, 0.02, 3.0), Vector3(0.0, 0.58, 0.88), Color(0.76, 0.88, 0.94, 0.56), 88, 1.30)
+
+func _configure_open_sea_water_material(material: ShaderMaterial) -> void:
+	if material == null:
+		return
+	_ensure_sea_reference_assets()
+	var has_mask := sea_foam_mask_texture != null
+	material.set_shader_parameter("use_foam_mask", has_mask)
+	if has_mask:
+		material.set_shader_parameter("foam_mask_texture", sea_foam_mask_texture)
+		material.set_shader_parameter("foam_mask_tiling", 0.013)
+		material.set_shader_parameter("foam_mask_scroll", Vector2(0.016, -0.010))
+		material.set_shader_parameter("foam_mask_influence", 0.34)
+	material.set_shader_parameter("refraction_strength", 0.015)
+	material.set_shader_parameter("refraction_blur", 1.25)
+	material.set_shader_parameter("depth_fade_distance", 9.5)
+	material.set_shader_parameter("depth_refraction_strength", 0.38)
+	material.set_shader_parameter("contact_edge_foam", 0.26)
+	material.set_shader_parameter("distance_haze", 0.16)
+
+func _configure_contact_foam_material(material: ShaderMaterial) -> void:
+	if material == null:
+		return
+	_ensure_sea_reference_assets()
+	var has_mask := sea_foam_mask_texture != null
+	var has_color := sea_foam_color_texture != null
+	material.set_shader_parameter("use_foam_mask", has_mask)
+	material.set_shader_parameter("use_foam_color", has_color)
+	if has_mask:
+		material.set_shader_parameter("foam_mask_texture", sea_foam_mask_texture)
+		material.set_shader_parameter("mask_tiling", 0.084)
+		material.set_shader_parameter("mask_scroll", Vector2(0.065, -0.042))
+		material.set_shader_parameter("mask_contrast", 1.24)
+	if has_color:
+		material.set_shader_parameter("foam_color_texture", sea_foam_color_texture)
+
+func _make_foam_particle_material(tint: Color) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	material.vertex_color_use_as_albedo = true
+	material.albedo_color = tint
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.emission_enabled = true
+	material.emission = tint
+	material.emission_energy_multiplier = 0.22
+	if sea_foam_spray_texture != null:
+		material.albedo_texture = sea_foam_spray_texture
+	elif sea_foam_color_texture != null:
+		material.albedo_texture = sea_foam_color_texture
+	return material
+
+func _ensure_sea_spray_particles(node_name: String, local_position: Vector3, direction: Vector3, tint: Color, amount: int = 52, lifetime: float = 0.86) -> GPUParticles3D:
+	var particles := wake_root.get_node_or_null(node_name) as GPUParticles3D
+	if particles != null:
+		return particles
+	particles = GPUParticles3D.new()
+	particles.name = node_name
+	particles.local_coords = true
+	particles.one_shot = false
+	particles.emitting = true
+	particles.amount = amount
+	particles.lifetime = lifetime
+	particles.preprocess = minf(0.25, lifetime * 0.45)
+	particles.visibility_aabb = AABB(Vector3(-8.0, -2.0, -8.0), Vector3(16.0, 12.0, 16.0))
+	particles.position = local_position
+	var draw_mesh := QuadMesh.new()
+	draw_mesh.size = Vector2(0.32, 0.32)
+	particles.draw_pass_1 = draw_mesh
+	particles.material_override = _make_foam_particle_material(tint)
+	var process := ParticleProcessMaterial.new()
+	process.direction = direction.normalized()
+	process.spread = 28.0
+	process.gravity = Vector3(0.0, -7.2, 0.0)
+	process.initial_velocity_min = 1.8
+	process.initial_velocity_max = 3.6
+	process.scale_min = 0.18
+	process.scale_max = 0.42
+	process.damping_min = 0.55
+	process.damping_max = 1.25
+	process.angle_min = -22.0
+	process.angle_max = 22.0
+	process.angular_velocity_min = -0.7
+	process.angular_velocity_max = 0.7
+	particles.process_material = process
+	wake_root.add_child(particles)
+	return particles
 
 func _ensure_wake_plane(node_name: String, plane_size: Vector2) -> MeshInstance3D:
 	var plane_node := wake_root.get_node_or_null(node_name) as MeshInstance3D
@@ -457,6 +604,29 @@ func _ensure_wake_plane(node_name: String, plane_size: Vector2) -> MeshInstance3
 	material.shader = OpenSeaWakeShader
 	plane_node.material_override = material
 	wake_root.add_child(plane_node)
+	return plane_node
+
+func _ensure_contact_foam_plane(parent: Node3D, node_name: String, plane_size: Vector2) -> MeshInstance3D:
+	var plane_node := parent.get_node_or_null(node_name) as MeshInstance3D
+	if plane_node != null:
+		var existing_material := plane_node.material_override as ShaderMaterial
+		if existing_material != null and existing_material.shader == null:
+			existing_material.shader = OpenSeaContactFoamShader
+		_configure_contact_foam_material(existing_material)
+		return plane_node
+	plane_node = MeshInstance3D.new()
+	plane_node.name = node_name
+	var plane_mesh := PlaneMesh.new()
+	plane_mesh.size = plane_size
+	plane_mesh.subdivide_width = 20
+	plane_mesh.subdivide_depth = 20
+	plane_node.mesh = plane_mesh
+	plane_node.rotation.x = -PI * 0.5
+	var material := ShaderMaterial.new()
+	material.shader = OpenSeaContactFoamShader
+	plane_node.material_override = material
+	_configure_contact_foam_material(material)
+	parent.add_child(plane_node)
 	return plane_node
 
 func _ensure_procedural_audio() -> void:
@@ -541,6 +711,10 @@ func _get_biome_sea_profile(biome_id: String) -> Dictionary:
 				"horizon_color": Color(0.28, 0.54, 0.56),
 				"sun_energy": 0.95,
 				"sun_color": Color(0.96, 0.94, 0.85),
+				"sky_energy": 0.62,
+				"reflection_strength": 0.44,
+				"glint_strength": 0.26,
+				"clarity": 0.72,
 			}
 		RunWorldGenerator.BIOME_FOG_BANK:
 			return {
@@ -556,6 +730,10 @@ func _get_biome_sea_profile(biome_id: String) -> Dictionary:
 				"horizon_color": Color(0.34, 0.40, 0.46),
 				"sun_energy": 0.56,
 				"sun_color": Color(0.82, 0.86, 0.90),
+				"sky_energy": 0.32,
+				"reflection_strength": 0.24,
+				"glint_strength": 0.14,
+				"clarity": 0.34,
 			}
 		RunWorldGenerator.BIOME_STORM_BELT:
 			return {
@@ -571,6 +749,10 @@ func _get_biome_sea_profile(biome_id: String) -> Dictionary:
 				"horizon_color": Color(0.18, 0.25, 0.31),
 				"sun_energy": 0.36,
 				"sun_color": Color(0.60, 0.66, 0.76),
+				"sky_energy": 0.22,
+				"reflection_strength": 0.42,
+				"glint_strength": 0.40,
+				"clarity": 0.24,
 			}
 		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
 			return {
@@ -586,6 +768,10 @@ func _get_biome_sea_profile(biome_id: String) -> Dictionary:
 				"horizon_color": Color(0.20, 0.26, 0.29),
 				"sun_energy": 0.52,
 				"sun_color": Color(0.78, 0.78, 0.72),
+				"sky_energy": 0.30,
+				"reflection_strength": 0.34,
+				"glint_strength": 0.18,
+				"clarity": 0.28,
 			}
 		_:
 			return {
@@ -601,6 +787,10 @@ func _get_biome_sea_profile(biome_id: String) -> Dictionary:
 				"horizon_color": Color(0.15, 0.25, 0.31),
 				"sun_energy": 0.66,
 				"sun_color": Color(0.80, 0.84, 0.88),
+				"sky_energy": 0.46,
+				"reflection_strength": 0.50,
+				"glint_strength": 0.30,
+				"clarity": 0.48,
 			}
 
 func _sample_wave_height(world_position: Vector3) -> float:
@@ -656,13 +846,27 @@ func _update_sea_presentation(delta: float) -> void:
 		water_shader_material.set_shader_parameter("detail_amplitude", 0.045 + storm_strength * 0.05 + hazard_level * 0.03)
 		water_shader_material.set_shader_parameter("whitecap_strength", 0.36 + storm_strength * 0.42)
 		water_shader_material.set_shader_parameter("trough_darkness", 0.14 + storm_strength * 0.16)
+		water_shader_material.set_shader_parameter("reflection_strength", float(profile.get("reflection_strength", 0.48)) + storm_strength * 0.05)
+		water_shader_material.set_shader_parameter("glint_strength", float(profile.get("glint_strength", 0.28)) + storm_strength * 0.08)
+		water_shader_material.set_shader_parameter("clarity", clampf(float(profile.get("clarity", 0.5)) - storm_strength * 0.08, 0.18, 0.82))
+		water_shader_material.set_shader_parameter("fresnel_power", 3.4 - storm_strength * 0.45)
+		water_shader_material.set_shader_parameter("refraction_strength", 0.012 + storm_strength * 0.008 + hazard_level * 0.004)
+		water_shader_material.set_shader_parameter("refraction_blur", 1.0 + storm_strength * 0.8)
+		water_shader_material.set_shader_parameter("depth_fade_distance", 8.0 + (1.0 - float(profile.get("clarity", 0.5))) * 6.0)
+		water_shader_material.set_shader_parameter("depth_refraction_strength", 0.34 + storm_strength * 0.18)
+		water_shader_material.set_shader_parameter("contact_edge_foam", 0.22 + storm_strength * 0.20)
+		water_shader_material.set_shader_parameter("distance_haze", 0.12 + storm_strength * 0.14)
 
 	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
 	if world_environment == null:
 		world_environment = get_node_or_null("WorldEnvironment") as WorldEnvironment
 	if world_environment != null and world_environment.environment != null:
 		var environment := world_environment.environment
-		environment.background_color = environment.background_color.lerp(profile.get("background", Color(0.28, 0.44, 0.55)), atmosphere_blend)
+		if sea_panorama_material != null:
+			sea_panorama_material.energy_multiplier = lerpf(sea_panorama_material.energy_multiplier, float(profile.get("sky_energy", 0.44)) - storm_strength * 0.12, atmosphere_blend)
+			environment.background_mode = Environment.BG_SKY
+		else:
+			environment.background_color = environment.background_color.lerp(profile.get("background", Color(0.28, 0.44, 0.55)), atmosphere_blend)
 		var target_fog_density := float(profile.get("fog_density", 0.0)) + hazard_level * 0.004
 		environment.fog_enabled = target_fog_density > 0.002
 		environment.fog_density = lerpf(environment.fog_density, target_fog_density, atmosphere_blend)
@@ -675,6 +879,21 @@ func _update_sea_presentation(delta: float) -> void:
 		sun_light.rotation_degrees.x = lerpf(sun_light.rotation_degrees.x, -48.0 - storm_strength * 7.0, atmosphere_blend)
 		sun_light.rotation_degrees.y = lerpf(sun_light.rotation_degrees.y, 38.0 + storm_strength * 6.0, atmosphere_blend)
 
+	if storm_wall_container != null:
+		var wall_color: Color = profile.get("deep_color", Color(0.05, 0.16, 0.22)).darkened(0.42 + storm_strength * 0.16)
+		var rim_color: Color = profile.get("horizon_color", Color(0.25, 0.42, 0.50)).lightened(0.10 + storm_strength * 0.18)
+		for wall_variant in storm_wall_container.get_children():
+			var wall := wall_variant as MeshInstance3D
+			if wall == null:
+				continue
+			var wall_material := wall.material_override as ShaderMaterial
+			if wall_material == null:
+				continue
+			wall_material.set_shader_parameter("wall_color", wall_color)
+			wall_material.set_shader_parameter("rim_color", rim_color)
+			wall_material.set_shader_parameter("intensity", 0.38 + storm_strength * 0.46)
+			wall_material.set_shader_parameter("scroll_speed", 0.26 + storm_strength * 0.62)
+
 	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / maxf(0.1, float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED))), 0.0, 1.0)
 	if wake_mesh_instance != null:
 		wake_mesh_instance.position = Vector3(0.0, -0.18, 3.45)
@@ -684,6 +903,21 @@ func _update_sea_presentation(delta: float) -> void:
 		wake_material.set_shader_parameter("core_color", Color(0.84, 0.94, 0.98, 1.0))
 		wake_material.set_shader_parameter("edge_color", profile.get("shallow_color", Color(0.08, 0.34, 0.42)))
 		wake_material.set_shader_parameter("noise_scale", 0.95 + storm_strength * 0.45)
+	if boat_contact_foam_mesh != null:
+		boat_contact_foam_mesh.visible = true
+		boat_contact_foam_mesh.position = Vector3(0.0, WATER_SURFACE_Y + 0.06, 0.08)
+		boat_contact_foam_mesh.scale = Vector3(2.9 + speed_ratio * 1.0, 1.0, 5.8 + speed_ratio * 1.7)
+	if boat_contact_foam_material != null:
+		var hull_motion_strength := clampf(absf(boat_root.rotation.x) * 2.4 + absf(boat_root.rotation.z) * 2.0, 0.0, 1.0)
+		var hull_foam_strength := clampf(0.16 + speed_ratio * 0.34 + hull_motion_strength * 0.22 + storm_strength * 0.28, 0.0, 1.0)
+		boat_contact_foam_material.set_shader_parameter("core_color", profile.get("foam_color", Color(0.76, 0.90, 0.96)))
+		boat_contact_foam_material.set_shader_parameter("edge_color", profile.get("shallow_color", Color(0.08, 0.34, 0.42)))
+		boat_contact_foam_material.set_shader_parameter("intensity", hull_foam_strength)
+		boat_contact_foam_material.set_shader_parameter("foam_radius", 0.70)
+		boat_contact_foam_material.set_shader_parameter("foam_width", 0.16 + storm_strength * 0.04)
+		boat_contact_foam_material.set_shader_parameter("soft_fill", 0.12 + speed_ratio * 0.08)
+		boat_contact_foam_material.set_shader_parameter("breakup_strength", 0.26 + storm_strength * 0.16)
+		boat_contact_foam_material.set_shader_parameter("scroll_speed", 0.45 + speed_ratio * 0.28 + storm_strength * 0.40)
 
 	var spray_strength := clampf(speed_ratio * 0.85 + storm_strength * 0.48 + (0.20 if _boat_inside_any_squall() else 0.0), 0.0, 1.0)
 	for spray_pair in [
@@ -702,6 +936,30 @@ func _update_sea_presentation(delta: float) -> void:
 			spray_material.set_shader_parameter("core_color", Color(0.92, 0.96, 0.98, 1.0))
 			spray_material.set_shader_parameter("edge_color", profile.get("foam_color", Color(0.76, 0.90, 0.96)))
 			spray_material.set_shader_parameter("noise_scale", 1.25 + storm_strength * 0.55)
+
+	_update_spray_particle_layer(bow_spray_left_particles, spray_strength, Vector3(-0.26, 0.92, -0.72), 26.0 + storm_strength * 10.0, 2.0, 4.4 + storm_strength * 1.4)
+	_update_spray_particle_layer(bow_spray_right_particles, spray_strength, Vector3(0.26, 0.92, -0.72), 26.0 + storm_strength * 10.0, 2.0, 4.4 + storm_strength * 1.4)
+	_update_spray_particle_layer(wake_mist_particles, clampf(speed_ratio * 0.72 + storm_strength * 0.34, 0.0, 1.0), Vector3(0.0, 0.58, 0.88), 34.0, 1.2, 3.3 + storm_strength * 1.1)
+
+func _update_spray_particle_layer(particles: GPUParticles3D, intensity: float, direction: Vector3, spread: float, velocity_min: float, velocity_max: float) -> void:
+	if particles == null:
+		return
+	var clamped_intensity := clampf(intensity, 0.0, 1.0)
+	particles.visible = clamped_intensity > 0.02
+	particles.amount_ratio = clampf(clamped_intensity * 1.18, 0.0, 1.0)
+	particles.speed_scale = 0.85 + clamped_intensity * 0.85
+	var process := particles.process_material as ParticleProcessMaterial
+	if process == null:
+		return
+	process.direction = direction.normalized()
+	process.spread = spread
+	process.initial_velocity_min = velocity_min
+	process.initial_velocity_max = velocity_max
+	process.gravity = Vector3(0.0, -6.6 - clamped_intensity * 1.8, 0.0)
+	process.scale_min = 0.14 + clamped_intensity * 0.06
+	process.scale_max = 0.30 + clamped_intensity * 0.20
+	process.damping_min = 0.44 + clamped_intensity * 0.18
+	process.damping_max = 1.10 + clamped_intensity * 0.34
 
 func _update_sea_audio() -> void:
 	var descriptor := _get_current_chunk_descriptor()
@@ -1095,7 +1353,7 @@ func _get_local_recovery_target() -> Dictionary:
 	var target_id := str(local_state.get("recovery_target_id", ""))
 	if target_id.is_empty():
 		return {}
-	for target_variant in NetworkRuntime.RUN_RECOVERY_POINTS:
+	for target_variant in NetworkRuntime.get_run_recovery_points():
 		var target: Dictionary = target_variant
 		if str(target.get("id", "")) != target_id:
 			continue
@@ -1187,13 +1445,7 @@ func _station_anchors_avatar(station_id: String) -> bool:
 	return station_id == "grapple"
 
 func _get_station_claim_radius(station_id: String) -> float:
-	match station_id:
-		"helm":
-			return NetworkRuntime.RUN_HELM_ZONE_RADIUS
-		"grapple":
-			return NetworkRuntime.RUN_GRAPPLE_ZONE_RADIUS
-		_:
-			return 0.0
+	return float(NetworkRuntime.station_state.get(station_id, {}).get("claim_radius", 0.0))
 
 func _is_local_near_station(station_id: String, extra_margin: float = 0.0) -> bool:
 	var claim_radius := _get_station_claim_radius(station_id)
@@ -1203,7 +1455,7 @@ func _is_local_near_station(station_id: String, extra_margin: float = 0.0) -> bo
 
 func _find_local_repair_target() -> Dictionary:
 	var nearest_block: Dictionary = {}
-	var nearest_distance := NetworkRuntime.RUN_REPAIR_RANGE
+	var nearest_distance := NetworkRuntime.get_run_peer_repair_range(_get_local_peer_id())
 	for block_variant in Array(NetworkRuntime.boat_state.get("runtime_blocks", [])):
 		var block_state: Dictionary = block_variant
 		var block := _build_runtime_block_render_data(block_state)
@@ -1246,6 +1498,8 @@ func _scripted_move_local_avatar_toward(target_position: Vector3, delta: float) 
 	)
 
 func _build_station_visuals() -> void:
+	for child in station_container.get_children():
+		child.queue_free()
 	station_visuals = {}
 	for station_id in NetworkRuntime.get_station_ids():
 		var station_node := Node3D.new()
@@ -1290,7 +1544,7 @@ func _build_recovery_visuals() -> void:
 		return
 	for child in recovery_container.get_children():
 		child.queue_free()
-	for target_variant in NetworkRuntime.RUN_RECOVERY_POINTS:
+	for target_variant in NetworkRuntime.get_run_recovery_points():
 		var target: Dictionary = target_variant
 		var target_node := Node3D.new()
 		target_node.name = "%sMarker" % str(target.get("id", "Recovery"))
@@ -1650,6 +1904,8 @@ func _sync_selected_station_with_tool() -> void:
 	var active_tool_id := _get_selected_run_tool_id()
 	if active_tool_id == "helm":
 		selected_station_index = maxi(0, NetworkRuntime.get_claimable_station_ids().find("helm"))
+	elif active_tool_id == "drive":
+		selected_station_index = maxi(0, NetworkRuntime.get_claimable_station_ids().find("drive"))
 	elif active_tool_id == "grapple":
 		selected_station_index = maxi(0, NetworkRuntime.get_claimable_station_ids().find("grapple"))
 
@@ -1688,6 +1944,18 @@ func _build_run_inventory_text() -> String:
 		])
 	if manifest_lines.is_empty():
 		manifest_lines.append("- No cargo aboard.")
+	var haul_lines := PackedStringArray()
+	for entry_variant in Array(snapshot.get("item_manifest", [])):
+		var entry: Dictionary = entry_variant
+		haul_lines.append("- %s x%d" % [
+			str(entry.get("label", "Material")),
+			int(entry.get("quantity", 0)),
+		])
+	for entry_variant in Array(snapshot.get("schematic_manifest", [])):
+		var entry: Dictionary = entry_variant
+		haul_lines.append("- %s" % str(entry.get("label", "Schematic")))
+	if haul_lines.is_empty():
+		haul_lines.append("- No material haul secured yet.")
 	var bonus_lines := PackedStringArray()
 	for entry_variant in Array(snapshot.get("bonus_manifest", [])):
 		var entry: Dictionary = entry_variant
@@ -1697,17 +1965,17 @@ func _build_run_inventory_text() -> String:
 		])
 	if bonus_lines.is_empty():
 		bonus_lines.append("- No support bonuses secured yet.")
-	return "On You\n%s\nCargo Hold %d/%d | Patch Kits %d/%d\nAboard\n%s\nSupport\n%s\nCargo Lost To Sea %d | Bonus Bank %dg / %ds" % [
+	return "On You\n%s\nCargo Hold %d/%d | Patch Kits %d/%d\nAboard\n%s\nMaterial Haul\n%s\nSupport\n%s\nCargo Lost To Sea %d | Bonus Gold %d" % [
 		"\n".join(tool_lines),
 		int(snapshot.get("cargo_count", 0)),
 		int(snapshot.get("cargo_capacity", 0)),
 		int(snapshot.get("patch_kits", 0)),
 		int(snapshot.get("patch_kits_max", 0)),
 		"\n".join(manifest_lines),
+		"\n".join(haul_lines),
 		"\n".join(bonus_lines),
 		int(snapshot.get("cargo_lost_to_sea", 0)),
 		int(snapshot.get("bonus_gold_bank", 0)),
-		int(snapshot.get("bonus_salvage_bank", 0)),
 	]
 
 func _get_run_tool_label(tool_id: String) -> String:
@@ -1835,7 +2103,7 @@ func _refresh_hud() -> void:
 		stamina_meter_bar.value = local_stamina
 		_apply_meter_bar_style(stamina_meter_bar, stamina_meter_color)
 
-	resource_label.text = "Cargo %d/%d | Reveal %d | Extract %.1f/%.1fs | Dist %s\nPatch Kits %d/%d | Bonus %dg / %ds" % [
+	resource_label.text = "Cargo %d/%d | Reveal %d | Extract %.1f/%.1fs | Dist %s\nPatch Kits %d/%d | Gold %d | Haul %d mats / %d schematics" % [
 		current_cargo,
 		cargo_capacity,
 		revealed_extractions.size(),
@@ -1845,7 +2113,8 @@ func _refresh_hud() -> void:
 		repair_supplies,
 		repair_supplies_max,
 		int(NetworkRuntime.run_state.get("bonus_gold_bank", 0)),
-		int(NetworkRuntime.run_state.get("bonus_salvage_bank", 0)),
+		NetworkRuntime._sum_material_dict_ui(NetworkRuntime.run_state.get("run_item_bank", {})),
+		Array(NetworkRuntime.run_state.get("run_schematic_bank", [])).size(),
 	]
 	if local_overboard:
 		var recovery_target := _get_local_recovery_target()
@@ -1864,6 +2133,14 @@ func _refresh_hud() -> void:
 
 	var pressure_lines := PackedStringArray()
 	pressure_lines.append("%s | Biome %s | Loot %d left" % [layout_label, current_biome.replace("_", " "), loot_remaining])
+	pressure_lines.append("%s | Score %.0f | Nav %.0f | Salvage %.0f | Recovery %.0f | Extract %.0f" % [
+		str(NetworkRuntime.run_state.get("pressure_label", "Calm seas")),
+		float(NetworkRuntime.run_state.get("pressure_score", 0.0)),
+		float(NetworkRuntime.run_state.get("pressure_navigation", 0.0)),
+		float(NetworkRuntime.run_state.get("pressure_salvage", 0.0)),
+		float(NetworkRuntime.run_state.get("pressure_recovery", 0.0)),
+		float(NetworkRuntime.run_state.get("pressure_extraction", 0.0)),
+	])
 	if not nearest_salvage.is_empty():
 		pressure_lines.append("Nearest Salvage %.1fm | %s" % [wreck_distance, str(nearest_salvage.get("label", "Salvage"))])
 	if rescue_available and not nearest_rescue.is_empty():
@@ -1886,6 +2163,13 @@ func _refresh_hud() -> void:
 		pressure_lines.append("Crew critical: %d" % crew_critical_count)
 	if crew_exhausted_count > 0:
 		pressure_lines.append("Crew exhausted: %d" % crew_exhausted_count)
+	if bool(NetworkRuntime.run_state.get("propulsion_crisis", false)) or bool(NetworkRuntime.run_state.get("hull_crisis", false)) or bool(NetworkRuntime.run_state.get("recovery_crisis", false)):
+		pressure_lines.append("Crisis flags | Propulsion %s | Hull %s | Recovery %s | Support %s" % [
+			"Yes" if bool(NetworkRuntime.run_state.get("propulsion_crisis", false)) else "No",
+			"Yes" if bool(NetworkRuntime.run_state.get("hull_crisis", false)) else "No",
+			"Yes" if bool(NetworkRuntime.run_state.get("recovery_crisis", false)) else "No",
+			"Yes" if bool(NetworkRuntime.run_state.get("support_crisis", false)) else "No",
+		])
 	run_label.text = "\n".join(pressure_lines)
 
 	var station_lines := PackedStringArray()
@@ -1908,11 +2192,28 @@ func _refresh_hud() -> void:
 	var local_hint := _build_onboarding_text(selected_station_id, local_station_id).trim_prefix("Onboarding: ").strip_edges()
 	onboarding_label.text = "Local Tip\n%s" % local_hint
 
-	boat_label.text = "Hull %.0f/%.0f | Speed %.1f/%.1f\nBreaches %d | Patch Kits %d/%d | Blocks %d active / %d lost\nBrace %s | Cargo %d/%d | Collisions %d" % [
+	var propulsion_family := str(NetworkRuntime.boat_state.get("propulsion_family", NetworkRuntime.PROPULSION_FAMILY_RAFT_PADDLES))
+	var propulsion_label := str(NetworkRuntime.boat_state.get("propulsion_label", NetworkRuntime.get_propulsion_family_label(propulsion_family)))
+	var propulsion_fault := str(NetworkRuntime.boat_state.get("fault_state", NetworkRuntime.PROPULSION_FAULT_STATE_STABLE))
+	boat_label.text = "Hull %.0f/%.0f | Speed %.1f/%.1f\n%s | Order %s | Eff %d%% | Fault %s\nDrive HP %.0f/%.0f | Actual Thrust %d%% | Rudder %.0f%%\nPort %.0f%% | Starboard %.0f%% | Trim %.0f%% | Sync %.0f%% | Heat %.0f%% | Pressure %.0f%%\nBreaches %d | Patch Kits %d/%d | Blocks %d active / %d lost\nBrace %s | Cargo %d/%d | Workload %.0f | Crew %d | Collisions %d\nSafety %.0f | Stability %.0f | Repair %.0f%% | Recovery %.0f | Redundancy %.0f | Pathing %.0f" % [
 		hull_integrity,
 		max_hull_integrity,
 		float(NetworkRuntime.boat_state.get("speed", 0.0)),
 		float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED)),
+		propulsion_label,
+		str(NetworkRuntime.boat_state.get("speed_order", "Stop")),
+		int(round(float(NetworkRuntime.boat_state.get("propulsion_efficiency", 0.0)) * 100.0)),
+		NetworkRuntime.get_propulsion_fault_label(propulsion_fault),
+		float(NetworkRuntime.boat_state.get("propulsion_health", 100.0)),
+		float(NetworkRuntime.boat_state.get("propulsion_health_rating", 100.0)),
+		int(round(float(NetworkRuntime.boat_state.get("actual_thrust", 0.0)) * 100.0)),
+		float(NetworkRuntime.boat_state.get("rudder_input", 0.0)) * 100.0,
+		float(NetworkRuntime.boat_state.get("propulsion_port_output", 0.0)) * 100.0,
+		float(NetworkRuntime.boat_state.get("propulsion_starboard_output", 0.0)) * 100.0,
+		float(NetworkRuntime.boat_state.get("propulsion_trim", 1.0)) * 100.0,
+		float(NetworkRuntime.boat_state.get("propulsion_sync", 0.0)) * 100.0,
+		float(NetworkRuntime.boat_state.get("propulsion_heat", 0.0)) * 100.0,
+		float(NetworkRuntime.boat_state.get("propulsion_pressure", 0.0)) * 100.0,
 		breach_stacks,
 		repair_supplies,
 		repair_supplies_max,
@@ -1921,7 +2222,15 @@ func _refresh_hud() -> void:
 		brace_state,
 		current_cargo,
 		cargo_capacity,
+		float(NetworkRuntime.boat_state.get("workload", 0.0)),
+		int(NetworkRuntime.boat_state.get("recommended_crew", 1)),
 		int(NetworkRuntime.boat_state.get("collision_count", 0)),
+		float(NetworkRuntime.boat_state.get("crew_safety", 0.0)),
+		float(NetworkRuntime.boat_state.get("storm_stability", 0.0)),
+		float(NetworkRuntime.boat_state.get("repair_coverage", 0.0)),
+		float(NetworkRuntime.boat_state.get("recovery_access_rating", 0.0)),
+		float(NetworkRuntime.boat_state.get("damage_redundancy", 0.0)),
+		float(NetworkRuntime.boat_state.get("pathing_score", 0.0)),
 	]
 	if overboard_count > 0:
 		boat_label.text += "\nOverboard %d | Recoveries %d" % [overboard_count, recoveries_completed]
@@ -1931,10 +2240,11 @@ func _refresh_hud() -> void:
 		crew_exhausted_count,
 	]
 	var hull_ratio := hull_integrity / maxf(1.0, max_hull_integrity)
+	var propulsion_ratio := float(NetworkRuntime.boat_state.get("propulsion_health", 100.0)) / maxf(1.0, float(NetworkRuntime.boat_state.get("propulsion_health_rating", 100.0)))
 	hud_icons.set_icon(survival_panel_icon, "brace" if hull_ratio <= 0.6 or detached_chunk_count > 0 or breach_stacks > 0 else "repair-kit")
-	if hull_ratio <= 0.3 or detached_chunk_count > 0:
+	if hull_ratio <= 0.3 or propulsion_ratio <= 0.28 or detached_chunk_count > 0:
 		boat_label.modulate = HUD_TEXT_DANGER
-	elif hull_ratio <= 0.6 or breach_stacks > 0:
+	elif hull_ratio <= 0.6 or propulsion_ratio <= 0.52 or breach_stacks > 0:
 		boat_label.modulate = HUD_TEXT_WARNING
 	else:
 		boat_label.modulate = HUD_TEXT_PRIMARY
@@ -1943,6 +2253,8 @@ func _refresh_hud() -> void:
 	var selected_label := NetworkRuntime.get_station_label(selected_station_id) if not selected_station_id.is_empty() else "No station"
 	var local_label := NetworkRuntime.get_station_label(local_station_id) if not local_station_id.is_empty() else "Free Roam"
 	interaction_lines.append("Selected %s | You %s" % [selected_label, local_label])
+	var selected_prompt := NetworkRuntime.get_station_prompt(selected_station_id)
+	var local_prompt := NetworkRuntime.get_station_prompt(local_station_id)
 	if local_downed:
 		interaction_lines.append("You are downed. Hold still and avoid fresh hits while the timer runs.")
 		interaction_lines.append("A nearby crewmate can hold F to rally you back with partial health and stamina.")
@@ -1966,14 +2278,28 @@ func _refresh_hud() -> void:
 			interaction_lines.append("Press F to take %s from this deck position." % selected_label)
 		else:
 			interaction_lines.append("Move closer to %s before claiming it." % selected_label)
+		if not selected_prompt.is_empty():
+			interaction_lines.append(selected_prompt)
 	if local_station_id == "helm":
 		interaction_lines.append("Stay near the helm to keep steering. Drift away and you lose control.")
+	elif local_station_id == "drive":
+		match propulsion_family:
+			NetworkRuntime.PROPULSION_FAMILY_SAIL_RIG:
+				interaction_lines.append("Trim deck: press G to trim for the wind and R to reef when a bad angle or squall starts stealing drive.")
+			NetworkRuntime.PROPULSION_FAMILY_STEAM_TUG:
+				interaction_lines.append("Engine console: press G to stoke pressure and R to vent heat before the boiler turns on you.")
+			NetworkRuntime.PROPULSION_FAMILY_TWIN_ENGINE:
+				interaction_lines.append("Engineering panel: press G to tune response and R to cool the engines before they desync.")
+			_:
+				interaction_lines.append("Paddle bench: press G to dig in for burst speed and R to backwater when helm needs the boat to settle.")
 	elif local_station_id == "grapple":
 		interaction_lines.append("Stay on the crane and recover loot only when the helm has settled the boat.")
+	elif not local_prompt.is_empty():
+		interaction_lines.append(local_prompt)
 	elif not _find_local_repair_target().is_empty():
 		interaction_lines.append("You are close enough to patch this section. Spend kits only when the trade is worth it.")
 	else:
-		interaction_lines.append("Move to the helm or grapple crane, brace anywhere, and patch damage up close.")
+		interaction_lines.append("Move to the helm, drive station, or grapple crane, brace anywhere, and patch damage up close.")
 	if local_stamina_exhausted:
 		interaction_lines.append("Too winded to brace, patch, or rally until stamina climbs back above 20.")
 	elif local_stamina < NetworkRuntime.AVATAR_REPAIR_STAMINA_COST:
@@ -2012,9 +2338,15 @@ func _refresh_hud() -> void:
 		local_stamina,
 		local_max_stamina,
 	]
+	status_label.text += "\n%s | Stability %.0f | Safety %.0f | Repair %.0f%%" % [
+		propulsion_label,
+		float(NetworkRuntime.boat_state.get("storm_stability", 0.0)),
+		float(NetworkRuntime.boat_state.get("crew_safety", 0.0)),
+		float(NetworkRuntime.boat_state.get("repair_coverage", 0.0)),
+	]
 	status_label.modulate = HUD_TEXT_MUTED
 	if footer_label != null:
-		footer_label.text = "Mouse aim | Shift burst | 1-5 tools | I inventory | Q/E stations | F use/claim/rally | Space brace | G grapple | R patch"
+		footer_label.text = "Mouse aim | Shift burst | 1-6 tools | I inventory | Q/E stations | F use/claim/rally | Space brace | G grapple/drive | R patch/vent"
 	toolbelt_label.text = _build_run_toolbelt_text()
 	inventory_label.text = _build_run_inventory_text()
 	if inventory_panel != null:
@@ -2040,6 +2372,16 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 
 	if local_station_id == "helm":
 		lines.append("Hold the boat steady over wrecks and line up safe extraction approaches.")
+	elif local_station_id == "drive":
+		var propulsion_family := str(NetworkRuntime.boat_state.get("propulsion_family", NetworkRuntime.PROPULSION_FAMILY_RAFT_PADDLES))
+		if propulsion_family == NetworkRuntime.PROPULSION_FAMILY_SAIL_RIG:
+			lines.append("Press G to trim the sail for the wind and R to reef before bad angles or squalls rob the hull of speed.")
+		elif propulsion_family == NetworkRuntime.PROPULSION_FAMILY_STEAM_TUG:
+			lines.append("Press G to stoke pressure and R to vent the boiler before the drive starts laboring.")
+		elif propulsion_family == NetworkRuntime.PROPULSION_FAMILY_TWIN_ENGINE:
+			lines.append("Press G to tune the engines and R to cool them before heat robs the boat of response.")
+		else:
+			lines.append("Press G to dig the paddles in for burst speed and R to backwater when the helm needs control.")
 	elif local_station_id == "grapple":
 		lines.append("Press G to recover nearby wreck salvage, rescue cargo, or bonus caches once the helm has slowed the boat.")
 	else:
@@ -2316,6 +2658,8 @@ func _refresh_station_visuals() -> void:
 		var occupant_peer_id := int(station_data.get("occupant_peer_id", 0))
 		var claimable := _get_claimable_station_ids().has(station_id)
 		var color := STATION_BASE_COLOR if claimable else Color(0.36, 0.56, 0.62)
+		if not bool(station_data.get("active", true)):
+			color = color.lerp(Color(0.20, 0.20, 0.24), 0.55)
 		if claimable:
 			if occupant_peer_id == local_peer_id and occupant_peer_id != 0:
 				color = STATION_LOCAL_COLOR
@@ -2339,12 +2683,13 @@ func _refresh_station_visuals() -> void:
 			label.text = NetworkRuntime.get_station_label(station_id)
 			if occupant_peer_id != 0:
 				label.text += "\n%s" % occupant_name
-		elif station_id == "brace":
-			label.text = "Brace Anywhere"
-		elif station_id == "repair":
-			label.text = "Patch Nearby Hull"
 		else:
 			label.text = NetworkRuntime.get_station_label(station_id)
+			var burst_action := str(station_data.get("burst_action", ""))
+			if not burst_action.is_empty():
+				label.text += "\n%s" % burst_action.capitalize()
+		if not bool(station_data.get("active", true)):
+			label.text += "\nOffline"
 		label.modulate = color.lightened(0.22)
 
 func _refresh_crew_visuals() -> void:
@@ -2506,6 +2851,11 @@ func _make_site_ring_root(container: Node3D, site: Dictionary, color: Color, bod
 	ring.material_override = ring_material
 	root.add_child(ring)
 
+	var foam := _ensure_contact_foam_plane(root, "ContactFoam", Vector2(1.0, 1.0))
+	foam.position = Vector3(0.0, WATER_SURFACE_Y + 0.05, 0.0)
+	foam.scale = Vector3(ring_mesh.top_radius * 0.72, 1.0, ring_mesh.top_radius * 0.72)
+	var foam_material := foam.material_override as ShaderMaterial
+
 	var body := MeshInstance3D.new()
 	if body_kind == "crate":
 		var crate_mesh := BoxMesh.new()
@@ -2535,6 +2885,7 @@ func _make_site_ring_root(container: Node3D, site: Dictionary, color: Color, bod
 	return {
 		"root": root,
 		"ring_material": ring_material,
+		"foam_material": foam_material,
 		"body_material": body_material,
 		"label": label,
 	}
@@ -2719,14 +3070,21 @@ func _refresh_result_overlay() -> void:
 	var cargo_count := int(NetworkRuntime.run_state.get("cargo_count", 0))
 	var cargo_secured := int(NetworkRuntime.run_state.get("cargo_secured", 0))
 	var cargo_lost: int = maxi(0, cargo_count - cargo_secured)
+	var reward_items := Dictionary(NetworkRuntime.run_state.get("reward_items", {}))
+	var loot_lost_items := Dictionary(NetworkRuntime.run_state.get("loot_lost_items", {}))
+	var repair_debt_delta := Dictionary(NetworkRuntime.run_state.get("repair_debt_delta", {}))
 	result_title_label.text = str(NetworkRuntime.run_state.get("result_title", "Run Complete"))
-	result_body_label.text = "%s\n\nCollected: %d\nSecured: %d\nLost: %d\nGold: %d\nSalvage: %d\nCache Recovered: %s\nPatch Kits Left: %d\nBlocks Destroyed: %d\nChunks Lost: %d\nCargo Lost To Sea: %d\nBlueprint Version: %d" % [
+	result_body_label.text = "%s\n\nCollected: %d\nSecured: %d\nLost: %d\nGold: %d\nMaterials: %d\nSchematics: %d\nLost Haul: %d\nRepair Debt Gold: %d\nRepair Debt Mats: %d\nCache Recovered: %s\nPatch Kits Left: %d\nBlocks Destroyed: %d\nChunks Lost: %d\nCargo Lost To Sea: %d\nBlueprint Version: %d" % [
 		str(NetworkRuntime.run_state.get("result_message", "")),
 		cargo_count,
 		cargo_secured,
 		cargo_lost,
 		int(NetworkRuntime.run_state.get("reward_gold", 0)),
-		int(NetworkRuntime.run_state.get("reward_salvage", 0)),
+		NetworkRuntime._sum_material_dict_ui(reward_items),
+		Array(NetworkRuntime.run_state.get("reward_schematics", [])).size(),
+		NetworkRuntime._sum_material_dict_ui(loot_lost_items),
+		int(repair_debt_delta.get("gold", 0)),
+		NetworkRuntime._sum_material_dict_ui(repair_debt_delta.get("items", {})),
 		"yes" if bool(NetworkRuntime.run_state.get("cache_recovered", false)) else "no",
 		int(NetworkRuntime.run_state.get("repair_supplies", 0)),
 		int(NetworkRuntime.run_state.get("destroyed_block_count", 0)),
@@ -2978,6 +3336,8 @@ func _collect_input_state(delta: float) -> Dictionary:
 		"request_brace": false,
 		"request_grapple": false,
 		"request_repair": false,
+		"request_propulsion_primary": false,
+		"request_propulsion_secondary": false,
 		"request_recover": false,
 		"assist_target_peer_id": 0,
 		"throttle": 0.0,
@@ -3097,16 +3457,22 @@ func _collect_action_input(input_state: Dictionary) -> void:
 	brace_request_latched = brace_pressed
 
 	var grapple_pressed := Input.is_key_pressed(KEY_G)
-	if grapple_pressed and not grapple_request_latched and local_station_id == "grapple":
-		input_state["request_grapple"] = true
+	if grapple_pressed and not grapple_request_latched:
+		if local_station_id == "grapple":
+			input_state["request_grapple"] = true
+		elif local_station_id == "drive":
+			input_state["request_propulsion_primary"] = true
 	grapple_request_latched = grapple_pressed
 
 	var repair_pressed := Input.is_key_pressed(KEY_R)
 	if repair_pressed and not repair_request_latched:
-		if _can_local_use_stamina_action(NetworkRuntime.AVATAR_REPAIR_STAMINA_COST):
-			input_state["request_repair"] = true
+		if local_station_id == "drive":
+			input_state["request_propulsion_secondary"] = true
 		else:
-			_show_local_action_blocked("Too winded to patch")
+			if _can_local_use_stamina_action(NetworkRuntime.AVATAR_REPAIR_STAMINA_COST):
+				input_state["request_repair"] = true
+			else:
+				_show_local_action_blocked("Too winded to patch")
 	repair_request_latched = repair_pressed
 
 func _collect_drive_input(input_state: Dictionary) -> void:
@@ -3676,10 +4042,20 @@ func _update_wreck_visual() -> void:
 		var in_zone := boat_position.distance_to(site.get("position", Vector3.ZERO)) <= float(site.get("radius", 4.4))
 		var ready_color := Color(0.23, 0.79, 0.57) if in_zone and boat_speed <= float(site.get("max_speed", NetworkRuntime.SALVAGE_MAX_SPEED)) else Color(0.87, 0.56, 0.19)
 		var ring_material := visual.get("ring_material") as StandardMaterial3D
+		var foam_material := visual.get("foam_material") as ShaderMaterial
 		var body_material := visual.get("body_material") as StandardMaterial3D
 		var label := visual.get("label") as Label3D
 		if ring_material != null:
 			ring_material.albedo_color = ready_color
+		if foam_material != null:
+			foam_material.set_shader_parameter("core_color", Color(0.88, 0.95, 1.0))
+			foam_material.set_shader_parameter("edge_color", ready_color)
+			foam_material.set_shader_parameter("intensity", 0.22 + (0.20 if in_zone else 0.06))
+			foam_material.set_shader_parameter("foam_radius", 0.70)
+			foam_material.set_shader_parameter("foam_width", 0.17)
+			foam_material.set_shader_parameter("soft_fill", 0.11)
+			foam_material.set_shader_parameter("breakup_strength", 0.22)
+			foam_material.set_shader_parameter("scroll_speed", 0.38)
 		if body_material != null:
 			body_material.albedo_color = Color(0.38, 0.24, 0.18).lerp(Color(0.58, 0.32, 0.18), 0.18 if in_zone else 0.0)
 		if label != null:
@@ -3710,10 +4086,20 @@ func _update_rescue_visual() -> void:
 		elif in_zone and boat_speed <= float(site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED)):
 			ready_color = Color(0.98, 0.86, 0.36)
 		var ring_material := visual.get("ring_material") as StandardMaterial3D
+		var foam_material := visual.get("foam_material") as ShaderMaterial
 		var body_material := visual.get("body_material") as StandardMaterial3D
 		var label := visual.get("label") as Label3D
 		if ring_material != null:
 			ring_material.albedo_color = ready_color
+		if foam_material != null:
+			foam_material.set_shader_parameter("core_color", Color(0.92, 0.97, 1.0))
+			foam_material.set_shader_parameter("edge_color", ready_color)
+			foam_material.set_shader_parameter("intensity", 0.28 + (0.24 if bool(site.get("engaged", false)) else 0.0) + (0.12 if in_zone else 0.0))
+			foam_material.set_shader_parameter("foam_radius", 0.68)
+			foam_material.set_shader_parameter("foam_width", 0.20)
+			foam_material.set_shader_parameter("soft_fill", 0.14)
+			foam_material.set_shader_parameter("breakup_strength", 0.28)
+			foam_material.set_shader_parameter("scroll_speed", 0.52)
 		if body_material != null:
 			body_material.albedo_color = Color(0.56, 0.37, 0.18).lerp(Color(0.93, 0.56, 0.18), 0.7 if bool(site.get("available", false)) else 0.2)
 		if label != null:
@@ -3724,10 +4110,8 @@ func _update_rescue_visual() -> void:
 				float(site.get("max_speed", NetworkRuntime.RESCUE_MAX_SPEED)),
 			]
 			if bool(site.get("completed", false)):
-				label.text = "%s\nSecured +%d gold | +%d salvage | +%d kit" % [
+				label.text = "%s\nSecured gold, recovery materials, and %d kit" % [
 					str(site.get("label", "Distress Rescue")),
-					int(site.get("bonus_gold", 0)),
-					int(site.get("bonus_salvage", 0)),
 					int(site.get("patch_kit_bonus", 0)),
 				]
 			label.modulate = ready_color.lightened(0.16)
@@ -3747,17 +4131,25 @@ func _update_cache_visual() -> void:
 		if not bool(site.get("available", false)):
 			ready_color = Color(0.44, 0.50, 0.56)
 		var ring_material := visual.get("ring_material") as StandardMaterial3D
+		var foam_material := visual.get("foam_material") as ShaderMaterial
 		var body_material := visual.get("body_material") as StandardMaterial3D
 		var label := visual.get("label") as Label3D
 		if ring_material != null:
 			ring_material.albedo_color = ready_color
+		if foam_material != null:
+			foam_material.set_shader_parameter("core_color", Color(0.84, 0.96, 1.0))
+			foam_material.set_shader_parameter("edge_color", ready_color)
+			foam_material.set_shader_parameter("intensity", 0.20 + (0.10 if in_zone and bool(site.get("available", false)) else 0.0))
+			foam_material.set_shader_parameter("foam_radius", 0.69)
+			foam_material.set_shader_parameter("foam_width", 0.18)
+			foam_material.set_shader_parameter("soft_fill", 0.10)
+			foam_material.set_shader_parameter("breakup_strength", 0.20)
+			foam_material.set_shader_parameter("scroll_speed", 0.34)
 		if body_material != null:
 			body_material.albedo_color = Color(0.19, 0.48, 0.58).lerp(Color(0.50, 0.55, 0.60), 1.0 if not bool(site.get("available", false)) else 0.0)
 		if label != null:
-			label.text = "%s\n+%d gold | +%d salvage | +%d patch kit | Max Speed %.1f" % [
+			label.text = "%s\nGold, cache materials, and %d patch kit | Max Speed %.1f" % [
 				str(site.get("label", "Resupply Cache")),
-				int(site.get("bonus_gold", NetworkRuntime.RESUPPLY_CACHE_GOLD_BONUS)),
-				int(site.get("bonus_salvage", NetworkRuntime.RESUPPLY_CACHE_SALVAGE_BONUS)),
 				int(site.get("supply_grant", NetworkRuntime.RESUPPLY_CACHE_SUPPLY_GRANT)),
 				float(site.get("max_speed", NetworkRuntime.RESUPPLY_CACHE_MAX_SPEED)),
 			]
@@ -3818,10 +4210,20 @@ func _update_extraction_visual(_delta: float) -> void:
 		elif phase == "success":
 			extraction_color = EXTRACTION_READY_COLOR
 		var ring_material := visual.get("ring_material") as StandardMaterial3D
+		var foam_material := visual.get("foam_material") as ShaderMaterial
 		var body_material := visual.get("body_material") as StandardMaterial3D
 		var label := visual.get("label") as Label3D
 		if ring_material != null:
 			ring_material.albedo_color = extraction_color
+		if foam_material != null:
+			foam_material.set_shader_parameter("core_color", Color(0.88, 0.97, 1.0))
+			foam_material.set_shader_parameter("edge_color", extraction_color)
+			foam_material.set_shader_parameter("intensity", 0.24 + (0.22 if can_extract else 0.06))
+			foam_material.set_shader_parameter("foam_radius", 0.74)
+			foam_material.set_shader_parameter("foam_width", 0.20)
+			foam_material.set_shader_parameter("soft_fill", 0.14)
+			foam_material.set_shader_parameter("breakup_strength", 0.24)
+			foam_material.set_shader_parameter("scroll_speed", 0.42)
 		if body_material != null:
 			body_material.albedo_color = extraction_color
 		if label != null:
@@ -4021,6 +4423,9 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_5, KEY_KP_5:
 					_select_run_tool(4)
 					return
+				KEY_6, KEY_KP_6:
+					_select_run_tool(5)
+					return
 		return
 	if event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER):
 		_continue_to_dock()
@@ -4129,6 +4534,7 @@ func _on_hazard_state_changed(_hazards: Array) -> void:
 	_refresh_hud()
 
 func _on_station_state_changed(_stations: Dictionary) -> void:
+	_build_station_visuals()
 	_refresh_station_visuals()
 	_refresh_crew_visuals()
 	_refresh_hud()
@@ -4143,6 +4549,7 @@ func _on_loot_state_changed(_loot_targets: Array) -> void:
 func _on_run_state_changed(_state: Dictionary) -> void:
 	if not is_inside_tree():
 		return
+	_build_recovery_visuals()
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
 	var detached_chunk_count := int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
 	var cargo_lost_to_sea := int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
@@ -4254,6 +4661,7 @@ func _build_objective_text() -> String:
 
 func _build_onboarding_text(selected_station_id: String, local_station_id: String) -> String:
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
+	var pressure_phase := str(NetworkRuntime.run_state.get("pressure_phase", NetworkRuntime.RUN_PRESSURE_PHASE_CALM))
 	if phase == "success":
 		return "Onboarding: Press Enter or Continue to return to the hangar and spend the rewards."
 	if phase == "failed":
@@ -4269,8 +4677,22 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 			selected_label = NetworkRuntime.get_station_label(selected_station_id)
 		return "Onboarding: Mouse aim drives the camera. Walk the deck, then use Q/E and F to take %s. Space works anywhere." % selected_label
 
+	if local_station_id == "drive":
+		var propulsion_family := str(NetworkRuntime.boat_state.get("propulsion_family", NetworkRuntime.PROPULSION_FAMILY_RAFT_PADDLES))
+		if propulsion_family == NetworkRuntime.PROPULSION_FAMILY_SAIL_RIG:
+			return "Onboarding: Sail rigs care about wind angle. Claim the trim deck, use G to pull the canvas into the breeze, and reef with R when the weather turns ugly."
+		if propulsion_family == NetworkRuntime.PROPULSION_FAMILY_STEAM_TUG:
+			return "Onboarding: Helm sets intent, but the steam tug only answers cleanly when someone tends the boiler with G and keeps heat under control with R."
+		if propulsion_family == NetworkRuntime.PROPULSION_FAMILY_TWIN_ENGINE:
+			return "Onboarding: Twin engines reward attention. Use G to keep them in sync and R when heat starts eating response."
+		return "Onboarding: This hull runs on raft paddles. Claim the drive station and use G to add burst labor when the helm needs speed."
+
 	if _boat_inside_any_squall():
 		return "Onboarding: Squalls drag the boat and fire surge pulses. Keep speed under control and brace through the slam."
+	if pressure_phase == NetworkRuntime.RUN_PRESSURE_PHASE_COLLAPSE or pressure_phase == NetworkRuntime.RUN_PRESSURE_PHASE_CASCADE:
+		return "Onboarding: The run is cascading. Stabilize propulsion, recover the crew, and stop taking optional risks until the machine settles."
+	if pressure_phase == NetworkRuntime.RUN_PRESSURE_PHASE_CRITICAL:
+		return "Onboarding: Pressure is critical. Repair, recover, and play the next thirty seconds clean before chasing more cargo."
 
 	if int(NetworkRuntime.run_state.get("loot_remaining", 0)) > 0:
 		return "Onboarding: Sail to any salvage ring, slow down, brace from anywhere, and keep the grappler safe."
