@@ -23,6 +23,26 @@ const HANGAR_AIR_ACCELERATION := 10.0
 const HANGAR_JUMP_VELOCITY := 6.2
 const HANGAR_AVATAR_SYNC_INTERVAL := 0.05
 const HANGAR_AVATAR_NAME_HEIGHT := 1.4
+const PALETTE_CATEGORY_ORDER := [
+	"all",
+	"hull",
+	"structure",
+	"propulsion",
+	"salvage",
+	"recovery",
+	"support",
+	"cargo",
+]
+const PALETTE_CATEGORY_LABELS := {
+	"all": "All Crafted Parts",
+	"hull": "Hull",
+	"structure": "Structure",
+	"propulsion": "Propulsion",
+	"salvage": "Salvage",
+	"recovery": "Recovery",
+	"support": "Support",
+	"cargo": "Cargo",
+}
 
 @export_group("Chase Camera")
 @export_range(-4.0, 4.0, 0.05) var chase_camera_side_offset := 0.9
@@ -60,6 +80,9 @@ var crosshair_label: Label
 var detail_panel: PanelContainer
 var tool_panel: PanelContainer
 var inventory_panel: PanelContainer
+var block_palette_filter: OptionButton
+var block_palette_list: ItemList
+var block_palette_detail_label: Label
 var dock_body: StaticBody3D
 var boat_root: Node3D
 var block_container: Node3D
@@ -94,6 +117,8 @@ var last_local_reaction_id := 0
 var selected_store_index := 0
 var selected_donation_index := 0
 var selected_builder_overlay_index := 0
+var selected_palette_category := "all"
+var palette_category_ids: Array = []
 var hud_details_visible := false
 var inventory_panel_visible := false
 var selected_hangar_tool_index := 0
@@ -187,6 +212,18 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cycle_block(-1)
 		KEY_E:
 			_cycle_block(1)
+		KEY_UP:
+			if inventory_panel_visible:
+				_cycle_block(-1)
+		KEY_DOWN:
+			if inventory_panel_visible:
+				_cycle_block(1)
+		KEY_LEFT:
+			if inventory_panel_visible:
+				_cycle_palette_category(-1)
+		KEY_RIGHT:
+			if inventory_panel_visible:
+				_cycle_palette_category(1)
 		KEY_Z:
 			_cycle_store_selection(-1)
 		KEY_C:
@@ -618,7 +655,10 @@ func _build_hud() -> void:
 	tool_panel = hud.get_node("ToolPanel") as PanelContainer
 	toolbelt_label = hud.get_node("ToolPanel/Margin/Layout/ToolLabel") as Label
 	inventory_panel = hud.get_node("InventoryPanel") as PanelContainer
-	inventory_label = hud.get_node("InventoryPanel/Margin/Layout/InventoryLabel") as Label
+	block_palette_filter = hud.get_node("InventoryPanel/Margin/Layout/MainRow/PaletteColumn/CategoryRow/CategoryOption") as OptionButton
+	block_palette_list = hud.get_node("InventoryPanel/Margin/Layout/MainRow/PaletteColumn/BlockPaletteList") as ItemList
+	block_palette_detail_label = hud.get_node("InventoryPanel/Margin/Layout/MainRow/PaletteColumn/BlockPaletteDetailLabel") as Label
+	inventory_label = hud.get_node("InventoryPanel/Margin/Layout/MainRow/InventoryColumn/InventoryLabel") as Label
 	detail_panel = hud.get_node("DetailPanel") as PanelContainer
 	builder_icon = hud.get_node("DetailPanel/Margin/Layout/BuilderHeader/BuilderIcon") as TextureRect
 	builder_label = hud.get_node("DetailPanel/Margin/Layout/BuilderLabel") as Label
@@ -647,6 +687,10 @@ func _build_hud() -> void:
 		unlock_button.pressed.connect(_purchase_selected_unlock)
 	if not detail_toggle_button.pressed.is_connected(_toggle_hud_details):
 		detail_toggle_button.pressed.connect(_toggle_hud_details)
+	if block_palette_filter != null and not block_palette_filter.item_selected.is_connected(_on_block_palette_filter_selected):
+		block_palette_filter.item_selected.connect(_on_block_palette_filter_selected)
+	if block_palette_list != null and not block_palette_list.item_selected.is_connected(_on_block_palette_item_selected):
+		block_palette_list.item_selected.connect(_on_block_palette_item_selected)
 
 	_apply_hud_visibility()
 
@@ -857,8 +901,6 @@ func _refresh_local_builder_tool_visual() -> void:
 
 func _refresh_hud() -> void:
 	var stats := NetworkRuntime.get_blueprint_stats()
-	var block_id := _get_selected_block_id()
-	var block_def := NetworkRuntime.get_builder_block_definition(block_id)
 	var overlay_mode := _get_selected_builder_overlay_mode()
 	var warnings := NetworkRuntime.get_blueprint_warnings()
 	var warning_lines := PackedStringArray()
@@ -875,24 +917,25 @@ func _refresh_hud() -> void:
 		float(stats.get("propulsion_exposure_rating", 0.0)),
 		float(stats.get("damage_redundancy", 0.0)),
 	]
-
-	var palette_entries := PackedStringArray()
-	for palette_block_id_variant in NetworkRuntime.get_builder_block_ids():
-		var palette_block_id := str(palette_block_id_variant)
-		var palette_label_text := str(NetworkRuntime.get_builder_block_definition(palette_block_id).get("label", palette_block_id.capitalize()))
-		if palette_block_id == block_id:
-			palette_entries.append("[%s]" % palette_label_text)
-		else:
-			palette_entries.append(palette_label_text)
+	var previous_block_id := _get_selected_block_id()
+	_refresh_block_palette_menu()
+	var block_id := _get_selected_block_id()
+	var block_def := NetworkRuntime.get_builder_block_definition(block_id)
+	if block_id != previous_block_id:
+		_refresh_cursor_visual()
+	var filtered_block_ids := _get_filtered_builder_block_ids()
+	var palette_index := maxi(0, filtered_block_ids.find(block_id))
+	var palette_count := maxi(1, filtered_block_ids.size())
 	onboarding_label.text = _build_onboarding_text()
 	hud_icons.set_icon(selection_icon, hud_icons.get_block_icon_id(block_id))
 	hud_icons.set_icon(builder_icon, hud_icons.get_block_icon_id(block_id))
 	var active_tool_id := _get_selected_hangar_tool_id()
 	var active_tool_label := _get_hangar_tool_label(active_tool_id)
-	selection_label.text = "Tool %s | Palette %d/%d\n%s | Rot %d deg\nHP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
+	selection_label.text = "Tool %s | %s %d/%d\n%s | Rot %d deg\nHP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
 		active_tool_label,
-		selected_block_index + 1,
-		maxi(1, palette_entries.size()),
+		_get_palette_category_label(selected_palette_category),
+		palette_index + 1,
+		palette_count,
 		str(block_def.get("label", block_id.capitalize())),
 		selected_rotation_steps * 90,
 		float(block_def.get("max_hp", 0.0)),
@@ -1080,7 +1123,7 @@ func _refresh_hud() -> void:
 
 	toolbelt_label.text = _build_hangar_toolbelt_text()
 	inventory_label.text = _build_hangar_inventory_text()
-	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\n1 Build | 2 Remove | 3 Workshop | I inventory\nQ / E parts | R rotate | F use tool | X remove\nZ / C recipes | B / N donations | G donate stash | T overlay | V craft | Enter launch\nEsc cursor toggle | RMB recapture aim"
+	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\n1 Build | 2 Remove | 3 Workshop | I palette + stash\nClick a part to equip | Q / E quick cycle | Up / Down palette | Left / Right category\nR rotate | F use tool | X remove | Z / C recipes | B / N donations | G donate stash | T overlay | V craft | Enter launch\nEsc cursor toggle | RMB recapture aim"
 	_apply_hud_visibility()
 
 func _build_onboarding_text() -> String:
@@ -1095,8 +1138,8 @@ func _build_onboarding_text() -> String:
 	if int(stats.get("loose_blocks", 0)) > 0:
 		return "Onboarding: Loose chunks are allowed, but they will sink the moment the run starts."
 	if Array(NetworkRuntime.get_builder_store_entries()).size() > 0:
-		return "Onboarding: Z/C browses workshop recipes, B/N selects stash resources, G donates them, and V crafts parts for the host boat."
-	return "Onboarding: Build something weird, keep the main chunk floaty, and remember that the propulsion package and crew workload now matter as much as raw hull."
+		return "Onboarding: Press I to open the part palette and workshop locker. Click a crafted part to equip it, then use Z/C for recipes, B/N for donations, G to donate, and V to craft."
+	return "Onboarding: Press I to open the part palette, click the part you want, then build something weird while keeping the main chunk floaty."
 
 func _get_hangar_tool_label(tool_id: String) -> String:
 	for tool_variant in _get_hangar_toolbelt_entries():
@@ -1485,6 +1528,8 @@ func _select_hangar_tool(slot_index: int) -> void:
 
 func _toggle_inventory_panel() -> void:
 	inventory_panel_visible = not inventory_panel_visible
+	if inventory_panel_visible:
+		_set_mouse_capture(false)
 	_apply_hud_visibility()
 	_refresh_hud()
 
@@ -1498,13 +1543,25 @@ func _use_active_hangar_tool() -> void:
 			_place_selected_block()
 
 func _cycle_block(direction: int) -> void:
-	var block_ids := NetworkRuntime.get_builder_block_ids()
+	var block_ids := _get_filtered_builder_block_ids() if inventory_panel_visible else NetworkRuntime.get_builder_block_ids()
 	if block_ids.is_empty():
 		return
-	selected_block_index = wrapi(selected_block_index + direction, 0, block_ids.size())
-	_refresh_cursor_visual()
+	var current_block_id := _get_selected_block_id()
+	var current_index := block_ids.find(current_block_id)
+	if current_index == -1:
+		current_index = 0
+	current_index = wrapi(current_index + direction, 0, block_ids.size())
+	_set_selected_block_id(str(block_ids[current_index]))
+
+func _cycle_palette_category(direction: int) -> void:
+	if palette_category_ids.is_empty():
+		return
+	var current_index := palette_category_ids.find(selected_palette_category)
+	if current_index == -1:
+		current_index = 0
+	current_index = wrapi(current_index + direction, 0, palette_category_ids.size())
+	selected_palette_category = str(palette_category_ids[current_index])
 	_refresh_hud()
-	avatar_sync_timer = 0.0
 
 func _cycle_store_selection(direction: int) -> void:
 	var store_entries := NetworkRuntime.get_builder_store_entries()
@@ -1626,6 +1683,130 @@ func _get_selected_block_id() -> String:
 		return "structure"
 	selected_block_index = wrapi(selected_block_index, 0, block_ids.size())
 	return str(block_ids[selected_block_index])
+
+func _set_selected_block_id(block_id: String, refresh_ui: bool = true) -> void:
+	var block_ids := NetworkRuntime.get_builder_block_ids()
+	var block_index := block_ids.find(block_id)
+	if block_index == -1:
+		return
+	selected_block_index = block_index
+	if not refresh_ui:
+		return
+	_refresh_cursor_visual()
+	_refresh_hud()
+	avatar_sync_timer = 0.0
+
+func _refresh_block_palette_menu() -> void:
+	if block_palette_filter == null or block_palette_list == null or block_palette_detail_label == null:
+		return
+	_refresh_block_palette_filter()
+	var filtered_block_ids := _get_filtered_builder_block_ids()
+	var current_block_id := _get_selected_block_id()
+	if not filtered_block_ids.is_empty() and not filtered_block_ids.has(current_block_id):
+		_set_selected_block_id(str(filtered_block_ids[0]), false)
+		current_block_id = _get_selected_block_id()
+	block_palette_list.clear()
+	var selected_visible_index := -1
+	for block_index in range(filtered_block_ids.size()):
+		var filtered_block_id := str(filtered_block_ids[block_index])
+		var block_def := NetworkRuntime.get_builder_block_definition(filtered_block_id)
+		var block_label := str(block_def.get("label", filtered_block_id.capitalize()))
+		var tier := int(block_def.get("unlock_tier", 0))
+		var category_label := _get_palette_category_label(str(block_def.get("category", "structure")))
+		var item_text := "%s  |  T%d %s" % [block_label, tier, category_label]
+		var item_icon := hud_icons.load_icon(hud_icons.get_block_icon_id(filtered_block_id))
+		block_palette_list.add_item(item_text, item_icon, true)
+		block_palette_list.set_item_metadata(block_index, filtered_block_id)
+		block_palette_list.set_item_custom_fg_color(block_index, block_def.get("color", Color(0.96, 0.95, 0.90)))
+		block_palette_list.set_item_tooltip(block_index, "%s\n%s" % [
+			block_label,
+			str(block_def.get("description", "")),
+		])
+		if filtered_block_id == current_block_id:
+			selected_visible_index = block_index
+	if selected_visible_index >= 0:
+		block_palette_list.select(selected_visible_index)
+		block_palette_list.ensure_current_is_visible()
+	block_palette_detail_label.text = _build_block_palette_detail_text(current_block_id, filtered_block_ids.size())
+	block_palette_detail_label.modulate = Color(0.94, 0.95, 0.90)
+
+func _refresh_block_palette_filter() -> void:
+	if block_palette_filter == null:
+		return
+	var available_categories := _get_available_palette_categories()
+	if available_categories.is_empty():
+		available_categories.append("all")
+	if not available_categories.has(selected_palette_category):
+		selected_palette_category = str(available_categories[0])
+	palette_category_ids = available_categories
+	block_palette_filter.clear()
+	var selected_index := 0
+	for category_index in range(palette_category_ids.size()):
+		var category_id := str(palette_category_ids[category_index])
+		block_palette_filter.add_item(_get_palette_category_label(category_id))
+		if category_id == selected_palette_category:
+			selected_index = category_index
+	block_palette_filter.select(selected_index)
+
+func _get_available_palette_categories() -> Array:
+	var unlocked_block_ids := NetworkRuntime.get_builder_block_ids()
+	var available_lookup := {"all": true}
+	for block_id_variant in unlocked_block_ids:
+		var block_id := str(block_id_variant)
+		var category_id := str(NetworkRuntime.get_builder_block_definition(block_id).get("category", "structure"))
+		available_lookup[category_id] = true
+	var ordered_categories: Array = []
+	for category_id_variant in PALETTE_CATEGORY_ORDER:
+		var category_id := str(category_id_variant)
+		if available_lookup.has(category_id):
+			ordered_categories.append(category_id)
+			available_lookup.erase(category_id)
+	for remaining_category_variant in available_lookup.keys():
+		ordered_categories.append(str(remaining_category_variant))
+	return ordered_categories
+
+func _get_filtered_builder_block_ids() -> Array:
+	var unlocked_block_ids := NetworkRuntime.get_builder_block_ids()
+	if selected_palette_category == "all":
+		return unlocked_block_ids
+	var filtered_block_ids: Array = []
+	for block_id_variant in unlocked_block_ids:
+		var block_id := str(block_id_variant)
+		var block_category := str(NetworkRuntime.get_builder_block_definition(block_id).get("category", "structure"))
+		if block_category != selected_palette_category:
+			continue
+		filtered_block_ids.append(block_id)
+	return filtered_block_ids
+
+func _get_palette_category_label(category_id: String) -> String:
+	return str(PALETTE_CATEGORY_LABELS.get(category_id, category_id.replace("_", " ").capitalize()))
+
+func _build_block_palette_detail_text(block_id: String, visible_count: int) -> String:
+	var block_def := NetworkRuntime.get_builder_block_definition(block_id)
+	return "Selected: %s\n%s • Tier %d\n%s\nHP %.0f | Float %.1f | Thrust %.1f\nCargo +%d | Kits +%d | Brace +%.2f\nShowing %d crafted part(s). Click a part to equip it for F-place, or use Q/E and the arrow keys while this menu is open." % [
+		str(block_def.get("label", block_id.capitalize())),
+		_get_palette_category_label(str(block_def.get("category", "structure"))),
+		int(block_def.get("unlock_tier", 0)),
+		str(block_def.get("description", "")),
+		float(block_def.get("max_hp", 0.0)),
+		float(block_def.get("buoyancy", 0.0)),
+		float(block_def.get("thrust", 0.0)),
+		int(block_def.get("cargo", 0)),
+		int(block_def.get("repair", 0)),
+		float(block_def.get("brace", 0.0)),
+		visible_count,
+	]
+
+func _on_block_palette_filter_selected(index: int) -> void:
+	if index < 0 or index >= palette_category_ids.size():
+		return
+	selected_palette_category = str(palette_category_ids[index])
+	_refresh_hud()
+
+func _on_block_palette_item_selected(index: int) -> void:
+	if block_palette_list == null or index < 0 or index >= block_palette_list.item_count:
+		return
+	_set_selected_block_id(str(block_palette_list.get_item_metadata(index)))
 
 func _get_progression_snapshot() -> Dictionary:
 	var snapshot := NetworkRuntime.get_progression_state()

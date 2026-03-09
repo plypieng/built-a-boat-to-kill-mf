@@ -280,10 +280,10 @@ anchor_left = 0.5
 anchor_top = 1.0
 anchor_right = 0.5
 anchor_bottom = 1.0
-offset_left = -260.0
-offset_top = -294.0
-offset_right = 260.0
-offset_bottom = -132.0
+offset_left = -420.0
+offset_top = -378.0
+offset_right = 420.0
+offset_bottom = -128.0
 
 [node name="Margin" type="MarginContainer" parent="InventoryPanel"]
 layout_mode = 2
@@ -294,16 +294,72 @@ theme_override_constants/margin_bottom = 12
 
 [node name="Layout" type="VBoxContainer" parent="InventoryPanel/Margin"]
 layout_mode = 2
-theme_override_constants/separation = 4
+theme_override_constants/separation = 8
 
 [node name="Heading" type="Label" parent="InventoryPanel/Margin/Layout"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 14
-text = "SHARED INVENTORY"
+text = "PART PALETTE + LOCKER"
 horizontal_alignment = 1
 
-[node name="InventoryLabel" type="Label" parent="InventoryPanel/Margin/Layout"]
+[node name="MainRow" type="HBoxContainer" parent="InventoryPanel/Margin/Layout"]
 layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 12
+
+[node name="PaletteColumn" type="VBoxContainer" parent="InventoryPanel/Margin/Layout/MainRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 6
+
+[node name="PaletteHeading" type="Label" parent="InventoryPanel/Margin/Layout/MainRow/PaletteColumn"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Crafted Parts"
+
+[node name="CategoryRow" type="HBoxContainer" parent="InventoryPanel/Margin/Layout/MainRow/PaletteColumn"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="CategoryLabel" type="Label" parent="InventoryPanel/Margin/Layout/MainRow/PaletteColumn/CategoryRow"]
+layout_mode = 2
+text = "Category"
+vertical_alignment = 1
+
+[node name="CategoryOption" type="OptionButton" parent="InventoryPanel/Margin/Layout/MainRow/PaletteColumn/CategoryRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BlockPaletteList" type="ItemList" parent="InventoryPanel/Margin/Layout/MainRow/PaletteColumn"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+custom_minimum_size = Vector2(0, 168)
+
+[node name="BlockPaletteDetailLabel" type="Label" parent="InventoryPanel/Margin/Layout/MainRow/PaletteColumn"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 3
+
+[node name="Divider" type="VSeparator" parent="InventoryPanel/Margin/Layout/MainRow"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="InventoryColumn" type="VBoxContainer" parent="InventoryPanel/Margin/Layout/MainRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/separation = 6
+
+[node name="InventoryHeading" type="Label" parent="InventoryPanel/Margin/Layout/MainRow/InventoryColumn"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Workshop + Stash"
+
+[node name="InventoryLabel" type="Label" parent="InventoryPanel/Margin/Layout/MainRow/InventoryColumn"]
+layout_mode = 2
+size_flags_vertical = 3
 theme_override_font_sizes/font_size = 12
 autowrap_mode = 3
 
