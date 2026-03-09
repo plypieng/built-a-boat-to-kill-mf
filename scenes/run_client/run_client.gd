@@ -1,6 +1,7 @@
 extends Node3D
 
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
+const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
 const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
 const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
@@ -4471,7 +4472,12 @@ func _on_status_changed(_message: String) -> void:
 func _on_session_phase_changed(phase: String) -> void:
 	if phase == NetworkRuntime.SESSION_PHASE_HANGAR:
 		_set_mouse_capture(false)
-		get_tree().change_scene_to_file(HANGAR_SCENE)
+		GameConfig.queue_scene_load(
+			HANGAR_SCENE,
+			"Returning To Dock",
+			"Securing the haul, logging the damage, and bringing the crew back into the build yard."
+		)
+		get_tree().change_scene_to_file(LOADING_SCENE)
 
 func _on_peer_snapshot_changed(_snapshot: Dictionary) -> void:
 	_refresh_crew_visuals()

@@ -8,6 +8,7 @@ const DEFAULT_RUN_SEED := 424242
 
 var _one_shot_flags := {}
 var _hosted_server_pid := -1
+var _pending_scene_load := {}
 
 func is_server_mode() -> bool:
 	if OS.has_feature("dedicated_server"):
@@ -107,6 +108,18 @@ func shutdown_hosted_server() -> void:
 		return
 	OS.kill(_hosted_server_pid)
 	_hosted_server_pid = -1
+
+func queue_scene_load(scene_path: String, title: String = "Loading", detail: String = "") -> void:
+	_pending_scene_load = {
+		"scene_path": scene_path,
+		"title": title,
+		"detail": detail,
+	}
+
+func consume_scene_load() -> Dictionary:
+	var snapshot := _pending_scene_load.duplicate(true)
+	_pending_scene_load.clear()
+	return snapshot
 
 func _exit_tree() -> void:
 	shutdown_hosted_server()

@@ -1,6 +1,7 @@
 extends Control
 
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
+const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HOST_CONNECT_RETRY_DELAY := 0.8
 const MAX_HOST_CONNECT_RETRIES := 40
@@ -104,7 +105,7 @@ func _attempt_connect() -> void:
 	var host := host_input.text.strip_edges()
 	var port := _get_port()
 	var player_name := _get_player_name()
-	var error := NetworkRuntime.start_client(host, port, player_name)
+	var error: int = NetworkRuntime.start_client(host, port, player_name)
 	if error != OK and not host_start_in_progress:
 		_refresh_buttons()
 
@@ -269,7 +270,10 @@ func _on_connection_ready() -> void:
 	host_start_in_progress = false
 	host_retry_pending = false
 	var target_scene := HANGAR_SCENE if NetworkRuntime.get_session_phase() == NetworkRuntime.SESSION_PHASE_HANGAR else RUN_CLIENT_SCENE
-	get_tree().change_scene_to_file(target_scene)
+	var title := "Entering Hangar" if target_scene == HANGAR_SCENE else "Launching Run"
+	var detail := "Loading the build yard and reconnecting your crew." if target_scene == HANGAR_SCENE else "Charting the sea, loading the weather, and hauling your boat into the next run."
+	GameConfig.queue_scene_load(target_scene, title, detail)
+	get_tree().change_scene_to_file(LOADING_SCENE)
 
 func _on_connect_interrupted() -> void:
 	if host_start_in_progress:

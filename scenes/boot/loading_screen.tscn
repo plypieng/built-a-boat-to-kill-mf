@@ -1,0 +1,73 @@
+[gd_scene load_steps=2 format=3 uid="uid://dddpfo7wom3t4"]
+
+[ext_resource type="Script" path="res://scenes/boot/loading_screen.gd" id="1_uptop"]
+
+[node name="LoadingScreen" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("1_uptop")
+
+[node name="Backdrop" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.0196078, 0.0392157, 0.0588235, 1)
+
+[node name="Center" type="CenterContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="PanelContainer" parent="Center"]
+custom_minimum_size = Vector2(560, 220)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="Center/Panel"]
+layout_mode = 2
+theme_override_constants/margin_left = 28
+theme_override_constants/margin_top = 24
+theme_override_constants/margin_right = 28
+theme_override_constants/margin_bottom = 24
+
+[node name="Layout" type="VBoxContainer" parent="Center/Panel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 14
+
+[node name="Eyebrow" type="Label" parent="Center/Panel/Margin/Layout"]
+layout_mode = 2
+modulate = Color(0.894118, 0.690196, 0.317647, 1)
+theme_override_font_sizes/font_size = 13
+text = "CREW TRANSIT"
+
+[node name="TitleLabel" type="Label" parent="Center/Panel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 28
+text = "Launching Run"
+
+[node name="DetailLabel" type="Label" parent="Center/Panel/Margin/Layout"]
+layout_mode = 2
+modulate = Color(0.866667, 0.913725, 0.952941, 1)
+autowrap_mode = 3
+text = "Charting the sea, loading the weather, and hauling your boat into the next run."
+
+[node name="ProgressBar" type="ProgressBar" parent="Center/Panel/Margin/Layout"]
+custom_minimum_size = Vector2(0, 18)
+layout_mode = 2
+value = 8.0
+show_percentage = false
+
+[node name="StatusLabel" type="Label" parent="Center/Panel/Margin/Layout"]
+layout_mode = 2
+modulate = Color(0.721569, 0.8, 0.847059, 1)
+text = "Starting loader..."

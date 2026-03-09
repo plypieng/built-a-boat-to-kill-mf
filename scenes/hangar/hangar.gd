@@ -1,6 +1,7 @@
 extends Node3D
 
 const CLIENT_BOOT_SCENE := "res://scenes/boot/client_boot.tscn"
+const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
@@ -122,6 +123,7 @@ var palette_category_ids: Array = []
 var hud_details_visible := false
 var inventory_panel_visible := false
 var selected_hangar_tool_index := 0
+var launch_transition_pending := false
 var hud_icons := HudIconLibrary.new()
 var selection_icon: TextureRect
 var launch_readiness_icon: TextureRect
@@ -152,7 +154,12 @@ func _ready() -> void:
 	reaction_visual_state = NetworkRuntime.get_reaction_state()
 	if NetworkRuntime.get_session_phase() == NetworkRuntime.SESSION_PHASE_RUN:
 		_set_mouse_capture(false)
-		get_tree().call_deferred("change_scene_to_file", RUN_CLIENT_SCENE)
+		GameConfig.queue_scene_load(
+			RUN_CLIENT_SCENE,
+			"Launching Run",
+			"Charting the sea, loading the weather, and hauling your boat into the next run."
+		)
+		get_tree().call_deferred("change_scene_to_file", LOADING_SCENE)
 		return
 	print("Hangar builder ready: version=%d blocks=%d phase=%s" % [
 		int(NetworkRuntime.boat_blueprint.get("version", 1)),
@@ -991,9 +998,12 @@ func _refresh_hud() -> void:
 	launch_readiness_label.modulate = readiness_snapshot.get("color", Color(0.98, 0.97, 0.92))
 	warning_label.text = "Warnings And Tips\n%s\n%s" % [overlay_summary, "\n".join(warning_lines)]
 	var mouse_hint := "Esc frees the cursor for buttons. RMB returns to build aim." if _is_mouse_captured() else "Cursor free: click buttons, then press Esc or RMB to return to aim."
-	status_label.text = "Build Session\n%s\n%s" % [NetworkRuntime.status_message, mouse_hint]
-	launch_button.disabled = NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR
-	launch_button.text = str(readiness_snapshot.get("button_text", "Launch Run"))
+	var status_body := NetworkRuntime.status_message
+	if launch_transition_pending:
+		status_body = "Preparing the run. Charting the sea and loading the next scene."
+	status_label.text = "Build Session\n%s\n%s" % [status_body, mouse_hint]
+	launch_button.disabled = launch_transition_pending or NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR
+	launch_button.text = "Launching..." if launch_transition_pending else str(readiness_snapshot.get("button_text", "Launch Run"))
 	launch_button.tooltip_text = "\n".join(warning_lines)
 
 	var progression_snapshot := _get_progression_snapshot()
@@ -1656,8 +1666,10 @@ func _remove_selected_block() -> void:
 func _launch_run() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
+	launch_transition_pending = true
 	_set_mouse_capture(false)
 	NetworkRuntime.request_launch_run()
+	_refresh_hud()
 
 func _return_to_connect() -> void:
 	_set_mouse_capture(false)
@@ -2352,8 +2364,14 @@ func _on_boat_blueprint_changed(_snapshot: Dictionary) -> void:
 func _on_session_phase_changed(phase: String) -> void:
 	if phase == NetworkRuntime.SESSION_PHASE_RUN:
 		_set_mouse_capture(false)
-		get_tree().change_scene_to_file(RUN_CLIENT_SCENE)
+		GameConfig.queue_scene_load(
+			RUN_CLIENT_SCENE,
+			"Launching Run",
+			"Charting the sea, loading the weather, and hauling your boat into the next run."
+		)
+		get_tree().change_scene_to_file(LOADING_SCENE)
 		return
+	launch_transition_pending = false
 	_set_mouse_capture(true)
 	_refresh_hud()
 
