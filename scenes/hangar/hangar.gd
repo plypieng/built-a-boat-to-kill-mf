@@ -3,6 +3,7 @@ extends Node3D
 const CLIENT_BOOT_SCENE := "res://scenes/boot/client_boot.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
+const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
 const BLOCK_CELL_SIZE := 1.25
 const CURSOR_OK_COLOR := Color(0.34, 0.82, 0.58, 0.55)
 const CURSOR_OCCUPIED_COLOR := Color(0.92, 0.57, 0.22, 0.58)
@@ -414,6 +415,22 @@ func _build_local_avatar() -> void:
 	_send_local_hangar_presence(local_avatar_body.global_position, Vector3.ZERO, true)
 
 func _create_avatar_visual(display_name: String, body_color: Color, is_local: bool) -> Node3D:
+	var avatar_visual := PLAYER_AVATAR_VISUAL_SCENE.instantiate() as Node3D
+	if avatar_visual != null:
+		avatar_visual.name = "AvatarVisual"
+		if avatar_visual.has_method("set_display_text"):
+			avatar_visual.call("set_display_text", display_name)
+		if avatar_visual.has_method("set_highlight_color"):
+			avatar_visual.call("set_highlight_color", body_color.lightened(0.08))
+		if avatar_visual.has_method("set_tool_color"):
+			avatar_visual.call("set_tool_color", body_color.lightened(0.28))
+		if avatar_visual.has_method("set_nameplate_color"):
+			avatar_visual.call("set_nameplate_color", body_color.lightened(0.35) if not is_local else Color(0.96, 0.99, 0.96))
+		return avatar_visual
+
+	return _create_placeholder_avatar_visual(display_name, body_color, is_local)
+
+func _create_placeholder_avatar_visual(display_name: String, body_color: Color, is_local: bool) -> Node3D:
 	var root := Node3D.new()
 	root.name = "AvatarVisual"
 
@@ -829,6 +846,8 @@ func _refresh_local_builder_tool_visual() -> void:
 	if visual_root == null:
 		return
 	var block_color: Color = NetworkRuntime.get_builder_block_definition(_get_selected_block_id()).get("color", Color(0.96, 0.83, 0.32))
+	if visual_root.has_method("set_tool_color"):
+		visual_root.call("set_tool_color", block_color.lightened(0.12))
 	var tool := visual_root.get_node_or_null("Tool") as MeshInstance3D
 	if tool != null:
 		var tool_material := StandardMaterial3D.new()
@@ -1771,6 +1790,12 @@ func _process_local_avatar_movement(delta: float) -> void:
 	local_avatar_body.velocity = velocity
 	local_avatar_body.move_and_slide()
 	local_avatar_body.rotation.y = local_avatar_facing_y
+	var visual_root := local_avatar_body.get_node_or_null("AvatarVisual") as Node3D
+	if visual_root != null:
+		if visual_root.has_method("set_motion_blend"):
+			visual_root.call("set_motion_blend", _get_hangar_avatar_motion_blend(local_avatar_body.velocity))
+		elif visual_root.has_method("set_motion_state"):
+			visual_root.call("set_motion_state", _get_hangar_avatar_motion_state(local_avatar_body.velocity))
 
 func _sync_local_avatar_state(delta: float) -> void:
 	if local_avatar_body == null:
@@ -1864,6 +1889,22 @@ func _update_remote_avatar_visuals(delta: float) -> void:
 		var selected_block_color: Color = selected_block_def.get("color", peer_color)
 		var presence_state := str(avatar_state.get("target_feedback_state", "hidden"))
 		var presence_text := _get_builder_presence_summary(avatar_state)
+		var avatar_visual := avatar_root.get_node_or_null("AvatarVisual") as Node3D
+		if avatar_visual == null:
+			avatar_visual = avatar_root.find_child("AvatarVisual", true, false) as Node3D
+		if avatar_visual != null:
+			if avatar_visual.has_method("set_display_text"):
+				avatar_visual.call("set_display_text", str(peer_data.get("name", "Crew")), presence_text)
+			if avatar_visual.has_method("set_nameplate_color"):
+				avatar_visual.call("set_nameplate_color", _get_presence_feedback_color(peer_color, presence_state).lightened(0.12))
+			if avatar_visual.has_method("set_highlight_color"):
+				avatar_visual.call("set_highlight_color", peer_color)
+			if avatar_visual.has_method("set_tool_color"):
+				avatar_visual.call("set_tool_color", selected_block_color.lightened(0.14))
+			if avatar_visual.has_method("set_motion_blend"):
+				avatar_visual.call("set_motion_blend", _get_hangar_avatar_motion_blend(avatar_state.get("velocity", Vector3.ZERO)))
+			elif avatar_visual.has_method("set_motion_state"):
+				avatar_visual.call("set_motion_state", _get_hangar_avatar_motion_state(avatar_state.get("velocity", Vector3.ZERO)))
 		var nameplate := avatar_root.get_node_or_null("Nameplate") as Label3D
 		if nameplate == null:
 			nameplate = avatar_root.find_child("Nameplate", true, false) as Label3D
@@ -1908,6 +1949,20 @@ func _update_remote_avatar_visuals(delta: float) -> void:
 				ring_material.roughness = 0.1
 				ghost_ring.material_override = ring_material
 		_apply_avatar_reaction_pose(avatar_root, peer_id, delta)
+
+func _get_hangar_avatar_motion_blend(velocity: Vector3) -> float:
+	var horizontal_speed := Vector2(velocity.x, velocity.z).length()
+	if horizontal_speed < 0.18:
+		return 0.0
+	return clampf(horizontal_speed / HANGAR_MOVE_SPEED, 0.0, 1.0)
+
+func _get_hangar_avatar_motion_state(velocity: Vector3) -> String:
+	var motion_blend := _get_hangar_avatar_motion_blend(velocity)
+	if motion_blend >= 0.75:
+		return "run"
+	if motion_blend >= 0.08:
+		return "walk"
+	return "idle"
 
 func _get_remote_avatar_color(peer_id: int) -> Color:
 	return REMOTE_AVATAR_COLORS[abs(peer_id) % REMOTE_AVATAR_COLORS.size()]

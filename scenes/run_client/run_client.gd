@@ -1,6 +1,7 @@
 extends Node3D
 
 const HANGAR_SCENE := "res://scenes/hangar/hangar.tscn"
+const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
 const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
@@ -2728,39 +2729,32 @@ func _refresh_crew_visuals() -> void:
 		if not overboard and crew_member.get_parent() == null:
 			crew_container.add_child(crew_member)
 
-		var body := MeshInstance3D.new()
-		var body_mesh := CapsuleMesh.new()
-		body_mesh.height = 1.2
-		body_mesh.radius = 0.24
-		body.mesh = body_mesh
-		var material := StandardMaterial3D.new()
-		if int(peer_id) == _get_local_peer_id():
-			material.albedo_color = Color(0.30, 0.82, 0.52)
-		elif overboard:
-			material.albedo_color = Color(0.36, 0.74, 0.96)
-		elif downed:
-			material.albedo_color = Color(0.84, 0.34, 0.30)
-		elif station_id == "helm":
-			material.albedo_color = Color(0.94, 0.76, 0.18)
-		else:
-			material.albedo_color = Color(0.70, 0.84, 0.93)
-		body.material_override = material
-		crew_member.add_child(body)
-
-		var nameplate := Label3D.new()
 		var role_label := "Downed" if downed else ("Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"))
 		var badge_text := _format_avatar_badges(avatar_state)
-		nameplate.text = "%s - %s" % [str(peer_data.get("name", "Crew")), role_label]
+		var subtitle := role_label
 		if not badge_text.is_empty():
-			nameplate.text += " [%s]" % badge_text
-		nameplate.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		nameplate.font_size = 18
-		nameplate.position = Vector3(0.0, 0.96, 0.0)
-		crew_member.add_child(nameplate)
+			subtitle += " [%s]" % badge_text
+		var avatar_visual := PLAYER_AVATAR_VISUAL_SCENE.instantiate() as Node3D
+		if avatar_visual != null:
+			avatar_visual.name = "AvatarVisual"
+			crew_member.add_child(avatar_visual)
+			if avatar_visual.has_method("set_display_text"):
+				avatar_visual.call("set_display_text", str(peer_data.get("name", "Crew")), subtitle)
+			if avatar_visual.has_method("set_nameplate_color"):
+				avatar_visual.call("set_nameplate_color", Color(0.96, 0.98, 1.0))
+			if avatar_visual.has_method("set_highlight_color"):
+				avatar_visual.call("set_highlight_color", _get_run_avatar_highlight_color(int(peer_id), station_id, overboard, downed))
+			if avatar_visual.has_method("set_tool_visible"):
+				avatar_visual.call("set_tool_visible", false)
+			if avatar_visual.has_method("set_motion_blend"):
+				avatar_visual.call("set_motion_blend", _get_run_avatar_motion_blend(avatar_state, overboard, downed))
+			elif avatar_visual.has_method("set_motion_state"):
+				avatar_visual.call("set_motion_state", _get_run_avatar_motion_state(avatar_state, overboard, downed))
+		var nameplate := crew_member.find_child("Nameplate", true, false) as Label3D
 		crew_visuals[int(peer_id)] = {
 			"root": crew_member,
 			"nameplate": nameplate,
-			"body": body,
+			"avatar_visual": avatar_visual,
 		}
 
 func _refresh_hazard_visuals() -> void:
@@ -3229,16 +3223,57 @@ func _update_crew_visuals(delta: float) -> void:
 			crew_root.rotation.y = lerp_angle(crew_root.rotation.y, target_yaw, minf(1.0, delta * 10.0))
 			crew_root.rotation.x = lerp_angle(crew_root.rotation.x, -0.42 if downed else clampf(local_knockback.z * -0.05 * intensity, -0.42, 0.42), minf(1.0, delta * 12.0))
 			crew_root.rotation.z = lerp_angle(crew_root.rotation.z, 1.08 if downed else clampf(local_knockback.x * 0.055 * intensity, -0.48, 0.48), minf(1.0, delta * 12.0))
+		var avatar_visual := visual.get("avatar_visual") as Node3D
 		var nameplate := visual.get("nameplate") as Label3D
+		var role_label := "Downed" if downed else ("Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"))
+		var badge_text := _format_avatar_badges(avatar_state)
+		if avatar_visual != null:
+			if avatar_visual.has_method("set_display_text"):
+				var subtitle := role_label
+				if not badge_text.is_empty():
+					subtitle += " [%s]" % badge_text
+				avatar_visual.call("set_display_text", str(NetworkRuntime.peer_snapshot.get(int(peer_id), {}).get("name", "Crew")), subtitle)
+			if avatar_visual.has_method("set_highlight_color"):
+				avatar_visual.call("set_highlight_color", _get_run_avatar_highlight_color(int(peer_id), station_id, overboard, downed))
+			if avatar_visual.has_method("set_motion_blend"):
+				avatar_visual.call("set_motion_blend", _get_run_avatar_motion_blend(avatar_state, overboard, downed))
+			elif avatar_visual.has_method("set_motion_state"):
+				avatar_visual.call("set_motion_state", _get_run_avatar_motion_state(avatar_state, overboard, downed))
 		if nameplate != null:
 			var peer_data: Dictionary = NetworkRuntime.peer_snapshot.get(int(peer_id), {})
-			var role_label := "Downed" if downed else ("Overboard" if overboard else (NetworkRuntime.get_station_label(station_id) if not station_id.is_empty() else "Crew"))
 			nameplate.text = "%s - %s" % [str(peer_data.get("name", "Crew")), role_label]
 			if not peer_reaction.is_empty():
 				nameplate.text += " [%s]" % str(peer_reaction.get("type", "reacting")).capitalize()
-			var badge_text := _format_avatar_badges(avatar_state)
 			if not badge_text.is_empty():
 				nameplate.text += " [%s]" % badge_text
+
+func _get_run_avatar_highlight_color(peer_id: int, station_id: String, overboard: bool, downed: bool) -> Color:
+	if peer_id == _get_local_peer_id():
+		return Color(0.30, 0.82, 0.52)
+	if overboard:
+		return Color(0.36, 0.74, 0.96)
+	if downed:
+		return Color(0.84, 0.34, 0.30)
+	if station_id == "helm":
+		return Color(0.94, 0.76, 0.18)
+	return Color(0.70, 0.84, 0.93)
+
+func _get_run_avatar_motion_blend(avatar_state: Dictionary, overboard: bool, downed: bool) -> float:
+	if overboard or downed:
+		return 0.0
+	var velocity: Vector3 = avatar_state.get("velocity", Vector3.ZERO)
+	var horizontal_speed := Vector2(velocity.x, velocity.z).length()
+	if horizontal_speed < 0.18:
+		return 0.0
+	return clampf(horizontal_speed / RUN_AVATAR_MOVE_SPEED, 0.0, 1.0)
+
+func _get_run_avatar_motion_state(avatar_state: Dictionary, overboard: bool, downed: bool) -> String:
+	var motion_blend := _get_run_avatar_motion_blend(avatar_state, overboard, downed)
+	if motion_blend >= 0.75:
+		return "run"
+	if motion_blend >= 0.08:
+		return "walk"
+	return "idle"
 
 func _process_local_run_avatar_movement(delta: float) -> void:
 	if _is_local_downed():
