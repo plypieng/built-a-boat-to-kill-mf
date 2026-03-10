@@ -1,115 +1,89 @@
-[gd_scene load_steps=11 format=3]
+[gd_scene format=3 uid="uid://bjxfuker15nnc"]
 
-[sub_resource type="BoxMesh" id="dock_mesh"]
-size = Vector3(24, 0.6, 30)
+[sub_resource type="Environment" id="hangar_environment_settings"]
+background_mode = 1
+background_color = Color(0.58, 0.72, 0.84, 1)
 
 [sub_resource type="StandardMaterial3D" id="dock_material"]
 albedo_color = Color(0.65, 0.56, 0.42, 1)
 roughness = 0.9
 
-[sub_resource type="BoxShape3D" id="dock_shape"]
+[sub_resource type="BoxMesh" id="dock_mesh"]
 size = Vector3(24, 0.6, 30)
 
-[sub_resource type="PlaneMesh" id="water_mesh"]
-size = Vector2(180, 180)
+[sub_resource type="BoxShape3D" id="dock_shape"]
+size = Vector3(24, 0.6, 30)
 
 [sub_resource type="StandardMaterial3D" id="water_material"]
 albedo_color = Color(0.09, 0.39, 0.57, 1)
 roughness = 0.18
+
+[sub_resource type="PlaneMesh" id="water_mesh"]
+size = Vector2(180, 180)
+
+[sub_resource type="StandardMaterial3D" id="bollard_material"]
+albedo_color = Color(0.18, 0.22, 0.27, 1)
+roughness = 0.9
 
 [sub_resource type="CylinderMesh" id="bollard_mesh"]
 top_radius = 0.18
 bottom_radius = 0.22
 height = 0.95
 
-[sub_resource type="StandardMaterial3D" id="bollard_material"]
-albedo_color = Color(0.18, 0.22, 0.27, 1)
-roughness = 0.9
+[node name="HangarEnvironment" type="Node3D" unique_id=541743211]
 
-[sub_resource type="BoxMesh" id="crate_mesh"]
-size = Vector3(0.92, 0.72, 0.92)
-
-[sub_resource type="StandardMaterial3D" id="crate_material"]
-albedo_color = Color(0.74, 0.55, 0.31, 1)
-roughness = 0.88
-
-[sub_resource type="Environment" id="hangar_environment_settings"]
-background_mode = 1
-background_color = Color(0.58, 0.72, 0.84, 1)
-
-[node name="HangarEnvironment" type="Node3D"]
-
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=294548886]
 environment = SubResource("hangar_environment_settings")
 
-[node name="SunLight" type="DirectionalLight3D" parent="."]
+[node name="SunLight" type="DirectionalLight3D" parent="." unique_id=1840394744]
+transform = Transform3D(0.8480481, -0.3545852, 0.39380676, 0, 0.7431448, 0.6691306, -0.52991927, -0.56745493, 0.63022256, 0, 0, 0)
 light_energy = 1.18
-rotation_degrees = Vector3(-42, 32, 0)
 
-[node name="DockVisual" type="MeshInstance3D" parent="."]
-mesh = SubResource("dock_mesh")
+[node name="DockVisual" type="MeshInstance3D" parent="." unique_id=1478663093]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.35, 0)
 material_override = SubResource("dock_material")
-position = Vector3(0, -0.35, 0)
+mesh = SubResource("dock_mesh")
 
-[node name="DockBody" type="StaticBody3D" parent="."]
-position = Vector3(0, -0.35, 0)
+[node name="DockBody" type="StaticBody3D" parent="." unique_id=732075932]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.35, 0)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="DockBody"]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="DockBody" unique_id=1160081446]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.32534206, 0)
 shape = SubResource("dock_shape")
 
-[node name="Water" type="MeshInstance3D" parent="."]
-mesh = SubResource("water_mesh")
+[node name="Water" type="MeshInstance3D" parent="." unique_id=620655477]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.68, 0)
 material_override = SubResource("water_material")
-position = Vector3(0, -0.68, 0)
+mesh = SubResource("water_mesh")
 
-[node name="BollardNorthWest" type="MeshInstance3D" parent="."]
-mesh = SubResource("bollard_mesh")
+[node name="BollardNorthWest" type="MeshInstance3D" parent="." unique_id=629842252]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -8, 0.12, 8.6)
 material_override = SubResource("bollard_material")
-position = Vector3(-8, 0.12, 8.6)
-
-[node name="BollardNorthEast" type="MeshInstance3D" parent="."]
 mesh = SubResource("bollard_mesh")
-material_override = SubResource("bollard_material")
-position = Vector3(8, 0.12, 8.6)
 
-[node name="BollardSouthWest" type="MeshInstance3D" parent="."]
+[node name="BollardNorthEast" type="MeshInstance3D" parent="." unique_id=383760279]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 0.12, 8.6)
+material_override = SubResource("bollard_material")
 mesh = SubResource("bollard_mesh")
-material_override = SubResource("bollard_material")
-position = Vector3(-8, 0.12, -7.6)
 
-[node name="BollardSouthEast" type="MeshInstance3D" parent="."]
+[node name="BollardSouthWest" type="MeshInstance3D" parent="." unique_id=1154814371]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -8, 0.12, -7.6)
+material_override = SubResource("bollard_material")
 mesh = SubResource("bollard_mesh")
+
+[node name="BollardSouthEast" type="MeshInstance3D" parent="." unique_id=911456102]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 0.12, -7.6)
 material_override = SubResource("bollard_material")
-position = Vector3(8, 0.12, -7.6)
+mesh = SubResource("bollard_mesh")
 
-[node name="CrateStackLeftLow" type="MeshInstance3D" parent="."]
-mesh = SubResource("crate_mesh")
-material_override = SubResource("crate_material")
-position = Vector3(-6.2, 0.18, 4.6)
-
-[node name="CrateStackLeftHigh" type="MeshInstance3D" parent="."]
-mesh = SubResource("crate_mesh")
-material_override = SubResource("crate_material")
-position = Vector3(-5.4, 0.68, 4.3)
-
-[node name="CrateStackRightLow" type="MeshInstance3D" parent="."]
-mesh = SubResource("crate_mesh")
-material_override = SubResource("crate_material")
-position = Vector3(6, 0.18, 4.9)
-
-[node name="CrateStackRightHigh" type="MeshInstance3D" parent="."]
-mesh = SubResource("crate_mesh")
-material_override = SubResource("crate_material")
-position = Vector3(5.1, 0.68, 4.2)
-
-[node name="LampLeft" type="OmniLight3D" parent="."]
-position = Vector3(-4.6, 2.8, 8.1)
-light_energy = 0.85
+[node name="LampLeft" type="OmniLight3D" parent="." unique_id=168529277]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -4.6, 2.8, 8.1)
 light_color = Color(1, 0.88, 0.64, 1)
+light_energy = 0.85
 omni_range = 12.0
 
-[node name="LampRight" type="OmniLight3D" parent="."]
-position = Vector3(4.6, 2.8, 8.1)
-light_energy = 0.85
+[node name="LampRight" type="OmniLight3D" parent="." unique_id=1680368111]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.6, 2.8, 8.1)
 light_color = Color(1, 0.88, 0.64, 1)
+light_energy = 0.85
 omni_range = 12.0

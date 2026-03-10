@@ -53,54 +53,12 @@ const DEFAULT_HOST_WORKSHOP := {
 }
 const DEFAULT_BOAT_BLUEPRINT := {
 	"version": 1,
-	"next_block_id": 9,
+	"next_block_id": 2,
 	"blocks": [
 		{
 			"id": 1,
 			"type": "core",
 			"cell": [0, 0, 0],
-			"rotation_steps": 0,
-		},
-		{
-			"id": 2,
-			"type": "hull",
-			"cell": [0, 0, 1],
-			"rotation_steps": 0,
-		},
-		{
-			"id": 3,
-			"type": "hull",
-			"cell": [1, 0, 0],
-			"rotation_steps": 0,
-		},
-		{
-			"id": 4,
-			"type": "engine",
-			"cell": [0, 0, -1],
-			"rotation_steps": 0,
-		},
-		{
-			"id": 5,
-			"type": "cargo",
-			"cell": [-1, 0, 0],
-			"rotation_steps": 0,
-		},
-		{
-			"id": 6,
-			"type": "light_crane",
-			"cell": [1, 1, 0],
-			"rotation_steps": 0,
-		},
-		{
-			"id": 7,
-			"type": "ladder_rig",
-			"cell": [-1, 1, 1],
-			"rotation_steps": 0,
-		},
-		{
-			"id": 8,
-			"type": "deck_plate",
-			"cell": [0, 1, 0],
 			"rotation_steps": 0,
 		},
 	],
@@ -448,6 +406,11 @@ func save_boat_blueprint(snapshot: Dictionary) -> void:
 	boat_blueprint = _normalize_boat_blueprint(snapshot)
 	_save_boat_blueprint()
 	emit_signal("boat_blueprint_changed", get_boat_blueprint())
+
+func reset_boat_blueprint() -> Dictionary:
+	var reset_snapshot := DEFAULT_BOAT_BLUEPRINT.duplicate(true)
+	save_boat_blueprint(reset_snapshot)
+	return get_boat_blueprint()
 
 func _load_boat_blueprint() -> void:
 	boat_blueprint = _normalize_boat_blueprint(DEFAULT_BOAT_BLUEPRINT)

@@ -4,9 +4,12 @@ const CLIENT_BOOT_SCENE := "res://scenes/boot/client_boot.tscn"
 const LOADING_SCENE := "res://scenes/boot/loading_screen.tscn"
 const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
+const ExpeditionHudSkin = preload("res://scenes/shared/expedition_hud_skin.gd")
+const BoatBlockMaterials = preload("res://scenes/shared/boat_block_materials.gd")
 const HANGAR_PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/hangar_player_controller.tscn")
 const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
 const BLOCK_CELL_SIZE := 1.25
+const BLOCK_VISUAL_SCALE := 0.72
 const CURSOR_OK_COLOR := Color(0.34, 0.82, 0.58, 0.55)
 const CURSOR_OCCUPIED_COLOR := Color(0.92, 0.57, 0.22, 0.58)
 const CURSOR_RANGE_COLOR := Color(0.23, 0.63, 0.90, 0.58)
@@ -75,10 +78,25 @@ var controls_label: Label
 var last_run_label: Label
 var toolbelt_label: Label
 var inventory_label: Label
+var hangar_tool_slot_panels: Array = []
+var hangar_tool_slot_key_labels: Array = []
+var hangar_tool_slot_name_labels: Array = []
+var hangar_tool_slot_icons: Array = []
+var block_strip_slot_panels: Array = []
+var block_strip_slot_icons: Array = []
+var block_strip_slot_labels: Array = []
 var launch_button: Button
+var reset_button: Button
 var unlock_button: Button
 var detail_toggle_button: Button
 var crosshair_label: Label
+var build_focus_part_label: Label
+var build_focus_state_label: Label
+var build_focus_hint_label: Label
+var left_panel: PanelContainer
+var right_panel: PanelContainer
+var bottom_left_panel: PanelContainer
+var build_focus_panel: PanelContainer
 var detail_panel: PanelContainer
 var tool_panel: PanelContainer
 var inventory_panel: PanelContainer
@@ -91,6 +109,7 @@ var block_container: Node3D
 var avatar_container: Node3D
 var cursor_root: Node3D
 var cursor_mesh: MeshInstance3D
+var cursor_face_marker: MeshInstance3D
 var cursor_label: Label3D
 var block_visuals: Dictionary = {}
 var camera: Camera3D
@@ -108,6 +127,7 @@ var cursor_can_place := false
 var cursor_can_remove := false
 var cursor_feedback_state := "hidden"
 var cursor_target_label := "Aim at the boat or dock"
+var cursor_face_normal := Vector3.UP
 var autobuild_actions: Array = []
 var autobuild_pending_action: Dictionary = {}
 var autobuild_index := 0
@@ -125,8 +145,13 @@ var hud_details_visible := false
 var inventory_panel_visible := false
 var selected_hangar_tool_index := 0
 var launch_transition_pending := false
+var hangar_camera_dragging := false
+var hangar_tool_mouse_down := false
+var hangar_hold_action_cooldown := 0.0
+var hangar_last_drag_action_key := ""
 var hud_icons := HudIconLibrary.new()
 var selection_icon: TextureRect
+var build_focus_icon: TextureRect
 var launch_readiness_icon: TextureRect
 var profile_icon: TextureRect
 var store_icon: TextureRect
@@ -135,10 +160,12 @@ var last_run_icon: TextureRect
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
+	get_tree().debug_collisions_hint = false
+	get_tree().debug_navigation_hint = false
 	local_camera_pitch = deg_to_rad(chase_camera_pitch_default_degrees)
 	_build_world()
 	_build_hud()
-	_set_mouse_capture(true)
+	_set_mouse_capture(false)
 	_refresh_all()
 	_schedule_frame_capture()
 	_schedule_optional_quit()
@@ -170,11 +197,14 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	connect_time_seconds += delta
+	if hangar_hold_action_cooldown > 0.0:
+		hangar_hold_action_cooldown = maxf(0.0, hangar_hold_action_cooldown - delta)
 	_tick_reaction_visuals(delta)
 	_update_boat_bob()
 	_update_camera(delta)
 	_update_remote_avatar_visuals(delta)
 	_update_build_target_from_camera()
+	_process_drag_building()
 	_process_autobuild(delta)
 
 func _physics_process(delta: float) -> void:
@@ -184,7 +214,7 @@ func _physics_process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
-	if event is InputEventMouseMotion and _is_mouse_captured():
+	if event is InputEventMouseMotion and hangar_camera_dragging:
 		var motion_event := event as InputEventMouseMotion
 		local_avatar_facing_y -= motion_event.relative.x * mouse_look_sensitivity
 		local_camera_pitch = clampf(
@@ -195,9 +225,26 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton:
 		var button_event := event as InputEventMouseButton
-		if button_event.pressed and button_event.button_index == MOUSE_BUTTON_RIGHT and not _is_mouse_captured():
-			_set_mouse_capture(true)
-			return
+		match button_event.button_index:
+			MOUSE_BUTTON_RIGHT:
+				hangar_camera_dragging = button_event.pressed
+				_set_mouse_capture(button_event.pressed)
+				return
+			MOUSE_BUTTON_LEFT:
+				hangar_tool_mouse_down = button_event.pressed and not inventory_panel_visible
+				if button_event.pressed and not inventory_panel_visible:
+					_apply_hangar_pointer_tool(true)
+				if not button_event.pressed:
+					hangar_last_drag_action_key = ""
+				return
+			MOUSE_BUTTON_WHEEL_UP:
+				if button_event.pressed and not inventory_panel_visible:
+					_cycle_block(-1)
+				return
+			MOUSE_BUTTON_WHEEL_DOWN:
+				if button_event.pressed and not inventory_panel_visible:
+					_cycle_block(1)
+				return
 	if not (event is InputEventKey):
 		return
 
@@ -255,7 +302,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_ENTER, KEY_KP_ENTER:
 			_launch_run()
 		KEY_ESCAPE:
-			_set_mouse_capture(not _is_mouse_captured())
+			hangar_camera_dragging = false
+			hangar_tool_mouse_down = false
+			hangar_last_drag_action_key = ""
+			_set_mouse_capture(false)
 
 func _build_world() -> void:
 	_ensure_world_environment()
@@ -401,24 +451,6 @@ func _build_hangar_props(parent: Node3D) -> void:
 		bollard_material.roughness = 0.9
 		bollard.material_override = bollard_material
 		parent.add_child(bollard)
-
-	var crate_positions := [
-		Vector3(-6.2, 0.18, 4.6),
-		Vector3(-5.4, 0.68, 4.3),
-		Vector3(6.0, 0.18, 4.9),
-		Vector3(5.1, 0.68, 4.2),
-	]
-	for position in crate_positions:
-		var crate := MeshInstance3D.new()
-		var crate_mesh := BoxMesh.new()
-		crate_mesh.size = Vector3(0.92, 0.72, 0.92)
-		crate.mesh = crate_mesh
-		crate.position = position
-		var crate_material := StandardMaterial3D.new()
-		crate_material.albedo_color = Color(0.74, 0.55, 0.31)
-		crate_material.roughness = 0.88
-		crate.material_override = crate_material
-		parent.add_child(crate)
 
 	var light_positions := [
 		Vector3(-4.6, 2.8, 8.1),
@@ -618,6 +650,13 @@ func _build_cursor_visual() -> void:
 	cursor_mesh.mesh = box
 	cursor_root.add_child(cursor_mesh)
 
+	cursor_face_marker = MeshInstance3D.new()
+	cursor_face_marker.name = "CursorFaceMarker"
+	var face_box := BoxMesh.new()
+	face_box.size = Vector3(0.74, 0.06, 0.74) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+	cursor_face_marker.mesh = face_box
+	cursor_root.add_child(cursor_face_marker)
+
 	cursor_label = Label3D.new()
 	cursor_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	cursor_label.font_size = 15
@@ -677,14 +716,34 @@ func _build_build_volume() -> void:
 
 func _build_hud() -> void:
 	var hud := get_node("HUD") as CanvasLayer
+	left_panel = hud.get_node("LeftPanel") as PanelContainer
+	right_panel = hud.get_node("RightPanel") as PanelContainer
+	bottom_left_panel = hud.get_node("BottomLeftPanel") as PanelContainer
+	build_focus_panel = hud.get_node("BuildFocusPanel") as PanelContainer
+	var title_label := hud.get_node("LeftPanel/Margin/Layout/Title") as Label
+	var selection_heading := hud.get_node("LeftPanel/Margin/Layout/SelectionHeader/SelectionHeading") as Label
+	var launch_readiness_heading := hud.get_node("LeftPanel/Margin/Layout/LaunchReadinessHeader/LaunchReadinessHeading") as Label
+	var profile_heading := hud.get_node("RightPanel/Margin/Layout/ProfileHeader/ProfileHeading") as Label
+	var store_heading := hud.get_node("RightPanel/Margin/Layout/StoreHeader/StoreHeading") as Label
+	var builder_heading := hud.get_node("DetailPanel/Margin/Layout/BuilderHeader/BuilderHeading") as Label
+	var last_run_heading := hud.get_node("DetailPanel/Margin/Layout/LastRunHeader/LastRunHeading") as Label
+	var tool_heading := hud.get_node("ToolPanel/Margin/Layout/Heading") as Label
+	var inventory_heading := hud.get_node("InventoryPanel/Margin/Layout/Heading") as Label
+	var palette_heading := hud.get_node("InventoryPanel/Margin/Layout/MainRow/PaletteColumn/PaletteHeading") as Label
+	var inventory_column_heading := hud.get_node("InventoryPanel/Margin/Layout/MainRow/InventoryColumn/InventoryHeading") as Label
 	onboarding_label = hud.get_node("LeftPanel/Margin/Layout/OnboardingLabel") as Label
 	selection_icon = hud.get_node("LeftPanel/Margin/Layout/SelectionHeader/SelectionIcon") as TextureRect
+	build_focus_icon = hud.get_node("BuildFocusPanel/Margin/Layout/TopRow/FocusIcon") as TextureRect
+	build_focus_part_label = hud.get_node("BuildFocusPanel/Margin/Layout/TopRow/PartLabel") as Label
+	build_focus_state_label = hud.get_node("BuildFocusPanel/Margin/Layout/StateLabel") as Label
+	build_focus_hint_label = hud.get_node("BuildFocusPanel/Margin/Layout/HintLabel") as Label
 	selection_label = hud.get_node("LeftPanel/Margin/Layout/SelectionLabel") as Label
 	target_label = hud.get_node("LeftPanel/Margin/Layout/TargetLabel") as Label
 	launch_readiness_icon = hud.get_node("LeftPanel/Margin/Layout/LaunchReadinessHeader/LaunchReadinessIcon") as TextureRect
 	launch_readiness_label = hud.get_node("LeftPanel/Margin/Layout/LaunchReadinessLabel") as Label
 	status_label = hud.get_node("LeftPanel/Margin/Layout/StatusLabel") as Label
 	launch_button = hud.get_node("LeftPanel/Margin/Layout/Actions/LaunchButton") as Button
+	reset_button = hud.get_node("LeftPanel/Margin/Layout/Actions/ResetButton") as Button
 	var reconnect_button := hud.get_node("LeftPanel/Margin/Layout/Actions/ReturnToConnectButton") as Button
 	var quit_button := hud.get_node("LeftPanel/Margin/Layout/Actions/QuitButton") as Button
 	profile_icon = hud.get_node("RightPanel/Margin/Layout/ProfileHeader/ProfileIcon") as TextureRect
@@ -697,6 +756,17 @@ func _build_hud() -> void:
 	controls_label = hud.get_node("BottomLeftPanel/Margin/Layout/ControlsLabel") as Label
 	tool_panel = hud.get_node("ToolPanel") as PanelContainer
 	toolbelt_label = hud.get_node("ToolPanel/Margin/Layout/ToolLabel") as Label
+	hangar_tool_slot_panels.clear()
+	hangar_tool_slot_key_labels.clear()
+	hangar_tool_slot_name_labels.clear()
+	hangar_tool_slot_icons.clear()
+	for slot_index in range(3):
+		var slot_path := "ToolPanel/Margin/Layout/HotbarRow/Slot%d" % [slot_index + 1]
+		hangar_tool_slot_panels.append(hud.get_node(slot_path) as PanelContainer)
+		hangar_tool_slot_key_labels.append(hud.get_node("%s/Margin/Layout/TopRow/KeyLabel" % slot_path) as Label)
+		hangar_tool_slot_name_labels.append(hud.get_node("%s/Margin/Layout/TopRow/NameLabel" % slot_path) as Label)
+		hangar_tool_slot_icons.append(hud.get_node("%s/Margin/Layout/Icon" % slot_path) as TextureRect)
+	_ensure_block_strip_row(hud.get_node("ToolPanel/Margin/Layout") as VBoxContainer)
 	inventory_panel = hud.get_node("InventoryPanel") as PanelContainer
 	block_palette_filter = hud.get_node("InventoryPanel/Margin/Layout/MainRow/PaletteColumn/CategoryRow/CategoryOption") as OptionButton
 	block_palette_list = hud.get_node("InventoryPanel/Margin/Layout/MainRow/PaletteColumn/BlockPaletteList") as ItemList
@@ -712,6 +782,7 @@ func _build_hud() -> void:
 
 	for icon in [
 		selection_icon,
+		build_focus_icon,
 		launch_readiness_icon,
 		profile_icon,
 		store_icon,
@@ -719,9 +790,76 @@ func _build_hud() -> void:
 		last_run_icon,
 	]:
 		hud_icons.configure_icon_rect(icon)
+	for slot_icon_variant in hangar_tool_slot_icons:
+		hud_icons.configure_icon_rect(slot_icon_variant as TextureRect, Vector2(24.0, 24.0))
+	for strip_icon_variant in block_strip_slot_icons:
+		hud_icons.configure_icon_rect(strip_icon_variant as TextureRect, Vector2(30.0, 30.0))
+
+	ExpeditionHudSkin.apply_plate(left_panel, ExpeditionHudSkin.BUOY_ORANGE, ExpeditionHudSkin.HANGAR_PANEL, "scrim")
+	ExpeditionHudSkin.apply_plate(right_panel, ExpeditionHudSkin.OXIDIZED_TEAL, ExpeditionHudSkin.HANGAR_PANEL_SOFT, "scrim")
+	ExpeditionHudSkin.apply_plate(bottom_left_panel, ExpeditionHudSkin.OXIDIZED_TEAL, ExpeditionHudSkin.HANGAR_PANEL_SOFT, "scrim")
+	ExpeditionHudSkin.apply_plate(build_focus_panel, ExpeditionHudSkin.BUOY_ORANGE, ExpeditionHudSkin.HANGAR_PANEL_SOFT, "scrim")
+	ExpeditionHudSkin.apply_plate(detail_panel, ExpeditionHudSkin.BRASS_YELLOW, ExpeditionHudSkin.HANGAR_PANEL_SOFT, "ghost")
+	ExpeditionHudSkin.apply_plate(tool_panel, ExpeditionHudSkin.BUOY_ORANGE, ExpeditionHudSkin.HANGAR_PANEL_SOFT, "scrim")
+	ExpeditionHudSkin.apply_plate(inventory_panel, ExpeditionHudSkin.OXIDIZED_TEAL, ExpeditionHudSkin.HANGAR_PANEL_SOFT, "ledger")
+
+	ExpeditionHudSkin.apply_heading(title_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_heading(selection_heading, ExpeditionHudSkin.TEXT_WARNING)
+	ExpeditionHudSkin.apply_heading(launch_readiness_heading, ExpeditionHudSkin.TEXT_SUCCESS)
+	ExpeditionHudSkin.apply_heading(profile_heading, ExpeditionHudSkin.TEXT_MUTED)
+	ExpeditionHudSkin.apply_heading(store_heading, ExpeditionHudSkin.TEXT_WARNING)
+	ExpeditionHudSkin.apply_heading(builder_heading, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_heading(last_run_heading, ExpeditionHudSkin.TEXT_MUTED)
+	ExpeditionHudSkin.apply_heading(tool_heading, ExpeditionHudSkin.TEXT_WARNING)
+	ExpeditionHudSkin.apply_heading(inventory_heading, ExpeditionHudSkin.TEXT_MUTED)
+	ExpeditionHudSkin.apply_heading(palette_heading, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_heading(inventory_column_heading, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_heading(onboarding_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_heading(build_focus_part_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_heading(build_focus_state_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_body(build_focus_hint_label, ExpeditionHudSkin.TEXT_MUTED)
+	ExpeditionHudSkin.apply_body(selection_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_muted(target_label)
+	ExpeditionHudSkin.apply_heading(launch_readiness_label, ExpeditionHudSkin.TEXT_SUCCESS)
+	ExpeditionHudSkin.apply_body(status_label, ExpeditionHudSkin.TEXT_MUTED)
+	ExpeditionHudSkin.apply_heading(profile_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_heading(store_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_body(roster_label, ExpeditionHudSkin.TEXT_MUTED)
+	ExpeditionHudSkin.apply_body(controls_label, ExpeditionHudSkin.TEXT_MUTED)
+	ExpeditionHudSkin.apply_body(toolbelt_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_body(inventory_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	for key_label_variant in hangar_tool_slot_key_labels:
+		ExpeditionHudSkin.apply_muted(key_label_variant as Label)
+	for name_label_variant in hangar_tool_slot_name_labels:
+		ExpeditionHudSkin.apply_body(name_label_variant as Label, ExpeditionHudSkin.TEXT_MUTED)
+	ExpeditionHudSkin.apply_muted(block_palette_detail_label)
+	ExpeditionHudSkin.apply_body(builder_label, ExpeditionHudSkin.TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_body(warning_label, ExpeditionHudSkin.TEXT_WARNING)
+	ExpeditionHudSkin.apply_muted(last_run_label)
+	ExpeditionHudSkin.apply_crosshair(crosshair_label)
+	ExpeditionHudSkin.apply_compact_button(launch_button, ExpeditionHudSkin.SEA_GLASS_GREEN, ExpeditionHudSkin.RUST_BROWN)
+	ExpeditionHudSkin.apply_compact_button(reset_button, ExpeditionHudSkin.OXIDIZED_TEAL, ExpeditionHudSkin.HANGAR_PANEL_SOFT)
+	ExpeditionHudSkin.apply_compact_button(reconnect_button, ExpeditionHudSkin.BUOY_ORANGE, ExpeditionHudSkin.HANGAR_PANEL_SOFT)
+	ExpeditionHudSkin.apply_compact_button(quit_button, ExpeditionHudSkin.FLARE_RED, ExpeditionHudSkin.HANGAR_PANEL_SOFT)
+	ExpeditionHudSkin.apply_compact_button(unlock_button, ExpeditionHudSkin.BRASS_YELLOW, ExpeditionHudSkin.RUST_BROWN)
+	ExpeditionHudSkin.apply_compact_button(detail_toggle_button, ExpeditionHudSkin.OXIDIZED_TEAL, ExpeditionHudSkin.HANGAR_PANEL_SOFT)
+	ExpeditionHudSkin.apply_button(block_palette_filter, ExpeditionHudSkin.OXIDIZED_TEAL, ExpeditionHudSkin.HANGAR_PANEL_SOFT)
+	ExpeditionHudSkin.apply_item_list(block_palette_list, ExpeditionHudSkin.OXIDIZED_TEAL, ExpeditionHudSkin.HANGAR_PANEL_SOFT)
+	reconnect_button.text = "Back"
+	quit_button.text = "Exit"
+
+	left_panel.offset_right = 388.0
+	right_panel.offset_left = -360.0
+	right_panel.offset_bottom = 252.0
+	tool_panel.offset_left = -224.0
+	tool_panel.offset_right = 224.0
+	inventory_panel.offset_left = -448.0
+	inventory_panel.offset_right = 448.0
 
 	if not launch_button.pressed.is_connected(_launch_run):
 		launch_button.pressed.connect(_launch_run)
+	if not reset_button.pressed.is_connected(_reset_boat):
+		reset_button.pressed.connect(_reset_boat)
 	if not reconnect_button.pressed.is_connected(_return_to_connect):
 		reconnect_button.pressed.connect(_return_to_connect)
 	if not quit_button.pressed.is_connected(_quit):
@@ -806,7 +944,7 @@ func _refresh_blueprint_visuals() -> void:
 		var mesh_instance := MeshInstance3D.new()
 		var mesh := BoxMesh.new()
 		var block_size: Vector3 = block_def.get("size", Vector3.ONE)
-		mesh.size = block_size * BLOCK_CELL_SIZE
+		mesh.size = block_size * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
 		mesh_instance.mesh = mesh
 		var material := StandardMaterial3D.new()
 		var base_color: Color = block_def.get("color", Color(0.7, 0.7, 0.7))
@@ -815,16 +953,15 @@ func _refresh_blueprint_visuals() -> void:
 		else:
 			base_color = base_color.lerp(MAIN_CHUNK_TINT, 0.08)
 		base_color = _get_builder_overlay_color(base_color, cell_key, overlay_mode)
-		material.albedo_color = base_color
-		material.roughness = 0.42
+		BoatBlockMaterials.apply_wood(material, base_color, 0.48)
 		mesh_instance.material_override = material
 		block_node.add_child(mesh_instance)
 
 		var facing_marker := MeshInstance3D.new()
 		var marker_mesh := BoxMesh.new()
-		marker_mesh.size = Vector3(0.28, 0.18, 0.38) * BLOCK_CELL_SIZE
+		marker_mesh.size = Vector3(0.28, 0.18, 0.38) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
 		facing_marker.mesh = marker_mesh
-		facing_marker.position = Vector3(0.0, 0.0, -0.42 * BLOCK_CELL_SIZE)
+		facing_marker.position = Vector3(0.0, 0.0, -0.42 * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE)
 		var marker_material := StandardMaterial3D.new()
 		marker_material.albedo_color = base_color.lightened(0.28)
 		facing_marker.material_override = marker_material
@@ -835,7 +972,7 @@ func _refresh_blueprint_visuals() -> void:
 		static_body.set_meta("builder_cell", _normalize_cell(block.get("cell", [0, 0, 0])))
 		var collision_shape := CollisionShape3D.new()
 		var box_shape := BoxShape3D.new()
-		box_shape.size = mesh.size
+		box_shape.size = Vector3.ONE * BLOCK_CELL_SIZE
 		collision_shape.shape = box_shape
 		static_body.add_child(collision_shape)
 		block_node.add_child(static_body)
@@ -851,13 +988,14 @@ func _refresh_cursor_visual() -> void:
 	cursor_root.visible = cursor_has_target
 	var box_mesh := cursor_mesh.mesh as BoxMesh
 	if box_mesh != null:
-		box_mesh.size = block_size * BLOCK_CELL_SIZE * 1.05
+		box_mesh.size = block_size * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 1.05
 	cursor_label.text = "%s • %s" % [
 		str(block_def.get("label", block_id.capitalize())),
 		_get_feedback_heading(cursor_feedback_state),
 	]
-	cursor_label.position = Vector3(0.0, block_size.y * BLOCK_CELL_SIZE * 0.82 + 0.42, 0.0)
+	cursor_label.position = Vector3(0.0, block_size.y * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 0.82 + 0.42, 0.0)
 	cursor_label.visible = cursor_has_target
+	_refresh_cursor_face_marker()
 
 	var material := StandardMaterial3D.new()
 	material.albedo_color = _get_feedback_color(cursor_feedback_state)
@@ -866,7 +1004,31 @@ func _refresh_cursor_visual() -> void:
 	cursor_mesh.material_override = material
 	if crosshair_label != null:
 		crosshair_label.modulate = material.albedo_color.lightened(0.26)
+		crosshair_label.visible = hangar_camera_dragging
 	_refresh_local_builder_tool_visual()
+
+func _refresh_cursor_face_marker() -> void:
+	if cursor_face_marker == null:
+		return
+	cursor_face_marker.visible = cursor_has_target
+	if not cursor_has_target:
+		return
+	var normal := cursor_face_normal
+	var dominant_axis := Vector3(absf(normal.x), absf(normal.y), absf(normal.z))
+	var marker_size := Vector3(0.74, 0.06, 0.74) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+	if dominant_axis.x >= dominant_axis.y and dominant_axis.x >= dominant_axis.z:
+		marker_size = Vector3(0.06, 0.74, 0.74) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+	elif dominant_axis.z >= dominant_axis.y:
+		marker_size = Vector3(0.74, 0.74, 0.06) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+	var marker_mesh := cursor_face_marker.mesh as BoxMesh
+	if marker_mesh != null:
+		marker_mesh.size = marker_size
+	cursor_face_marker.position = -normal.normalized() * (BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 0.52)
+	var material := StandardMaterial3D.new()
+	material.albedo_color = _get_feedback_color(cursor_feedback_state).lightened(0.08)
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.roughness = 0.12
+	cursor_face_marker.material_override = material
 
 func _get_feedback_heading(feedback_state: String) -> String:
 	match feedback_state:
@@ -912,7 +1074,7 @@ func _get_local_target_compact_text() -> String:
 	var target_cell_text := "%d,%d,%d" % [cursor_cell.x, cursor_cell.y, cursor_cell.z]
 	match cursor_feedback_state:
 		"ready":
-			return "%s at %s • F place%s" % [
+			return "%s at %s • LMB place%s" % [
 				block_label,
 				target_cell_text,
 				" • X remove" if cursor_can_remove else "",
@@ -969,78 +1131,93 @@ func _refresh_hud() -> void:
 	var filtered_block_ids := _get_filtered_builder_block_ids()
 	var palette_index := maxi(0, filtered_block_ids.find(block_id))
 	var palette_count := maxi(1, filtered_block_ids.size())
-	onboarding_label.text = _build_onboarding_text()
+	onboarding_label.text = _build_onboarding_text().trim_prefix("Onboarding: ").strip_edges()
 	hud_icons.set_icon(selection_icon, hud_icons.get_block_icon_id(block_id))
+	hud_icons.set_icon(build_focus_icon, hud_icons.get_block_icon_id(block_id))
 	hud_icons.set_icon(builder_icon, hud_icons.get_block_icon_id(block_id))
 	var active_tool_id := _get_selected_hangar_tool_id()
 	var active_tool_label := _get_hangar_tool_label(active_tool_id)
-	selection_label.text = "Tool %s | %s %d/%d\n%s | Rot %d deg\nHP %.0f | Float %.1f | Thrust %.1f | Cargo +%d | Kits +%d | Brace +%.2f" % [
+	selection_label.text = "%s | %s %d/%d\nHull %.0f | Float %.1f | Thrust %.1f | Cargo %d" % [
 		active_tool_label,
 		_get_palette_category_label(selected_palette_category),
 		palette_index + 1,
 		palette_count,
-		str(block_def.get("label", block_id.capitalize())),
-		selected_rotation_steps * 90,
 		float(block_def.get("max_hp", 0.0)),
 		float(block_def.get("buoyancy", 0.0)),
 		float(block_def.get("thrust", 0.0)),
 		int(block_def.get("cargo", 0)),
-		int(block_def.get("repair", 0)),
-		float(block_def.get("brace", 0.0)),
 	]
+	if build_focus_part_label != null:
+		build_focus_part_label.text = "%s | %s | %s" % [
+			str(block_def.get("label", block_id.capitalize())),
+			_format_block_family_label(str(block_def.get("family", "utility"))),
+			active_tool_label,
+		]
+	if build_focus_state_label != null:
+		build_focus_state_label.text = _build_focus_state_text(block_def, stats)
+	if build_focus_hint_label != null:
+		build_focus_hint_label.text = _build_focus_hint_text(block_def, stats, warnings)
 
-	target_label.text = "%s Target\n%s\n%s" % [
-		active_tool_label,
+	target_label.text = "Placement\n%s\n%s" % [
 		_get_feedback_heading(cursor_feedback_state),
 		_get_local_target_compact_text(),
 	]
 
-	builder_label.text = "Blueprint v%d | Blocks %d | Main %d | Loose %d | Components %d\nHull %.0f | Top Speed %.1f | Accel %.0f | Turn %.0f | Margin %.1f\n%s | Workload %.0f | Crew %d | Safety %.0f | Drive HP %.0f\nCargo %d | Patch Kits %d | Brace x%.2f | Stability %.0f | Repair %.0f%%\nRecovery %.0f | Exposure %.0f | Redundancy %.0f | Salvage %d | %s" % [
+	builder_label.text = "Blueprint v%d | Blocks %d | Main %d | Loose %d\nHull %.0f | Speed %.1f | Accel %.0f | Turn %.0f\n%s | Crew %d | Workload %.0f | Drive HP %.0f\nCargo %d | Kits %d | Brace x%.2f | Margin %.1f\nSafety %.0f | Stability %.0f | Repair %.0f%% | Recovery %.0f\nExposure %.0f | Redundancy %.0f | Salvage %d | Overlay %s" % [
 		int(NetworkRuntime.boat_blueprint.get("version", 1)),
 		int(stats.get("block_count", 0)),
 		int(stats.get("main_chunk_blocks", 0)),
 		int(stats.get("loose_blocks", 0)),
-		int(stats.get("component_count", 0)),
 		float(stats.get("max_hull_integrity", 0.0)),
 		float(stats.get("top_speed", 0.0)),
 		float(stats.get("acceleration", 0.0)),
 		float(stats.get("turn_authority", 0.0)),
-		float(stats.get("buoyancy_margin", 0.0)),
 		str(stats.get("propulsion_label", NetworkRuntime.get_propulsion_family_label(str(stats.get("propulsion_family", NetworkRuntime.PROPULSION_FAMILY_RAFT_PADDLES))))),
-		float(stats.get("workload", 0.0)),
 		int(stats.get("recommended_crew", 1)),
-		float(stats.get("crew_safety", 0.0)),
+		float(stats.get("workload", 0.0)),
 		float(stats.get("propulsion_health_rating", 0.0)),
 		int(stats.get("cargo_capacity", 0)),
 		int(stats.get("repair_capacity", 0)),
 		float(stats.get("brace_multiplier", 1.0)),
+		float(stats.get("buoyancy_margin", 0.0)),
+		float(stats.get("crew_safety", 0.0)),
 		float(stats.get("storm_stability", 0.0)),
 		float(stats.get("repair_coverage", 0.0)),
 		float(stats.get("recovery_access_rating", 0.0)),
 		float(stats.get("propulsion_exposure_rating", 0.0)),
 		float(stats.get("damage_redundancy", 0.0)),
 		int(stats.get("salvage_station_count", 0)),
-		overlay_summary,
+		overlay_label,
 	]
 	var readiness_snapshot := _get_launch_readiness_snapshot(stats, warnings)
 	hud_icons.set_icon(
 		launch_readiness_icon,
 		"brace" if str(readiness_snapshot.get("button_text", "")).contains("Risky") or str(readiness_snapshot.get("button_text", "")).contains("Loose") else "extraction"
 	)
-	launch_readiness_label.text = "%s\n%s" % [
-		str(readiness_snapshot.get("title", "Ready To Sail")),
-		str(readiness_snapshot.get("detail", "")),
-	]
+	launch_readiness_label.text = _build_launch_readiness_summary(readiness_snapshot)
 	launch_readiness_label.modulate = readiness_snapshot.get("color", Color(0.98, 0.97, 0.92))
-	warning_label.text = "Warnings And Tips\n%s\n%s" % [overlay_summary, "\n".join(warning_lines)]
-	var mouse_hint := "Esc frees the cursor for buttons. RMB returns to build aim." if _is_mouse_captured() else "Cursor free: click buttons, then press Esc or RMB to return to aim."
+	var warning_preview := PackedStringArray()
+	for warning_line in warning_lines:
+		if warning_preview.size() >= 3:
+			break
+		warning_preview.append(str(warning_line))
+	warning_label.text = "Top risks\n%s\n%s" % [
+		"\n".join(warning_preview),
+		overlay_summary,
+	]
+	var mouse_hint := "Hold RMB to orbit the camera." if hangar_camera_dragging else "Cursor free: aim with the mouse, LMB to use the tool, hold RMB to orbit."
 	var status_body := NetworkRuntime.status_message
 	if launch_transition_pending:
 		status_body = "Preparing the run. Charting the sea and loading the next scene."
-	status_label.text = "Build Session\n%s\n%s" % [status_body, mouse_hint]
+	status_label.text = _build_dock_status_text(status_body)
 	launch_button.disabled = launch_transition_pending or NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR
-	launch_button.text = "Launching..." if launch_transition_pending else str(readiness_snapshot.get("button_text", "Launch Run"))
+	launch_button.text = "Launching..." if launch_transition_pending else _build_launch_button_label(readiness_snapshot)
 	launch_button.tooltip_text = "\n".join(warning_lines)
+	if reset_button != null:
+		var block_count := Array(NetworkRuntime.boat_blueprint.get("blocks", [])).size()
+		reset_button.disabled = launch_transition_pending or NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR or block_count <= 1
+		reset_button.text = "Reset Boat"
+		reset_button.tooltip_text = "Reset the hangar boat to a single core block."
 
 	var progression_snapshot := _get_progression_snapshot()
 	var local_profile := DockState.get_local_profile_snapshot()
@@ -1051,29 +1228,24 @@ func _refresh_hud() -> void:
 		extraction_rate = float(successful_runs) / float(total_runs) * 100.0
 	var unlocked_blocks := Array(progression_snapshot.get("unlocked_blocks", []))
 	var local_known_schematics := Array(local_profile.get("known_schematics", []))
-	var workshop_stock := Dictionary(progression_snapshot.get("workshop_stock", {}))
 	var repair_debt := Dictionary(progression_snapshot.get("repair_debt", {}))
 	hud_icons.set_icon(profile_icon, "gold")
-	profile_label.text = "Stash %d gold | %d material units | Schematics %d\nHost Workshop %d gold | %d material units | Unlocked %d/%d parts\nRuns %d | Extracted %d (%.0f%%) | Debt %s" % [
+	profile_label.text = "Stash %d gold | %d mats | Schematics %d\nWorkshop %d gold | Parts %d/%d | Debt %s" % [
 		int(local_profile.get("total_gold", 0)),
 		DockState.get_total_salvage(),
 		local_known_schematics.size(),
 		int(progression_snapshot.get("workshop_gold", 0)),
-		int(progression_snapshot.get("total_salvage", 0)),
 		unlocked_blocks.size(),
 		NetworkRuntime.BUILDER_BLOCK_ORDER.size(),
-		total_runs,
-		successful_runs,
-		extraction_rate,
 		str(repair_debt.get("severity", "clear")).capitalize(),
 	]
 	var store_entries := NetworkRuntime.get_builder_store_entries()
 	if store_entries.is_empty():
 		hud_icons.set_icon(store_icon, "salvage")
-		store_label.text = "Workshop stocked. All current prototype parts are already craftable."
+		store_label.text = "Workshop stocked.\nAll current prototype parts are already craftable."
 		if unlock_button != null:
 			unlock_button.disabled = true
-			unlock_button.text = "All Parts Crafted"
+			unlock_button.text = "Workshop Clear"
 	else:
 		selected_store_index = wrapi(selected_store_index, 0, store_entries.size())
 		var selected_store_entry: Dictionary = store_entries[selected_store_index]
@@ -1102,13 +1274,10 @@ func _refresh_hud() -> void:
 			cost_tokens.append("%s x%d" % [str(NetworkRuntime.MATERIAL_LABELS.get(material_id, material_id.capitalize())), quantity])
 		var missing_text := "None" if missing_tokens.is_empty() else ", ".join(missing_tokens)
 		hud_icons.set_icon(store_icon, hud_icons.get_block_icon_id(str(selected_store_entry.get("block_id", ""))))
-		store_label.text = "Recipe %d/%d\nSelected: %s\nTier %d %s\n%s\nStatus: %s | Schematic %s\nCost: %s\nMissing: %s\nZ/C browse recipe | V craft" % [
+		store_label.text = "%s | Recipe %d/%d\n%s | Schematic %s\nCost %s\nNeed %s" % [
+			str(selected_store_entry.get("label", "Part")),
 			selected_store_index + 1,
 			store_entries.size(),
-			str(selected_store_entry.get("label", "Part")),
-			int(selected_store_entry.get("unlock_tier", 0)),
-			str(selected_store_entry.get("category", "structure")).capitalize(),
-			str(selected_store_entry.get("description", "")),
 			entry_status,
 			schematic_text,
 			", ".join(cost_tokens) if not cost_tokens.is_empty() else "Free",
@@ -1139,18 +1308,18 @@ func _refresh_hud() -> void:
 		])
 	if crew_lines.is_empty():
 		crew_lines.append("No crew connected yet.")
-	roster_label.text = "Crew In Hangar (%d)\n%s" % [NetworkRuntime.get_player_peer_ids().size(), "\n".join(crew_lines)]
+	roster_label.text = "Crew in yard (%d)\n%s" % [NetworkRuntime.get_player_peer_ids().size(), "\n".join(crew_lines)]
 
 	var last_run := Dictionary(progression_snapshot.get("last_run", {}))
 	var last_unlock := Dictionary(progression_snapshot.get("last_unlock", {}))
 	if last_run.is_empty():
 		hud_icons.set_icon(last_run_icon, "cargo")
-		last_run_label.text = "No extracted runs recorded on this machine yet."
+		last_run_label.text = "No runs banked yet."
 	else:
 		hud_icons.set_icon(last_run_icon, "salvage")
 		var reward_items := Dictionary(last_run.get("reward_items", {}))
 		var lost_items := Dictionary(last_run.get("loot_lost_items", {}))
-		last_run_label.text = "%s\nGold %d | Materials %d | Schematics %d | Secured %d | Lost %d | Recorded %s" % [
+		last_run_label.text = "%s\nGold %d | Mats %d | Schematics %d\nSecured %d | Lost %d | Logged %s" % [
 			str(last_run.get("title", "Run Complete")),
 			int(last_run.get("reward_gold", 0)),
 			NetworkRuntime._sum_material_dict_ui(reward_items),
@@ -1160,16 +1329,18 @@ func _refresh_hud() -> void:
 			str(last_run.get("timestamp", "")),
 		]
 		if not lost_items.is_empty():
-			last_run_label.text += "\nLost Haul: %d material unit(s)" % NetworkRuntime._sum_material_dict_ui(lost_items)
+			last_run_label.text += "\nLost haul %d mats" % NetworkRuntime._sum_material_dict_ui(lost_items)
 	if not last_unlock.is_empty():
-		last_run_label.text += "\nLast Workshop Craft: %s for %d gold" % [
+		last_run_label.text += "\nLast craft %s for %d gold" % [
 			str(last_unlock.get("label", "Part")),
 			int(last_unlock.get("cost_gold", 0)),
 		]
 
+	_refresh_hangar_tool_slots()
+	_refresh_block_strip_slots()
 	toolbelt_label.text = _build_hangar_toolbelt_text()
 	inventory_label.text = _build_hangar_inventory_text()
-	controls_label.text = "Controls\nMouse aim | W A S D move | Space jump\n1 Build | 2 Remove | 3 Workshop | I palette + stash\nClick a part to equip | Q / E quick cycle | Up / Down palette | Left / Right category\nR rotate | F use tool | X remove | Z / C recipes | B / N donations | G donate stash | T overlay | V craft | Enter launch\nEsc cursor toggle | RMB recapture aim"
+	controls_label.text = "LMB use tool | Hold RMB camera | Wheel part | R rotate | 1/2/3 tools | I locker\n%s" % mouse_hint
 	_apply_hud_visibility()
 
 func _build_onboarding_text() -> String:
@@ -1178,14 +1349,14 @@ func _build_onboarding_text() -> String:
 	if cursor_feedback_state == "occupied":
 		return "Onboarding: That cell is taken. Rotate, remove, or pick a fresh face on the hull."
 	if not cursor_has_target:
-		return "Onboarding: Walk, jump, and aim the center crosshair at the dock or boat to build together."
+		return "Onboarding: Point at the dock or boat, left click to build, and hold right mouse to steer the camera."
 
 	var stats := NetworkRuntime.get_blueprint_stats()
 	if int(stats.get("loose_blocks", 0)) > 0:
 		return "Onboarding: Loose chunks are allowed, but they will sink the moment the run starts."
 	if Array(NetworkRuntime.get_builder_store_entries()).size() > 0:
 		return "Onboarding: Press I to open the part palette and workshop locker. Click a crafted part to equip it, then use Z/C for recipes, B/N for donations, G to donate, and V to craft."
-	return "Onboarding: Press I to open the part palette, click the part you want, then build something weird while keeping the main chunk floaty."
+	return "Onboarding: Press I to open the part palette, pick a part, then left click to place it while keeping the main chunk floaty."
 
 func _get_hangar_tool_label(tool_id: String) -> String:
 	for tool_variant in _get_hangar_toolbelt_entries():
@@ -1194,22 +1365,122 @@ func _get_hangar_tool_label(tool_id: String) -> String:
 			return str(tool.get("label", tool_id.capitalize()))
 	return tool_id.capitalize()
 
+func _get_hangar_tool_accent(tool_id: String) -> Color:
+	match tool_id:
+		"build":
+			return ExpeditionHudSkin.OXIDIZED_TEAL
+		"remove":
+			return ExpeditionHudSkin.BUOY_ORANGE
+		"yard":
+			return ExpeditionHudSkin.BRASS_YELLOW
+		_:
+			return ExpeditionHudSkin.TEXT_MUTED
+
+func _refresh_hangar_tool_slots() -> void:
+	var entries := _get_hangar_toolbelt_entries()
+	for slot_index in range(hangar_tool_slot_panels.size()):
+		var slot_panel := hangar_tool_slot_panels[slot_index] as PanelContainer
+		var key_label := hangar_tool_slot_key_labels[slot_index] as Label
+		var name_label := hangar_tool_slot_name_labels[slot_index] as Label
+		var slot_icon := hangar_tool_slot_icons[slot_index] as TextureRect
+		if slot_index >= entries.size():
+			if slot_panel != null:
+				slot_panel.visible = false
+			continue
+		var entry: Dictionary = entries[slot_index]
+		var tool_id := str(entry.get("id", ""))
+		var is_active := slot_index == selected_hangar_tool_index
+		var accent_color := _get_hangar_tool_accent(tool_id)
+		ExpeditionHudSkin.apply_hotbar_slot(slot_panel, accent_color, is_active, false)
+		if key_label != null:
+			key_label.text = str(slot_index + 1)
+			key_label.modulate = ExpeditionHudSkin.TEXT_PRIMARY if is_active else ExpeditionHudSkin.TEXT_MUTED
+		if name_label != null:
+			name_label.text = str(entry.get("label", "Tool")).to_upper()
+			name_label.modulate = ExpeditionHudSkin.TEXT_PRIMARY if is_active else ExpeditionHudSkin.TEXT_MUTED
+		if slot_icon != null:
+			hud_icons.set_icon(slot_icon, str(entry.get("icon", "")))
+			slot_icon.modulate = accent_color.lightened(0.08) if is_active else ExpeditionHudSkin.TEXT_MUTED
+
+func _ensure_block_strip_row(layout: VBoxContainer) -> void:
+	if layout == null or not block_strip_slot_panels.is_empty():
+		return
+	var strip_row := HBoxContainer.new()
+	strip_row.name = "BlockStripRow"
+	strip_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	strip_row.add_theme_constant_override("separation", 6)
+	layout.add_child(strip_row)
+	layout.move_child(strip_row, 1)
+	for slot_index in range(5):
+		var slot_panel := PanelContainer.new()
+		slot_panel.name = "BlockSlot%d" % [slot_index + 1]
+		slot_panel.custom_minimum_size = Vector2(72.0, 58.0)
+		strip_row.add_child(slot_panel)
+		var margin := MarginContainer.new()
+		margin.add_theme_constant_override("margin_left", 6)
+		margin.add_theme_constant_override("margin_top", 4)
+		margin.add_theme_constant_override("margin_right", 6)
+		margin.add_theme_constant_override("margin_bottom", 4)
+		slot_panel.add_child(margin)
+		var slot_layout := VBoxContainer.new()
+		slot_layout.add_theme_constant_override("separation", 2)
+		margin.add_child(slot_layout)
+		var icon := TextureRect.new()
+		icon.custom_minimum_size = Vector2(30.0, 30.0)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		slot_layout.add_child(icon)
+		var label := Label.new()
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label.add_theme_font_size_override("font_size", 10)
+		slot_layout.add_child(label)
+		block_strip_slot_panels.append(slot_panel)
+		block_strip_slot_icons.append(icon)
+		block_strip_slot_labels.append(label)
+
+func _refresh_block_strip_slots() -> void:
+	if block_strip_slot_panels.is_empty():
+		return
+	var visible_block_ids := _get_filtered_builder_block_ids()
+	if visible_block_ids.is_empty():
+		visible_block_ids = NetworkRuntime.get_builder_block_ids()
+	var selected_block_id := _get_selected_block_id()
+	var selected_visible_index := maxi(0, visible_block_ids.find(selected_block_id))
+	var slot_count := block_strip_slot_panels.size()
+	var start_index := maxi(0, selected_visible_index - int(slot_count / 2))
+	if visible_block_ids.size() > slot_count:
+		start_index = mini(start_index, visible_block_ids.size() - slot_count)
+	for slot_index in range(slot_count):
+		var panel := block_strip_slot_panels[slot_index] as PanelContainer
+		var icon := block_strip_slot_icons[slot_index] as TextureRect
+		var label := block_strip_slot_labels[slot_index] as Label
+		var block_list_index := start_index + slot_index
+		if block_list_index >= visible_block_ids.size():
+			panel.visible = false
+			continue
+		panel.visible = true
+		var block_id := str(visible_block_ids[block_list_index])
+		var block_def := NetworkRuntime.get_builder_block_definition(block_id)
+		var is_selected := block_id == selected_block_id
+		var accent_color: Color = block_def.get("color", ExpeditionHudSkin.OXIDIZED_TEAL)
+		ExpeditionHudSkin.apply_hotbar_slot(panel, accent_color, is_selected, false)
+		if icon != null:
+			hud_icons.set_icon(icon, hud_icons.get_block_icon_id(block_id))
+			icon.modulate = Color.WHITE if is_selected else ExpeditionHudSkin.TEXT_MUTED
+		if label != null:
+			var short_label := str(block_def.get("label", block_id.capitalize())).substr(0, 10)
+			label.text = short_label.to_upper()
+			label.modulate = ExpeditionHudSkin.TEXT_PRIMARY if is_selected else ExpeditionHudSkin.TEXT_MUTED
+
 func _build_hangar_toolbelt_text() -> String:
 	var entries := _get_hangar_toolbelt_entries()
 	if not entries.is_empty():
 		selected_hangar_tool_index = wrapi(selected_hangar_tool_index, 0, entries.size())
-	var tokens := PackedStringArray()
-	for entry_index in range(entries.size()):
-		var entry: Dictionary = entries[entry_index]
-		var token := "%d %s" % [entry_index + 1, str(entry.get("label", "Tool"))]
-		if entry_index == selected_hangar_tool_index:
-			token = "[%s]" % token
-		tokens.append(token)
 	var selected_entry: Dictionary = entries[selected_hangar_tool_index] if not entries.is_empty() else {}
-	return "%s\n%s" % [
-		"  ".join(tokens),
-		str(selected_entry.get("hint", "Use the shared builder tools from here.")),
-	]
+	return str(selected_entry.get("hint", "Place the selected part into the aimed cell."))
 
 func _build_hangar_inventory_text() -> String:
 	var snapshot := NetworkRuntime.get_hangar_inventory_snapshot(_get_selected_hangar_tool_id())
@@ -1294,17 +1565,94 @@ func _build_hangar_inventory_text() -> String:
 		int(stats.get("loose_blocks", 0)),
 	]
 
+func _build_launch_readiness_summary(snapshot: Dictionary) -> String:
+	var title := str(snapshot.get("title", "Ready To Sail"))
+	match title:
+		"Risky Launch":
+			return "Risky launch\nNeeds support, buoyancy, or routing."
+		"Loose Chunks Detected":
+			return "Loose chunks\nDetached pieces will sink on launch."
+		"Ready, But Spicy":
+			return "Ready with risk\nRecovery and repair still matter."
+		_:
+			return "Ready to sail\nStable enough to launch."
+
+func _format_block_family_label(family: String) -> String:
+	return family.replace("_", " ").capitalize()
+
+func _build_focus_state_text(block_def: Dictionary, stats: Dictionary) -> String:
+	var tokens := PackedStringArray()
+	tokens.append(_get_feedback_heading(cursor_feedback_state))
+	tokens.append(str(stats.get("hydrostatic_class", "stable")).capitalize())
+	tokens.append("Margin %.1f" % float(stats.get("reserve_buoyancy", stats.get("buoyancy_margin", 0.0))))
+	tokens.append("Draft %d%%" % int(round(float(stats.get("draft_ratio", 0.0)) * 100.0)))
+	tokens.append("Rot %d" % (selected_rotation_steps * 90))
+	var thrust := float(block_def.get("thrust", 0.0))
+	if thrust > 0.05:
+		tokens.append("Thrust %.1f" % thrust)
+	var repair := int(block_def.get("repair", 0))
+	if repair > 0:
+		tokens.append("Kits +%d" % repair)
+	return " | ".join(tokens)
+
+func _build_focus_hint_text(block_def: Dictionary, stats: Dictionary, warnings: Array) -> String:
+	var repair := int(block_def.get("repair", 0))
+	var warning_preview := _build_focus_warning_preview(stats, warnings)
+	match cursor_feedback_state:
+		"range":
+			return "Move closer | Hold RMB camera | Wheel/QE part | I locker"
+		"occupied":
+			return "Cell taken | Use remove tool or X | R rotate | Wheel/QE part"
+		"blocked":
+			return "Outside build area | Step back toward the dock"
+		_:
+			var tokens := PackedStringArray([
+				warning_preview,
+				"LMB place/use",
+				"Hold RMB camera",
+				"R rotate",
+				"X remove",
+				"Wheel/QE part",
+				"I locker",
+			])
+			if repair > 0:
+				tokens.append("+%d kits" % repair)
+			var filtered := PackedStringArray()
+			for token_variant in tokens:
+				var token := str(token_variant).strip_edges()
+				if token.is_empty():
+					continue
+				filtered.append(token)
+			return " | ".join(filtered)
+
+func _build_focus_warning_preview(stats: Dictionary, warnings: Array) -> String:
+	var preview := PackedStringArray()
+	var hydro_class := str(stats.get("hydrostatic_class", "stable"))
+	if hydro_class != "stable":
+		preview.append(hydro_class.capitalize())
+	for warning_variant in warnings:
+		var warning := str(warning_variant).strip_edges()
+		if warning.is_empty() or preview.has(warning):
+			continue
+		preview.append(warning)
+		if preview.size() >= 2:
+			break
+	return " | ".join(preview)
+
 func _get_launch_readiness_snapshot(stats: Dictionary, warnings: Array) -> Dictionary:
 	var loose_blocks := int(stats.get("loose_blocks", 0))
-	var buoyancy_margin := float(stats.get("buoyancy_margin", 0.0))
+	var buoyancy_margin := float(stats.get("reserve_buoyancy", stats.get("buoyancy_margin", 0.0)))
 	var crew_safety := float(stats.get("crew_safety", 0.0))
 	var propulsion_health := float(stats.get("propulsion_health_rating", 0.0))
 	var workload := float(stats.get("workload", 0.0))
 	var recovery_access := float(stats.get("recovery_access_rating", 0.0))
 	var pathing_score := float(stats.get("pathing_score", 0.0))
 	var redundancy := float(stats.get("damage_redundancy", 0.0))
+	var draft_ratio := float(stats.get("draft_ratio", 0.0))
+	var freeboard_rating := float(stats.get("freeboard_rating", 100.0))
+	var hydro_class := str(stats.get("hydrostatic_class", "stable"))
 	var seaworthy := bool(NetworkRuntime.boat_blueprint.get("seaworthy", false))
-	if not seaworthy:
+	if not seaworthy or hydro_class == "sinking":
 		return {
 			"title": "Risky Launch",
 			"detail": "Your main chunk is missing required machine support, float margin, or routeing. It will still launch, but one early mistake could collapse the run.",
@@ -1318,7 +1666,7 @@ func _get_launch_readiness_snapshot(stats: Dictionary, warnings: Array) -> Dicti
 			"color": Color(0.96, 0.83, 0.42),
 			"button_text": "Launch With Loose Chunks",
 		}
-	if buoyancy_margin < 2.0 or crew_safety < 45.0 or propulsion_health < 45.0 or recovery_access < 45.0 or pathing_score < 45.0 or redundancy < 40.0 or workload >= 70.0 or not warnings.is_empty():
+	if hydro_class == "unstable" or buoyancy_margin < 2.0 or draft_ratio > 0.92 or freeboard_rating < 42.0 or crew_safety < 45.0 or propulsion_health < 45.0 or recovery_access < 45.0 or pathing_score < 45.0 or redundancy < 40.0 or workload >= 70.0 or not warnings.is_empty():
 		return {
 			"title": "Ready, But Spicy",
 			"detail": "This boat can sail, but the machine is demanding. Recovery routes, redundancy, propulsion protection, and repair timing will matter.",
@@ -1343,7 +1691,8 @@ func _update_build_target_from_camera() -> void:
 	var next_cursor_can_remove := bool(next_state.get("can_remove", false))
 	var next_feedback_state := str(next_state.get("feedback_state", "hidden"))
 	var next_cursor_target_label := str(next_state.get("label", "Aim at the boat or dock"))
-	if next_cursor_has_target == cursor_has_target and next_cursor_cell == cursor_cell and next_remove_cell == remove_cursor_cell and next_cursor_can_place == cursor_can_place and next_cursor_can_remove == cursor_can_remove and next_feedback_state == cursor_feedback_state and next_cursor_target_label == cursor_target_label:
+	var next_cursor_face_normal: Vector3 = next_state.get("face_normal", cursor_face_normal)
+	if next_cursor_has_target == cursor_has_target and next_cursor_cell == cursor_cell and next_remove_cell == remove_cursor_cell and next_cursor_can_place == cursor_can_place and next_cursor_can_remove == cursor_can_remove and next_feedback_state == cursor_feedback_state and next_cursor_target_label == cursor_target_label and next_cursor_face_normal.is_equal_approx(cursor_face_normal):
 		return
 	cursor_has_target = next_cursor_has_target
 	cursor_cell = next_cursor_cell
@@ -1352,6 +1701,7 @@ func _update_build_target_from_camera() -> void:
 	cursor_can_remove = next_cursor_can_remove
 	cursor_feedback_state = next_feedback_state
 	cursor_target_label = next_cursor_target_label
+	cursor_face_normal = next_cursor_face_normal
 	_refresh_cursor_visual()
 	_refresh_hud()
 	avatar_sync_timer = 0.0
@@ -1364,9 +1714,11 @@ func _query_build_target_from_camera() -> Dictionary:
 			"label": "Run in progress",
 		}
 	var viewport_rect := get_viewport().get_visible_rect()
-	var screen_center := viewport_rect.size * 0.5
-	var ray_origin := camera.project_ray_origin(screen_center)
-	var ray_direction := camera.project_ray_normal(screen_center)
+	var screen_target := viewport_rect.size * 0.5
+	if not hangar_camera_dragging and not _is_mouse_captured():
+		screen_target = get_viewport().get_mouse_position()
+	var ray_origin := camera.project_ray_origin(screen_target)
+	var ray_direction := camera.project_ray_normal(screen_target)
 	var ray_length := NetworkRuntime.get_hangar_build_range() + chase_camera_distance + 10.0
 	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_origin + ray_direction * ray_length)
 	query.exclude = [local_avatar_body.get_rid()]
@@ -1427,6 +1779,7 @@ func _query_build_target_from_camera() -> Dictionary:
 		"has_target": true,
 		"place_cell": place_cell,
 		"remove_cell": remove_cell,
+		"face_normal": hit_normal,
 		"can_place": can_place,
 		"can_remove": can_remove,
 		"feedback_state": feedback_state,
@@ -1588,6 +1941,31 @@ func _use_active_hangar_tool() -> void:
 		_:
 			_place_selected_block()
 
+func _apply_hangar_pointer_tool(force_single: bool) -> void:
+	var tool_id := _get_selected_hangar_tool_id()
+	if tool_id == "yard":
+		if force_single:
+			_purchase_selected_unlock()
+		return
+	var action_cell := cursor_cell if tool_id != "remove" else remove_cursor_cell
+	var action_key := "%s:%d:%d:%d" % [tool_id, action_cell.x, action_cell.y, action_cell.z]
+	if not force_single and hangar_hold_action_cooldown > 0.0 and action_key == hangar_last_drag_action_key:
+		return
+	var acted := false
+	match tool_id:
+		"remove":
+			acted = _remove_selected_block()
+		_:
+			acted = _place_selected_block()
+	if acted:
+		hangar_hold_action_cooldown = 0.09
+		hangar_last_drag_action_key = action_key
+
+func _process_drag_building() -> void:
+	if not hangar_tool_mouse_down or inventory_panel_visible or hangar_camera_dragging:
+		return
+	_apply_hangar_pointer_tool(false)
+
 func _cycle_block(direction: int) -> void:
 	var block_ids := _get_filtered_builder_block_ids() if inventory_panel_visible else NetworkRuntime.get_builder_block_ids()
 	if block_ids.is_empty():
@@ -1681,23 +2059,25 @@ func _rotate_selected_block() -> void:
 	_refresh_hud()
 	avatar_sync_timer = 0.0
 
-func _place_selected_block() -> void:
+func _place_selected_block() -> bool:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
-		return
+		return false
 	if float(_get_reaction_visual(_get_local_peer_id()).get("active_time", 0.0)) > 0.0:
-		return
+		return false
 	if not cursor_can_place:
-		return
+		return false
 	NetworkRuntime.request_place_blueprint_block([cursor_cell.x, cursor_cell.y, cursor_cell.z], _get_selected_block_id(), selected_rotation_steps)
+	return true
 
-func _remove_selected_block() -> void:
+func _remove_selected_block() -> bool:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
-		return
+		return false
 	if float(_get_reaction_visual(_get_local_peer_id()).get("active_time", 0.0)) > 0.0:
-		return
+		return false
 	if not cursor_can_remove:
-		return
+		return false
 	NetworkRuntime.request_remove_blueprint_block([remove_cursor_cell.x, remove_cursor_cell.y, remove_cursor_cell.z])
+	return true
 
 func _launch_run() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
@@ -1705,6 +2085,13 @@ func _launch_run() -> void:
 	launch_transition_pending = true
 	_set_mouse_capture(false)
 	NetworkRuntime.request_launch_run()
+	_refresh_hud()
+
+func _reset_boat() -> void:
+	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
+		return
+	_set_mouse_capture(false)
+	NetworkRuntime.request_reset_blueprint()
 	_refresh_hud()
 
 func _return_to_connect() -> void:
@@ -2050,9 +2437,40 @@ func _apply_hud_visibility() -> void:
 	if detail_panel != null:
 		detail_panel.visible = hud_details_visible
 	if detail_toggle_button != null:
-		detail_toggle_button.text = "Hide Details (Tab)" if hud_details_visible else "Show Details (Tab)"
+		detail_toggle_button.text = "Close Boat Plate" if hud_details_visible else "Open Boat Plate"
 	if inventory_panel != null:
 		inventory_panel.visible = inventory_panel_visible
+	var workshop_focus := _get_selected_hangar_tool_id() == "yard" or inventory_panel_visible
+	if right_panel != null:
+		right_panel.visible = workshop_focus
+	if build_focus_panel != null:
+		build_focus_panel.visible = not inventory_panel_visible
+	if tool_panel != null:
+		tool_panel.visible = not inventory_panel_visible
+	if bottom_left_panel != null:
+		bottom_left_panel.visible = not inventory_panel_visible
+
+func _build_dock_status_text(status_body: String) -> String:
+	var normalized := status_body.strip_edges()
+	if normalized.is_empty():
+		return "Dock systems ready."
+	if normalized.begins_with("Run bootstrap received"):
+		return "Dock link stable."
+	if normalized.begins_with("Connected to "):
+		return "Connected to dock crew."
+	if normalized.begins_with("Connecting to "):
+		return "Connecting to dock crew..."
+	return normalized
+
+func _build_launch_button_label(snapshot: Dictionary) -> String:
+	var title := str(snapshot.get("title", "Ready To Sail"))
+	match title:
+		"Risky Launch":
+			return "Launch Risky"
+		"Loose Chunks Detected":
+			return "Launch Loose"
+		_:
+			return "Launch"
 
 func _refresh_hangar_avatar_visuals() -> void:
 	var local_peer_id := _get_local_peer_id()
@@ -2140,7 +2558,7 @@ func _update_remote_avatar_visuals(delta: float) -> void:
 				ghost_root.rotation_degrees.y = float(int(avatar_state.get("rotation_steps", 0)) * 90)
 				var ghost_box := ghost_mesh.mesh as BoxMesh
 				if ghost_box != null:
-					ghost_box.size = block_size * BLOCK_CELL_SIZE * 1.02
+					ghost_box.size = block_size * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 1.02
 				var ghost_material := StandardMaterial3D.new()
 				var ghost_color := _get_presence_feedback_color(peer_color, presence_state).darkened(0.04)
 				ghost_color.a = 0.24 if presence_state == "ready" else 0.18
@@ -2150,10 +2568,10 @@ func _update_remote_avatar_visuals(delta: float) -> void:
 				ghost_mesh.material_override = ghost_material
 				var ring_shape := ghost_ring.mesh as CylinderMesh
 				if ring_shape != null:
-					var ring_radius := maxf(block_size.x, block_size.z) * BLOCK_CELL_SIZE * 0.58
+					var ring_radius := maxf(block_size.x, block_size.z) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 0.58
 					ring_shape.top_radius = ring_radius
 					ring_shape.bottom_radius = ring_radius + 0.08
-				ghost_ring.position.y = -(block_size.y * BLOCK_CELL_SIZE * 0.49)
+				ghost_ring.position.y = -(block_size.y * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 0.49)
 				var ring_material := StandardMaterial3D.new()
 				var ring_color := _get_presence_feedback_color(peer_color, presence_state).lightened(0.08)
 				ring_color.a = 0.36 if presence_state == "ready" else 0.28

@@ -1258,6 +1258,10 @@ func get_builder_block_definition(block_type: String) -> Dictionary:
 	var block_id := block_type.strip_edges().to_lower()
 	var definition: Dictionary = BUILDER_BLOCK_LIBRARY.get(block_id, BUILDER_BLOCK_LIBRARY["structure"])
 	var decorated := definition.duplicate(true)
+	decorated["family"] = str(decorated.get("family", _normalize_block_family(block_id, decorated)))
+	decorated["occupancy_cells"] = _normalize_definition_cells(decorated.get("occupancy_cells", [[0, 0, 0]]))
+	decorated["cg_bias"] = _normalize_definition_vector3(decorated.get("cg_bias", Vector3.ZERO))
+	decorated["buoyancy_bias"] = _normalize_definition_vector3(decorated.get("buoyancy_bias", Vector3.ZERO))
 	var recipe := _build_block_recipe(block_id, decorated)
 	decorated["recipe_materials"] = recipe.get("materials", {})
 	decorated["recipe_gold"] = int(recipe.get("gold", 0))
@@ -1818,6 +1822,58 @@ func _get_definition_float(block_def: Dictionary, key: String, default_value: fl
 func _get_definition_bool(block_def: Dictionary, key: String, default_value: bool = false) -> bool:
 	return bool(block_def.get(key, default_value))
 
+func _get_definition_vector3(block_def: Dictionary, key: String, default_value: Vector3 = Vector3.ZERO) -> Vector3:
+	return _normalize_definition_vector3(block_def.get(key, default_value))
+
+func _normalize_definition_vector3(value: Variant) -> Vector3:
+	if value is Vector3:
+		return value as Vector3
+	if typeof(value) == TYPE_ARRAY and value.size() >= 3:
+		return Vector3(float(value[0]), float(value[1]), float(value[2]))
+	if typeof(value) == TYPE_DICTIONARY:
+		return Vector3(
+			float(value.get("x", 0.0)),
+			float(value.get("y", 0.0)),
+			float(value.get("z", 0.0))
+		)
+	return Vector3.ZERO
+
+func _normalize_definition_cells(value: Variant) -> Array:
+	var normalized: Array = []
+	if typeof(value) == TYPE_ARRAY:
+		for cell_variant in value:
+			normalized.append(_normalize_blueprint_cell(cell_variant))
+	if normalized.is_empty():
+		normalized.append([0, 0, 0])
+	return normalized
+
+func _normalize_block_family(block_id: String, block_def: Dictionary) -> String:
+	if _get_definition_bool(block_def, "propulsion_component", false) or _get_definition_float(block_def, "thrust", 0.0) > 0.0:
+		return "propulsion"
+	if int(block_def.get("cargo", 0)) > 0:
+		return "cargo"
+	if _get_definition_float(block_def, "recovery_access", 0.0) > 0.0:
+		return "recovery"
+	var category := str(block_def.get("category", "utility"))
+	match category:
+		"hull":
+			return "hull"
+		"structure":
+			return "deck"
+		"recovery":
+			return "recovery"
+		"cargo":
+			return "cargo"
+		"propulsion":
+			return "propulsion"
+		_:
+			if block_id.contains("engine") or block_id.contains("boiler") or block_id.contains("sail"):
+				return "propulsion"
+			return "utility"
+
+func _vector3_to_cell_array(value: Vector3) -> Array:
+	return [roundi(value.x), roundi(value.y), roundi(value.z)]
+
 func _get_cells_weighted_center(cells: Array) -> Array:
 	if cells.is_empty():
 		return [0, 0, 0]
@@ -1964,8 +2020,10 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 	var min_cell := Vector3i(0, 0, 0)
 	var max_cell := Vector3i(0, 0, 0)
 	var first_cell := true
-	var left_mass := 0.0
-	var right_mass := 0.0
+	var hydro_samples: Array = []
+	var lowest_hull_y := INF
+	var center_of_mass_accumulator := Vector3.ZERO
+	var center_of_buoyancy_accumulator := Vector3.ZERO
 	for block_variant in blocks:
 		var block: Dictionary = block_variant
 		var block_type := str(block.get("type", ""))
@@ -1991,8 +2049,14 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 			min_cell = Vector3i(mini(min_cell.x, cell_vec.x), mini(min_cell.y, cell_vec.y), mini(min_cell.z, cell_vec.z))
 			max_cell = Vector3i(maxi(max_cell.x, cell_vec.x), maxi(max_cell.y, cell_vec.y), maxi(max_cell.z, cell_vec.z))
 		block_counts[block_type] = int(block_counts.get(block_type, 0)) + 1
-		total_weight += float(block_def.get("weight", 1.0))
-		total_buoyancy += float(block_def.get("buoyancy", 1.0))
+		var family_name := str(block_def.get("family", "utility"))
+		var weight := float(block_def.get("weight", 1.0))
+		var buoyancy := float(block_def.get("buoyancy", 1.0))
+		var cell_center := Vector3(float(cell[0]), float(cell[1]), float(cell[2]))
+		var cg_center := cell_center + _get_definition_vector3(block_def, "cg_bias", Vector3.ZERO)
+		var buoyancy_center := cell_center + _get_definition_vector3(block_def, "buoyancy_bias", Vector3.ZERO)
+		total_weight += weight
+		total_buoyancy += buoyancy
 		total_thrust += float(block_def.get("thrust", 0.0))
 		total_cargo += int(block_def.get("cargo", 0))
 		total_repair += int(block_def.get("repair", 0))
@@ -2006,10 +2070,19 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 		total_recovery_access += _get_definition_float(block_def, "recovery_access", 0.0)
 		total_propulsion_armor += _get_definition_float(block_def, "propulsion_armor", 0.0)
 		total_redundancy += _get_definition_float(block_def, "redundancy", 0.0)
-		if cell_vec.x < 0:
-			left_mass += float(block_def.get("weight", 1.0))
-		elif cell_vec.x > 0:
-			right_mass += float(block_def.get("weight", 1.0))
+		center_of_mass_accumulator += cg_center * weight
+		center_of_buoyancy_accumulator += buoyancy_center * maxf(0.0, buoyancy)
+		if family_name == "hull":
+			lowest_hull_y = minf(lowest_hull_y, cg_center.y)
+		hydro_samples.append({
+			"cell": cell,
+			"family": family_name,
+			"weight": weight,
+			"buoyancy": buoyancy,
+			"cg_center": cg_center,
+			"buoyancy_center": buoyancy_center,
+			"stability": _get_definition_float(block_def, "stability", 0.0),
+		})
 		if block_type == "core":
 			core_cells.append(cell)
 		if _get_definition_bool(block_def, "salvage_station", false):
@@ -2071,9 +2144,105 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 
 	var family := _get_propulsion_family_from_counts(block_counts)
 	var defaults := _get_propulsion_family_defaults(family)
-	var buoyancy_margin := total_buoyancy - total_weight
+	var reserve_buoyancy := total_buoyancy - total_weight
+	var buoyancy_margin := reserve_buoyancy
+	var center_of_mass := center_of_mass_accumulator / maxf(0.001, total_weight)
+	var center_of_buoyancy := center_of_buoyancy_accumulator / maxf(0.001, total_buoyancy)
+	if is_inf(lowest_hull_y):
+		lowest_hull_y = center_of_mass.y
+	if first_cell:
+		lowest_hull_y = 0.0
+	var low_support_band := lowest_hull_y + 0.75
+	var port_mass := 0.0
+	var starboard_mass := 0.0
+	var bow_mass := 0.0
+	var stern_mass := 0.0
+	var low_support_score := 0.0
+	var top_heavy_moment := 0.0
+	var beam_buoyancy_moment := 0.0
+	var length_buoyancy_moment := 0.0
+	for sample_variant in hydro_samples:
+		var sample: Dictionary = sample_variant
+		var sample_weight := float(sample.get("weight", 0.0))
+		var sample_buoyancy := maxf(0.0, float(sample.get("buoyancy", 0.0)))
+		var cg_center: Vector3 = sample.get("cg_center", Vector3.ZERO)
+		var buoyancy_center: Vector3 = sample.get("buoyancy_center", Vector3.ZERO)
+		var sample_family := str(sample.get("family", "utility"))
+		var relative_x := cg_center.x - center_of_buoyancy.x
+		var relative_z := cg_center.z - center_of_buoyancy.z
+		if relative_x < 0.0:
+			port_mass += sample_weight
+		elif relative_x > 0.0:
+			starboard_mass += sample_weight
+		if relative_z < 0.0:
+			bow_mass += sample_weight
+		elif relative_z > 0.0:
+			stern_mass += sample_weight
+		beam_buoyancy_moment += absf(buoyancy_center.x - center_of_mass.x) * sample_buoyancy
+		length_buoyancy_moment += absf(buoyancy_center.z - center_of_mass.z) * sample_buoyancy
+		if cg_center.y <= low_support_band and (sample_family == "hull" or sample_family == "deck"):
+			low_support_score += sample_buoyancy + float(sample.get("stability", 0.0))
+		var top_offset := maxf(0.0, cg_center.y - (lowest_hull_y + 1.0))
+		if top_offset > 0.0:
+			var family_multiplier := 1.0
+			if sample_family == "propulsion" or sample_family == "utility":
+				family_multiplier = 1.18
+			top_heavy_moment += sample_weight * top_offset * family_multiplier
+	var draft_ratio := clampf(total_weight / maxf(1.0, total_buoyancy), 0.0, 1.35)
+	var heel_bias := clampf((starboard_mass - port_mass) / maxf(1.0, total_weight), -1.0, 1.0)
+	var trim_bias := clampf((stern_mass - bow_mass) / maxf(1.0, total_weight), -1.0, 1.0)
+	var asymmetry_penalty := clampf((absf(heel_bias) + absf(trim_bias)) * 0.5, 0.0, 1.0)
 	var excess_mass_penalty := maxf(0.0, total_weight - total_buoyancy * 0.82)
-	var asymmetry_penalty := absf(left_mass - right_mass) / maxf(1.0, total_weight)
+	var beam_factor := maxf(0.0, float(width_span) - 1.0)
+	var length_factor := maxf(0.0, float(length_span) - 1.0)
+	var height_penalty := maxf(0.0, float(height_span) - 1.0)
+	var top_heavy_penalty := clampf(
+		top_heavy_moment * 16.0 / maxf(1.0, total_weight)
+		+ height_penalty * 7.2
+		- low_support_score * 0.34,
+		0.0,
+		100.0
+	)
+	var roll_resistance := clampf(
+		24.0
+		+ beam_factor * 11.0
+		+ beam_buoyancy_moment * 1.8
+		+ low_support_score * 1.1
+		+ total_stability * 2.6
+		+ reserve_buoyancy * 2.4
+		- absf(heel_bias) * 34.0
+		- top_heavy_penalty * 0.72,
+		0.0,
+		100.0
+	)
+	var pitch_resistance := clampf(
+		24.0
+		+ length_factor * 9.0
+		+ length_buoyancy_moment * 1.5
+		+ total_stability * 2.1
+		+ reserve_buoyancy * 1.8
+		- absf(trim_bias) * 30.0
+		- height_penalty * 4.0
+		- top_heavy_penalty * 0.35,
+		0.0,
+		100.0
+	)
+	var freeboard_rating := clampf(
+		46.0
+		+ reserve_buoyancy * 8.0
+		+ beam_factor * 3.6
+		- draft_ratio * 38.0
+		- top_heavy_penalty * 0.34,
+		0.0,
+		100.0
+	)
+	var hydrostatic_class := "stable"
+	if reserve_buoyancy < -0.75 or draft_ratio > 1.04:
+		hydrostatic_class = "sinking"
+	elif reserve_buoyancy < 1.0 or freeboard_rating < 28.0 or roll_resistance < 32.0:
+		hydrostatic_class = "unstable"
+	elif reserve_buoyancy < 2.5 or freeboard_rating < 46.0 or roll_resistance < 46.0 or absf(trim_bias) > 0.18 or absf(heel_bias) > 0.18:
+		hydrostatic_class = "touchy"
 	var center_cell := _get_cells_weighted_center(all_cells)
 	var spawn_cell := _find_nearest_cell_to_center(core_cells if not core_cells.is_empty() else walkable_cells, center_cell)
 	var helm_anchor := _find_nearest_cell_to_center(
@@ -2178,10 +2347,16 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 		8.0,
 		100.0
 	)
-	var top_speed := float(defaults.get("drive_rating", 3.0)) + total_thrust * 2.1 + buoyancy_margin * 0.08 - excess_mass_penalty * 0.22
-	top_speed += total_stability * 0.05
+	var draft_penalty := maxf(0.0, draft_ratio - 0.72) * 18.0
+	var trim_penalty := absf(trim_bias) * 12.0
+	var heel_penalty := absf(heel_bias) * 9.0
+	var top_speed := float(defaults.get("drive_rating", 3.0)) + total_thrust * 2.1 + reserve_buoyancy * 0.06 - excess_mass_penalty * 0.18
+	top_speed += roll_resistance * 0.012
 	top_speed -= total_drag * 0.18
 	top_speed -= float(total_cargo) * 0.16
+	top_speed -= draft_penalty * 0.20
+	top_speed -= trim_penalty * 0.14
+	top_speed -= top_heavy_penalty * 0.025
 	var min_speed := 2.2
 	var max_speed := 5.4
 	match family:
@@ -2196,19 +2371,30 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 			max_speed = 8.6
 	top_speed = clampf(top_speed, min_speed, max_speed)
 	var acceleration := clampf(
-		26.0 + total_thrust * 18.0 + float(engine_count) * 7.0 - total_weight * 1.45 + total_stability * 0.45 - total_drag * 1.8,
+		28.0
+		+ total_thrust * 18.0
+		+ float(engine_count) * 7.0
+		- total_weight * 1.30
+		+ maxf(0.0, reserve_buoyancy) * 1.8
+		- total_drag * 1.7
+		- draft_penalty * 1.8
+		- trim_penalty * 1.4
+		- heel_penalty * 0.6,
 		10.0,
 		95.0
 	)
 	var turn_authority := clampf(
-		58.0
-		+ total_stability * 3.2
+		60.0
+		+ roll_resistance * 0.45
+		+ pitch_resistance * 0.10
 		+ total_brace * 18.0
 		+ total_brace_zone * 10.0
-		- maxf(0.0, float(length_span) - 1.0) * 4.6
-		- total_weight * 0.85
+		- length_factor * 4.4
+		- total_weight * 0.70
 		- float(total_cargo) * 3.0
-		- asymmetry_penalty * 12.0
+		- draft_penalty * 0.9
+		- trim_penalty * 1.4
+		- heel_penalty * 1.1
 		+ (6.0 if family == PROPULSION_FAMILY_RAFT_PADDLES else 0.0)
 		- (4.0 if family == PROPULSION_FAMILY_SAIL_RIG else 0.0)
 		+ (8.0 if family == PROPULSION_FAMILY_TWIN_ENGINE else 0.0),
@@ -2216,29 +2402,30 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 		95.0
 	)
 	var storm_stability := clampf(
-		42.0
-		+ total_stability * 4.2
+		18.0
+		+ roll_resistance * 0.72
+		+ freeboard_rating * 0.24
 		+ total_brace * 24.0
-		+ maxf(0.0, float(width_span) - 1.0) * 5.0
-		- maxf(0.0, float(height_span) - 1.0) * 8.0
-		- float(total_cargo) * 3.5
+		+ reserve_buoyancy * 2.8
+		- float(total_cargo) * 2.5
 		- float(exposed_propulsion_faces) * 2.5
-		- asymmetry_penalty * 20.0,
+		- absf(heel_bias) * 28.0
+		- top_heavy_penalty * 0.34,
 		10.0,
 		100.0
 	)
 	var crew_safety := clampf(
-		28.0
+		24.0
 		+ total_safety
-		+ total_stability * 1.5
+		+ storm_stability * 0.25
 		+ float(total_repair) * 12.0
 		+ total_recovery_access * 10.0
-		+ total_brace * 16.0
-		+ maxf(0.0, float(width_span) - 1.0) * 4.0
-		- float(total_cargo) * 4.5
+		+ total_brace * 12.0
+		- float(total_cargo) * 4.0
 		- float(exposed_propulsion_faces) * 3.0
-		- maxf(0.0, float(height_span) - 1.0) * 6.0
-		- asymmetry_penalty * 14.0,
+		- height_penalty * 4.5
+		- absf(heel_bias) * 22.0
+		- top_heavy_penalty * 0.18,
 		5.0,
 		100.0
 	)
@@ -2354,6 +2541,17 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 		"weight": total_weight,
 		"buoyancy": total_buoyancy,
 		"buoyancy_margin": buoyancy_margin,
+		"reserve_buoyancy": reserve_buoyancy,
+		"center_of_mass_cell": _vector3_to_cell_array(center_of_mass),
+		"center_of_buoyancy_cell": _vector3_to_cell_array(center_of_buoyancy),
+		"draft_ratio": draft_ratio,
+		"roll_resistance": roll_resistance,
+		"pitch_resistance": pitch_resistance,
+		"heel_bias": heel_bias,
+		"trim_bias": trim_bias,
+		"freeboard_rating": freeboard_rating,
+		"top_heavy_penalty": top_heavy_penalty,
+		"hydrostatic_class": hydrostatic_class,
 		"top_speed": top_speed,
 		"acceleration": acceleration,
 		"turn_authority": turn_authority,
@@ -2402,11 +2600,27 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 func _build_blueprint_warnings_from_stats(stats: Dictionary, loose_block_count: int) -> Array:
 	var warnings: Array = []
 	if loose_block_count > 0:
-		warnings.append("%d disconnected block(s) will spawn loose and sink at launch." % loose_block_count)
-	if float(stats.get("buoyancy_margin", 0.0)) < 0.0:
-		warnings.append("The main chunk is overweight and may fail once it starts taking damage.")
-	elif float(stats.get("buoyancy_margin", 0.0)) < 2.0:
-		warnings.append("The main chunk has a thin buoyancy margin. Extra hits will matter.")
+		warnings.append("Loose chunk")
+	var reserve_buoyancy := float(stats.get("reserve_buoyancy", stats.get("buoyancy_margin", 0.0)))
+	var draft_ratio := float(stats.get("draft_ratio", 0.0))
+	var freeboard_rating := float(stats.get("freeboard_rating", 100.0))
+	var top_heavy_penalty := float(stats.get("top_heavy_penalty", 0.0))
+	var heel_bias := float(stats.get("heel_bias", 0.0))
+	var trim_bias := float(stats.get("trim_bias", 0.0))
+	if reserve_buoyancy < 0.0:
+		warnings.append("Overweight")
+	elif freeboard_rating < 40.0 or draft_ratio > 0.92:
+		warnings.append("Low freeboard")
+	if top_heavy_penalty >= 26.0:
+		warnings.append("Top-heavy")
+	if heel_bias <= -0.12:
+		warnings.append("Port heavy")
+	elif heel_bias >= 0.12:
+		warnings.append("Starboard heavy")
+	if trim_bias <= -0.12:
+		warnings.append("Bow heavy")
+	elif trim_bias >= 0.12:
+		warnings.append("Stern heavy")
 	if not bool(stats.get("has_salvage_station", false)):
 		warnings.append("No salvage station is mounted. This hull can launch, but it cannot work wrecks until you add a crane or winch.")
 	if not bool(stats.get("has_recovery_access", false)):
@@ -2903,6 +3117,13 @@ func request_remove_blueprint_block(cell_value: Variant) -> void:
 		return
 
 	server_request_remove_blueprint_block.rpc_id(1, cell)
+
+func request_reset_blueprint() -> void:
+	if multiplayer.is_server():
+		_reset_blueprint_for_peer(multiplayer.get_unique_id())
+		return
+
+	server_request_reset_blueprint.rpc_id(1)
 
 func request_launch_run() -> void:
 	if multiplayer.is_server():
@@ -4756,6 +4977,15 @@ func _reset_run_runtime() -> void:
 		"acceleration_rating": float(blueprint_stats.get("acceleration", 50.0)),
 		"turn_authority": float(blueprint_stats.get("turn_authority", 50.0)),
 		"storm_stability": float(blueprint_stats.get("storm_stability", 50.0)),
+		"draft_ratio": float(blueprint_stats.get("draft_ratio", 0.72)),
+		"reserve_buoyancy": float(blueprint_stats.get("reserve_buoyancy", blueprint_stats.get("buoyancy_margin", 0.0))),
+		"roll_resistance": float(blueprint_stats.get("roll_resistance", 50.0)),
+		"pitch_resistance": float(blueprint_stats.get("pitch_resistance", 50.0)),
+		"heel_bias": float(blueprint_stats.get("heel_bias", 0.0)),
+		"trim_bias": float(blueprint_stats.get("trim_bias", 0.0)),
+		"freeboard_rating": float(blueprint_stats.get("freeboard_rating", 50.0)),
+		"top_heavy_penalty": float(blueprint_stats.get("top_heavy_penalty", 0.0)),
+		"hydrostatic_class": str(blueprint_stats.get("hydrostatic_class", "stable")),
 		"crew_safety": float(blueprint_stats.get("crew_safety", 50.0)),
 		"repair_coverage": float(blueprint_stats.get("repair_coverage", 50.0)),
 		"workload": float(blueprint_stats.get("workload", 50.0)),
@@ -5535,6 +5765,15 @@ func _apply_runtime_stats_from_main_blocks(runtime_blocks: Array, main_block_ids
 	boat_state["acceleration_rating"] = float(stats.get("acceleration", 50.0))
 	boat_state["turn_authority"] = float(stats.get("turn_authority", 50.0))
 	boat_state["storm_stability"] = float(stats.get("storm_stability", 50.0))
+	boat_state["draft_ratio"] = float(stats.get("draft_ratio", 0.72))
+	boat_state["reserve_buoyancy"] = float(stats.get("reserve_buoyancy", stats.get("buoyancy_margin", 0.0)))
+	boat_state["roll_resistance"] = float(stats.get("roll_resistance", 50.0))
+	boat_state["pitch_resistance"] = float(stats.get("pitch_resistance", 50.0))
+	boat_state["heel_bias"] = float(stats.get("heel_bias", 0.0))
+	boat_state["trim_bias"] = float(stats.get("trim_bias", 0.0))
+	boat_state["freeboard_rating"] = float(stats.get("freeboard_rating", 50.0))
+	boat_state["top_heavy_penalty"] = float(stats.get("top_heavy_penalty", 0.0))
+	boat_state["hydrostatic_class"] = str(stats.get("hydrostatic_class", "stable"))
 	boat_state["crew_safety"] = float(stats.get("crew_safety", 50.0))
 	boat_state["repair_coverage"] = float(stats.get("repair_coverage", 50.0))
 	boat_state["pathing_score"] = float(stats.get("pathing_score", 50.0))
@@ -5571,7 +5810,7 @@ func _apply_runtime_stats_from_main_blocks(runtime_blocks: Array, main_block_ids
 		_apply_propulsion_damage(PROPULSION_DAMAGE_DETACHMENT, 0.28, PROPULSION_FAULT_STATE_CRIPPLED)
 	boat_state["propulsion_block_count"] = int(stats.get("propulsion_count", 0))
 
-	if float(stats.get("buoyancy_margin", 0.0)) < -0.75:
+	if str(stats.get("hydrostatic_class", "stable")) == "sinking" or float(stats.get("reserve_buoyancy", stats.get("buoyancy_margin", 0.0))) < -0.75:
 		_resolve_run_failure("The remaining hull lost too much buoyancy and sank.")
 
 func _compute_runtime_stats_for_blocks(blocks: Array) -> Dictionary:
@@ -5976,6 +6215,17 @@ func _remove_blueprint_block(peer_id: int, cell: Array) -> void:
 		str(_cell_to_vector3i(cell)),
 	])
 
+func _reset_blueprint_for_peer(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_HANGAR:
+		return
+
+	var reset_snapshot := DockState.reset_boat_blueprint()
+	boat_blueprint = _decorate_blueprint(reset_snapshot)
+	_broadcast_blueprint_state()
+	_set_status("%s reset the boat to the core block." % _get_peer_name(peer_id))
+
 func _save_server_blueprint() -> void:
 	if multiplayer.is_server():
 		DockState.save_boat_blueprint(_extract_persisted_blueprint(boat_blueprint))
@@ -6152,7 +6402,8 @@ func _decorate_blueprint(snapshot: Dictionary) -> Dictionary:
 	stats["component_count"] = component_entries.size()
 	var warnings := _build_blueprint_warnings_from_stats(stats, loose_block_ids.size())
 	var seaworthy := int(stats.get("main_chunk_blocks", 0)) > 0 \
-		and float(stats.get("buoyancy_margin", 0.0)) >= -1.2 \
+		and str(stats.get("hydrostatic_class", "stable")) != "sinking" \
+		and float(stats.get("reserve_buoyancy", stats.get("buoyancy_margin", 0.0))) >= -1.2 \
 		and bool(stats.get("has_salvage_station", false)) \
 		and bool(stats.get("has_recovery_access", false)) \
 		and bool(stats.get("required_roles_ok", false))
@@ -7338,6 +7589,14 @@ func server_request_remove_blueprint_block(cell: Array) -> void:
 
 	var peer_id := multiplayer.get_remote_sender_id()
 	_remove_blueprint_block(peer_id, cell)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_reset_blueprint() -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_reset_blueprint_for_peer(peer_id)
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_request_unlock_builder_block(block_type: String) -> void:

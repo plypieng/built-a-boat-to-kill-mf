@@ -19,6 +19,8 @@ const RESUPPLY_SITE_MARKER_SCENE := preload("res://scenes/run_client/sites/resup
 const EXTRACTION_OUTPOST_MARKER_SCENE := preload("res://scenes/run_client/sites/extraction_outpost_marker.tscn")
 const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
+const ExpeditionHudSkin = preload("res://scenes/shared/expedition_hud_skin.gd")
+const BoatBlockMaterials = preload("res://scenes/shared/boat_block_materials.gd")
 const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
 const OpenSeaWakeShader = preload("res://shaders/open_sea_wake.gdshader")
 const OpenSeaContactFoamShader = preload("res://shaders/open_sea_contact_foam.gdshader")
@@ -29,6 +31,7 @@ const SEA_HDRI_PATH := "res://assets/third_party/polyhaven/overcast_soil_puresky
 const SEA_FOAM_MASK_TEXTURE_PATH := "res://assets/third_party/ambientcg/Foam001_Opacity.jpg"
 const SEA_FOAM_COLOR_TEXTURE_PATH := "res://assets/third_party/ambientcg/Foam001_Color.jpg"
 const SEA_FOAM_SPRAY_TEXTURE_PATH := "res://assets/third_party/ambientcg/Foam001_RGBA.png"
+const BOAT_BLOCK_VISUAL_SCALE := 0.72
 const IDLE_CREW_SLOTS := [
 	Vector3(0.0, 0.92, 1.35),
 	Vector3(-1.2, 0.92, 1.05),
@@ -54,16 +57,16 @@ const ASSIST_RALLY_HOLD_SECONDS := 1.5
 const WATER_SURFACE_Y := -0.12
 const WATER_SURFACE_SIZE := 640.0
 const WATER_SURFACE_SUBDIVISIONS := 220
-const HUD_PANEL_BG := Color(0.05, 0.09, 0.13, 0.78)
-const HUD_PANEL_BG_SOFT := Color(0.07, 0.12, 0.17, 0.70)
-const HUD_BORDER_BLUE := Color(0.30, 0.53, 0.66, 0.92)
-const HUD_BORDER_ORANGE := Color(0.83, 0.59, 0.28, 0.95)
-const HUD_BORDER_GREEN := Color(0.28, 0.71, 0.54, 0.95)
-const HUD_TEXT_PRIMARY := Color(0.96, 0.95, 0.90)
-const HUD_TEXT_MUTED := Color(0.78, 0.84, 0.88)
-const HUD_TEXT_WARNING := Color(0.95, 0.80, 0.43)
-const HUD_TEXT_DANGER := Color(0.95, 0.55, 0.48)
-const HUD_TEXT_SUCCESS := Color(0.76, 0.95, 0.82)
+const HUD_PANEL_BG := ExpeditionHudSkin.STORM_PANEL
+const HUD_PANEL_BG_SOFT := ExpeditionHudSkin.STORM_PANEL_SOFT
+const HUD_BORDER_BLUE := ExpeditionHudSkin.OXIDIZED_TEAL
+const HUD_BORDER_ORANGE := ExpeditionHudSkin.BUOY_ORANGE
+const HUD_BORDER_GREEN := ExpeditionHudSkin.SEA_GLASS_GREEN
+const HUD_TEXT_PRIMARY := ExpeditionHudSkin.TEXT_PRIMARY
+const HUD_TEXT_MUTED := ExpeditionHudSkin.TEXT_MUTED
+const HUD_TEXT_WARNING := ExpeditionHudSkin.TEXT_WARNING
+const HUD_TEXT_DANGER := ExpeditionHudSkin.TEXT_DANGER
+const HUD_TEXT_SUCCESS := ExpeditionHudSkin.TEXT_SUCCESS
 
 @export_group("Run Camera")
 @export_range(-3.0, 3.0, 0.05) var run_camera_side_offset := 0.9
@@ -79,21 +82,26 @@ const HUD_TEXT_SUCCESS := Color(0.76, 0.95, 0.82)
 
 var status_label: Label
 var objective_label: Label
-var onboarding_label: Label
+var clock_label: Label
+var pressure_clock_label: Label
+var compass_label: Label
 var resource_label: Label
 var run_label: Label
 var station_label: Label
 var interaction_label: Label
-var roster_label: Label
 var boat_label: Label
 var health_meter_label: Label
 var stamina_meter_label: Label
 var health_meter_bar: ProgressBar
 var stamina_meter_bar: ProgressBar
+var stage_clock_progress_bar: ProgressBar
 var event_callout_label: Label
 var toolbelt_label: Label
 var inventory_label: Label
-var footer_label: Label
+var hotbar_slot_panels: Array = []
+var hotbar_slot_key_labels: Array = []
+var hotbar_slot_name_labels: Array = []
+var hotbar_slot_icons: Array = []
 var boat_root: Node3D
 var chunk_container: Node3D
 var water_mesh_instance: MeshInstance3D
@@ -155,6 +163,7 @@ var result_continue_button: Button
 var crosshair_label: Label
 var tool_panel: PanelContainer
 var inventory_panel: PanelContainer
+var boat_inspect_panel: PanelContainer
 var launch_overrides: Dictionary = {}
 var connect_time_seconds := 0.0
 var autopilot_remaining_seconds := 0.0
@@ -167,9 +176,11 @@ var brace_request_latched := false
 var grapple_request_latched := false
 var repair_request_latched := false
 var recover_request_latched := false
+var item_use_request_latched := false
 var selected_station_index := 0
 var last_known_phase := "running"
 var station_visuals: Dictionary = {}
+var recovery_visuals: Dictionary = {}
 var chunk_visuals: Dictionary = {}
 var hazard_visuals: Dictionary = {}
 var loot_visuals: Dictionary = {}
@@ -212,10 +223,9 @@ var inventory_panel_visible := false
 var assist_rally_hold_target_peer_id := 0
 var assist_rally_hold_seconds := 0.0
 var hud_icons := HudIconLibrary.new()
+var stage_clock_icon: TextureRect
 var objective_icon: TextureRect
-var extraction_panel_icon: TextureRect
-var crew_panel_icon: TextureRect
-var survival_panel_icon: TextureRect
+var inspect_panel_icon: TextureRect
 var result_panel_icon: TextureRect
 var wind_audio_player: AudioStreamPlayer
 var hull_audio_player: AudioStreamPlayer
@@ -1650,6 +1660,7 @@ func _build_recovery_visuals() -> void:
 		return
 	for child in recovery_container.get_children():
 		child.queue_free()
+	recovery_visuals = {}
 	for target_variant in NetworkRuntime.get_run_recovery_points():
 		var target: Dictionary = target_variant
 		var target_node := RUN_RECOVERY_MARKER_SCENE.instantiate() as Node3D
@@ -1662,6 +1673,11 @@ func _build_recovery_visuals() -> void:
 			target_node.call("set_marker_text", str(target.get("label", "Recovery")))
 		if target_node.has_method("set_marker_color"):
 			target_node.call("set_marker_color", Color(0.20, 0.70, 0.74))
+		if target_node.has_method("set_label_visible"):
+			target_node.call("set_label_visible", false)
+		recovery_visuals[str(target.get("id", ""))] = {
+			"root": target_node,
+		}
 
 func _build_wreck_visual() -> void:
 	var ring_mesh_instance := MeshInstance3D.new()
@@ -1844,133 +1860,185 @@ func _build_cache_visual() -> void:
 
 func _build_hud() -> void:
 	var hud := get_node("HUD") as CanvasLayer
+	var stage_clock_panel := hud.get_node("StageClockPanel") as PanelContainer
 	var objective_panel := hud.get_node("ObjectivePanel") as PanelContainer
-	var extraction_panel := hud.get_node("ExtractionPanel") as PanelContainer
-	var crew_panel := hud.get_node("CrewPanel") as PanelContainer
-	var survival_panel := hud.get_node("SurvivalPanel") as PanelContainer
+	var health_panel := hud.get_node("HealthPanel") as PanelContainer
+	var stamina_panel := hud.get_node("StaminaPanel") as PanelContainer
 	tool_panel = hud.get_node("ToolPanel") as PanelContainer
+	boat_inspect_panel = hud.get_node("BoatInspectPanel") as PanelContainer
 	inventory_panel = hud.get_node("InventoryPanel") as PanelContainer
 
+	stage_clock_icon = hud.get_node("StageClockPanel/Margin/Layout/HeadingRow/ClockIcon") as TextureRect
+	clock_label = hud.get_node("StageClockPanel/Margin/Layout/ClockLabel") as Label
+	pressure_clock_label = hud.get_node("StageClockPanel/Margin/Layout/PressureLabel") as Label
+	stage_clock_progress_bar = hud.get_node("StageClockPanel/Margin/Layout/ClockProgressBar") as ProgressBar
 	objective_icon = hud.get_node("ObjectivePanel/Margin/Layout/HeadingRow/ObjectiveIcon") as TextureRect
+	compass_label = hud.get_node("ObjectivePanel/Margin/Layout/CompassLabel") as Label
 	objective_label = hud.get_node("ObjectivePanel/Margin/Layout/ObjectiveLabel") as Label
-	extraction_panel_icon = hud.get_node("ExtractionPanel/Margin/Layout/Header/ExtractionPanelIcon") as TextureRect
-	resource_label = hud.get_node("ExtractionPanel/Margin/Layout/ResourceLabel") as Label
-	run_label = hud.get_node("ExtractionPanel/Margin/Layout/RunLabel") as Label
-	crew_panel_icon = hud.get_node("CrewPanel/Margin/Layout/Header/CrewPanelIcon") as TextureRect
-	station_label = hud.get_node("CrewPanel/Margin/Layout/StationLabel") as Label
-	roster_label = hud.get_node("CrewPanel/Margin/Layout/RosterLabel") as Label
-	onboarding_label = hud.get_node("CrewPanel/Margin/Layout/OnboardingLabel") as Label
-	survival_panel_icon = hud.get_node("SurvivalPanel/Margin/Layout/Header/SurvivalPanelIcon") as TextureRect
-	health_meter_label = hud.get_node("SurvivalPanel/Margin/Layout/HealthMeterRow/HealthMeterLabel") as Label
-	stamina_meter_label = hud.get_node("SurvivalPanel/Margin/Layout/StaminaMeterRow/StaminaMeterLabel") as Label
-	health_meter_bar = hud.get_node("SurvivalPanel/Margin/Layout/HealthMeterRow/HealthMeterBar") as ProgressBar
-	stamina_meter_bar = hud.get_node("SurvivalPanel/Margin/Layout/StaminaMeterRow/StaminaMeterBar") as ProgressBar
-	boat_label = hud.get_node("SurvivalPanel/Margin/Layout/BoatLabel") as Label
-	interaction_label = hud.get_node("SurvivalPanel/Margin/Layout/InteractionLabel") as Label
-	status_label = hud.get_node("SurvivalPanel/Margin/Layout/StatusLabel") as Label
+	health_meter_label = hud.get_node("HealthPanel/Margin/Layout/HealthMeterLabel") as Label
+	health_meter_bar = hud.get_node("HealthPanel/Margin/Layout/HealthMeterBar") as ProgressBar
+	stamina_meter_label = hud.get_node("StaminaPanel/Margin/Layout/StaminaMeterLabel") as Label
+	stamina_meter_bar = hud.get_node("StaminaPanel/Margin/Layout/StaminaMeterBar") as ProgressBar
 	toolbelt_label = hud.get_node("ToolPanel/Margin/Layout/ToolLabel") as Label
+	station_label = hud.get_node("ToolPanel/Margin/Layout/StationPromptLabel") as Label
+	hotbar_slot_panels.clear()
+	hotbar_slot_key_labels.clear()
+	hotbar_slot_name_labels.clear()
+	hotbar_slot_icons.clear()
+	for slot_index in range(4):
+		var slot_path := "ToolPanel/Margin/Layout/HotbarRow/Slot%d" % [slot_index + 1]
+		var slot_panel := hud.get_node(slot_path) as PanelContainer
+		var key_label := hud.get_node("%s/Margin/Layout/TopRow/KeyLabel" % slot_path) as Label
+		var name_label := hud.get_node("%s/Margin/Layout/TopRow/NameLabel" % slot_path) as Label
+		var slot_icon := hud.get_node("%s/Margin/Layout/Icon" % slot_path) as TextureRect
+		hotbar_slot_panels.append(slot_panel)
+		hotbar_slot_key_labels.append(key_label)
+		hotbar_slot_name_labels.append(name_label)
+		hotbar_slot_icons.append(slot_icon)
+	inspect_panel_icon = hud.get_node("BoatInspectPanel/Margin/Layout/HeadingRow/InspectIcon") as TextureRect
+	boat_label = hud.get_node("BoatInspectPanel/Margin/Layout/BoatLabel") as Label
+	resource_label = hud.get_node("BoatInspectPanel/Margin/Layout/ResourceLabel") as Label
+	run_label = hud.get_node("BoatInspectPanel/Margin/Layout/RunLabel") as Label
+	interaction_label = hud.get_node("BoatInspectPanel/Margin/Layout/InteractionLabel") as Label
+	status_label = hud.get_node("BoatInspectPanel/Margin/Layout/StatusLabel") as Label
 	inventory_label = hud.get_node("InventoryPanel/Margin/Layout/InventoryLabel") as Label
 	crosshair_label = hud.get_node("CrosshairLabel") as Label
 	event_callout_label = hud.get_node("EventCalloutLabel") as Label
 
+	hud_icons.configure_icon_rect(stage_clock_icon, Vector2(28.0, 28.0))
 	hud_icons.configure_icon_rect(objective_icon, Vector2(22.0, 22.0))
-	hud_icons.configure_icon_rect(extraction_panel_icon)
-	hud_icons.configure_icon_rect(crew_panel_icon)
-	hud_icons.configure_icon_rect(survival_panel_icon)
+	hud_icons.configure_icon_rect(inspect_panel_icon, Vector2(24.0, 24.0))
+	for slot_icon_variant in hotbar_slot_icons:
+		hud_icons.configure_icon_rect(slot_icon_variant as TextureRect, Vector2(28.0, 28.0))
+	hud_icons.set_icon(stage_clock_icon, "brace")
+	hud_icons.set_icon(inspect_panel_icon, "repair-kit")
 
-	_apply_hud_panel_style(objective_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG)
-	_apply_hud_panel_style(extraction_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG_SOFT)
-	_apply_hud_panel_style(crew_panel, HUD_BORDER_BLUE, HUD_PANEL_BG_SOFT)
-	_apply_hud_panel_style(survival_panel, HUD_BORDER_GREEN, HUD_PANEL_BG)
-	_apply_hud_panel_style(tool_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG_SOFT)
-	_apply_hud_panel_style(inventory_panel, HUD_BORDER_BLUE, HUD_PANEL_BG_SOFT)
+	_apply_hud_panel_style(stage_clock_panel, ExpeditionHudSkin.BRASS_YELLOW, HUD_PANEL_BG_SOFT, "ghost")
+	_apply_hud_panel_style(objective_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG, "ghost")
+	_apply_hud_panel_style(health_panel, ExpeditionHudSkin.SEA_GLASS_GREEN, HUD_PANEL_BG_SOFT, "ghost")
+	_apply_hud_panel_style(stamina_panel, ExpeditionHudSkin.BUOY_ORANGE, HUD_PANEL_BG_SOFT, "ghost")
+	_apply_hud_panel_style(tool_panel, HUD_BORDER_ORANGE, HUD_PANEL_BG_SOFT, "ghost")
+	_apply_hud_panel_style(boat_inspect_panel, HUD_BORDER_GREEN, HUD_PANEL_BG, "ledger")
+	_apply_hud_panel_style(inventory_panel, HUD_BORDER_BLUE, HUD_PANEL_BG_SOFT, "ledger")
 
+	var clock_heading := hud.get_node("StageClockPanel/Margin/Layout/HeadingRow/ClockHeading") as Label
 	var objective_heading := hud.get_node("ObjectivePanel/Margin/Layout/HeadingRow/ObjectiveHeading") as Label
-	var extraction_heading := hud.get_node("ExtractionPanel/Margin/Layout/Header/ExtractionHeading") as Label
-	var crew_heading := hud.get_node("CrewPanel/Margin/Layout/Header/CrewHeading") as Label
-	footer_label = hud.get_node("CrewPanel/Margin/Layout/FooterLabel") as Label
-	var survival_heading := hud.get_node("SurvivalPanel/Margin/Layout/Header/SurvivalHeading") as Label
-	objective_heading.modulate = HUD_TEXT_WARNING
-	objective_label.modulate = HUD_TEXT_PRIMARY
-	extraction_heading.modulate = HUD_TEXT_WARNING
-	resource_label.modulate = HUD_TEXT_PRIMARY
-	run_label.modulate = HUD_TEXT_MUTED
-	crew_heading.modulate = HUD_TEXT_MUTED
-	station_label.modulate = HUD_TEXT_PRIMARY
-	roster_label.modulate = HUD_TEXT_MUTED
-	onboarding_label.modulate = HUD_TEXT_PRIMARY
-	footer_label.modulate = HUD_TEXT_MUTED
-	survival_heading.modulate = HUD_TEXT_SUCCESS
-	health_meter_label.modulate = HUD_TEXT_MUTED
-	stamina_meter_label.modulate = HUD_TEXT_MUTED
-	boat_label.modulate = HUD_TEXT_PRIMARY
-	interaction_label.modulate = HUD_TEXT_MUTED
-	status_label.modulate = HUD_TEXT_MUTED
-	toolbelt_label.modulate = HUD_TEXT_PRIMARY
-	inventory_label.modulate = HUD_TEXT_PRIMARY
+	var tool_heading := hud.get_node("ToolPanel/Margin/Layout/Heading") as Label
+	var inspect_heading := hud.get_node("BoatInspectPanel/Margin/Layout/HeadingRow/InspectHeading") as Label
+	var inventory_heading := hud.get_node("InventoryPanel/Margin/Layout/Heading") as Label
+	ExpeditionHudSkin.apply_heading(clock_heading, HUD_TEXT_WARNING)
+	ExpeditionHudSkin.apply_body(clock_label, HUD_TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_muted(pressure_clock_label)
+	ExpeditionHudSkin.apply_heading(objective_heading, HUD_TEXT_WARNING)
+	ExpeditionHudSkin.apply_heading(objective_label, HUD_TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_muted(compass_label)
+	ExpeditionHudSkin.apply_body(health_meter_label, HUD_TEXT_MUTED)
+	ExpeditionHudSkin.apply_body(stamina_meter_label, HUD_TEXT_MUTED)
+	ExpeditionHudSkin.apply_heading(tool_heading, HUD_TEXT_WARNING)
+	ExpeditionHudSkin.apply_body(toolbelt_label, HUD_TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_muted(station_label)
+	for key_label_variant in hotbar_slot_key_labels:
+		ExpeditionHudSkin.apply_muted(key_label_variant as Label)
+	for name_label_variant in hotbar_slot_name_labels:
+		ExpeditionHudSkin.apply_body(name_label_variant as Label, HUD_TEXT_MUTED)
+	ExpeditionHudSkin.apply_heading(inspect_heading, HUD_TEXT_SUCCESS)
+	ExpeditionHudSkin.apply_body(boat_label, HUD_TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_body(resource_label, HUD_TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_muted(run_label)
+	ExpeditionHudSkin.apply_muted(interaction_label)
+	ExpeditionHudSkin.apply_muted(status_label)
+	ExpeditionHudSkin.apply_heading(inventory_heading, HUD_TEXT_MUTED)
+	ExpeditionHudSkin.apply_body(inventory_label, HUD_TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_crosshair(crosshair_label)
+	ExpeditionHudSkin.apply_callout(event_callout_label, HUD_TEXT_PRIMARY)
+	_apply_meter_bar_style(stage_clock_progress_bar, HUD_TEXT_WARNING)
 	_apply_meter_bar_style(health_meter_bar, HUD_TEXT_SUCCESS)
 	_apply_meter_bar_style(stamina_meter_bar, HUD_TEXT_WARNING)
 
-func _apply_hud_panel_style(panel: PanelContainer, border_color: Color, background_color: Color) -> void:
-	var style := StyleBoxFlat.new()
-	style.bg_color = background_color
-	style.border_color = border_color
-	style.set_border_width_all(2)
-	style.corner_radius_top_left = 10
-	style.corner_radius_top_right = 10
-	style.corner_radius_bottom_left = 10
-	style.corner_radius_bottom_right = 10
-	style.shadow_color = Color(0.0, 0.0, 0.0, 0.28)
-	style.shadow_size = 4
-	panel.add_theme_stylebox_override("panel", style)
+func _apply_hud_panel_style(
+	panel: PanelContainer,
+	border_color: Color,
+	background_color: Color,
+	variant: String = "plate"
+) -> void:
+	ExpeditionHudSkin.apply_plate(panel, border_color, background_color, variant)
 
 func _apply_meter_bar_style(bar: ProgressBar, fill_color: Color) -> void:
-	if bar == null:
-		return
-	bar.show_percentage = false
-	var background := StyleBoxFlat.new()
-	background.bg_color = Color(0.14, 0.20, 0.24, 0.82)
-	background.corner_radius_top_left = 8
-	background.corner_radius_top_right = 8
-	background.corner_radius_bottom_left = 8
-	background.corner_radius_bottom_right = 8
-	bar.add_theme_stylebox_override("background", background)
-	var fill := StyleBoxFlat.new()
-	fill.bg_color = fill_color
-	fill.corner_radius_top_left = 8
-	fill.corner_radius_top_right = 8
-	fill.corner_radius_bottom_left = 8
-	fill.corner_radius_bottom_right = 8
-	bar.add_theme_stylebox_override("fill", fill)
+	ExpeditionHudSkin.apply_meter(bar, fill_color)
 
 func _build_result_overlay() -> void:
 	result_layer = get_node("ResultOverlay") as CanvasLayer
+	var dimmer := result_layer.get_node("Dimmer") as ColorRect
 	result_panel = result_layer.get_node("Center/ResultPanel") as PanelContainer
 	result_panel_icon = result_layer.get_node("Center/ResultPanel/Inner/Layout/HeadingRow/ResultPanelIcon") as TextureRect
 	result_title_label = result_layer.get_node("Center/ResultPanel/Inner/Layout/HeadingRow/ResultTitleLabel") as Label
 	result_body_label = result_layer.get_node("Center/ResultPanel/Inner/Layout/ResultBodyLabel") as Label
 	result_continue_button = result_layer.get_node("Center/ResultPanel/Inner/Layout/ResultContinueButton") as Button
+	var hint_label := result_layer.get_node("Center/ResultPanel/Inner/Layout/HintLabel") as Label
 	hud_icons.configure_icon_rect(result_panel_icon, Vector2(30.0, 30.0))
 	if not result_continue_button.pressed.is_connected(_continue_to_dock):
 		result_continue_button.pressed.connect(_continue_to_dock)
+	dimmer.color = Color(0.02, 0.04, 0.05, 0.72)
+	result_panel.custom_minimum_size = Vector2(560.0, 0.0)
+	ExpeditionHudSkin.apply_plate(result_panel, ExpeditionHudSkin.BRASS_YELLOW, ExpeditionHudSkin.HANGAR_PANEL_SOFT, "manifest")
+	ExpeditionHudSkin.apply_heading(result_title_label, HUD_TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_body(result_body_label, HUD_TEXT_PRIMARY)
+	ExpeditionHudSkin.apply_muted(hint_label)
+	hint_label.text = "Press Enter to bank the manifest and head back to the yard."
+	ExpeditionHudSkin.apply_button(result_continue_button, ExpeditionHudSkin.SEA_GLASS_GREEN, ExpeditionHudSkin.RUST_BROWN)
+	result_continue_button.text = "Return To Yard"
 	result_layer.visible = false
 
 func _get_run_toolbelt_entries() -> Array:
 	return NetworkRuntime.get_toolbelt_entries(NetworkRuntime.SESSION_PHASE_RUN)
 
+func _get_run_hotbar_entries() -> Array:
+	return [
+		{
+			"label": "GRAPPLE",
+			"icon": "salvage",
+			"tool_id": "grapple",
+			"type": "item",
+			"hint": "Crane tool for salvage work.",
+		},
+		{
+			"label": "HAMMER",
+			"icon": "hammer",
+			"tool_id": "repair",
+			"type": "item",
+			"hint": "Patch nearby hull sections.",
+		},
+		{
+			"label": "RECOVER",
+			"icon": "recovery",
+			"tool_id": "recover",
+			"type": "item",
+			"hint": "Recovery gear for getting back aboard.",
+		},
+		{
+			"label": "",
+			"icon": "",
+			"tool_id": "",
+			"type": "empty",
+			"hint": "",
+		},
+	]
+
 func _get_selected_run_tool_id() -> String:
-	var entries := _get_run_toolbelt_entries()
-	if entries.is_empty():
-		return "helm"
-	selected_run_tool_index = wrapi(selected_run_tool_index, 0, entries.size())
-	return str(Dictionary(entries[selected_run_tool_index]).get("id", "helm"))
+	var entries := _get_run_hotbar_entries()
+	if selected_run_tool_index < 0 or selected_run_tool_index >= entries.size():
+		return ""
+	var entry: Dictionary = entries[selected_run_tool_index]
+	if str(entry.get("type", "")) != "item":
+		return ""
+	return str(entry.get("tool_id", ""))
 
 func _select_run_tool(slot_index: int) -> void:
-	var entries := _get_run_toolbelt_entries()
+	var entries := _get_run_hotbar_entries()
 	if slot_index < 0 or slot_index >= entries.size():
 		return
-	selected_run_tool_index = slot_index
-	_sync_selected_station_with_tool()
+	var entry: Dictionary = entries[slot_index]
+	selected_run_tool_index = slot_index if str(entry.get("type", "")) == "item" else -1
 	_refresh_hud()
 
 func _toggle_inventory_panel() -> void:
@@ -1988,22 +2056,11 @@ func _sync_selected_station_with_tool() -> void:
 	elif active_tool_id == "grapple":
 		selected_station_index = maxi(0, NetworkRuntime.get_claimable_station_ids().find("grapple"))
 
-func _build_run_toolbelt_text() -> String:
-	var entries := _get_run_toolbelt_entries()
-	if not entries.is_empty():
-		selected_run_tool_index = wrapi(selected_run_tool_index, 0, entries.size())
-	var tokens := PackedStringArray()
-	for entry_index in range(entries.size()):
-		var entry: Dictionary = entries[entry_index]
-		var token := "%d %s" % [entry_index + 1, str(entry.get("label", "Tool"))]
-		if entry_index == selected_run_tool_index:
-			token = "[%s]" % token
-		tokens.append(token)
-	var selected_entry: Dictionary = entries[selected_run_tool_index] if not entries.is_empty() else {}
-	return "%s\n%s" % [
-		"  ".join(tokens),
-		str(selected_entry.get("hint", "Use the selected deck tool.")),
-	]
+func _build_run_toolbelt_text(active_tool_id: String = "", local_station_id: String = "") -> String:
+	var base_text := "4-slot item belt. LMB uses item. F works stations. Hold Space to brace."
+	if active_tool_id.is_empty():
+		return base_text
+	return "%s Item ready: %s." % [base_text, _get_run_tool_label(active_tool_id)]
 
 func _build_run_inventory_text() -> String:
 	var snapshot := NetworkRuntime.get_run_inventory_snapshot(_get_selected_run_tool_id())
@@ -2058,19 +2115,159 @@ func _build_run_inventory_text() -> String:
 	]
 
 func _get_run_tool_label(tool_id: String) -> String:
+	for slot_variant in _get_run_hotbar_entries():
+		var slot: Dictionary = slot_variant
+		if str(slot.get("tool_id", "")) == tool_id:
+			return str(slot.get("label", tool_id.capitalize())).capitalize()
 	for tool_variant in _get_run_toolbelt_entries():
 		var tool: Dictionary = tool_variant
 		if str(tool.get("id", "")) == tool_id:
 			return str(tool.get("label", tool_id.capitalize()))
 	return tool_id.capitalize()
 
+func _get_run_tool_accent(tool_id: String) -> Color:
+	match tool_id:
+		"helm":
+			return HUD_BORDER_BLUE
+		"drive":
+			return ExpeditionHudSkin.BRASS_YELLOW
+		"brace":
+			return HUD_TEXT_WARNING
+		"grapple":
+			return HUD_BORDER_ORANGE
+		"repair":
+			return ExpeditionHudSkin.SEA_GLASS_GREEN
+		"recover":
+			return ExpeditionHudSkin.OXIDIZED_TEAL
+		_:
+			return HUD_TEXT_MUTED
+
+func _refresh_hotbar_slots(local_station_id: String) -> void:
+	var entries := _get_run_hotbar_entries()
+	for slot_index in range(hotbar_slot_panels.size()):
+		var slot_panel := hotbar_slot_panels[slot_index] as PanelContainer
+		var key_label := hotbar_slot_key_labels[slot_index] as Label
+		var name_label := hotbar_slot_name_labels[slot_index] as Label
+		var slot_icon := hotbar_slot_icons[slot_index] as TextureRect
+		var has_entry := slot_index < entries.size()
+		if slot_panel != null:
+			slot_panel.visible = has_entry
+		if not has_entry:
+			continue
+		var entry: Dictionary = entries[slot_index]
+		var tool_id := str(entry.get("tool_id", ""))
+		var slot_type := str(entry.get("type", "empty"))
+		var accent_color := _get_run_tool_accent(tool_id)
+		if slot_type == "empty":
+			accent_color = HUD_TEXT_MUTED
+		var is_active := slot_index == selected_run_tool_index and slot_type == "item"
+		var is_occupied := slot_type == "item" and not local_station_id.is_empty() and local_station_id == tool_id
+		ExpeditionHudSkin.apply_hotbar_slot(slot_panel, accent_color, is_active, is_occupied)
+		if key_label != null:
+			key_label.text = str(slot_index + 1)
+			key_label.modulate = HUD_TEXT_PRIMARY if is_active else HUD_TEXT_MUTED
+		if name_label != null:
+			name_label.text = str(entry.get("label", ""))
+			name_label.modulate = HUD_TEXT_PRIMARY if is_active or is_occupied else HUD_TEXT_MUTED
+		if slot_icon != null:
+			var icon_id := str(entry.get("icon", ""))
+			if icon_id.is_empty():
+				slot_icon.texture = null
+				slot_icon.visible = false
+				continue
+			hud_icons.set_icon(slot_icon, icon_id)
+			var icon_color := HUD_TEXT_MUTED
+			if is_active:
+				icon_color = accent_color.lightened(0.12)
+			elif is_occupied:
+				icon_color = accent_color
+			slot_icon.modulate = icon_color
+
+func _get_compass_cardinal(heading_degrees: float) -> String:
+	var wrapped := fposmod(heading_degrees, 360.0)
+	if wrapped < 22.5 or wrapped >= 337.5:
+		return "N"
+	if wrapped < 67.5:
+		return "NE"
+	if wrapped < 112.5:
+		return "E"
+	if wrapped < 157.5:
+		return "SE"
+	if wrapped < 202.5:
+		return "S"
+	if wrapped < 247.5:
+		return "SW"
+	if wrapped < 292.5:
+		return "W"
+	return "NW"
+
+func _build_stage_clock_snapshot(phase: String, pressure_phase: String, elapsed_seconds: float) -> Dictionary:
+	if phase == "success":
+		return {
+			"stage": "DONE",
+			"title": "Extraction Secured",
+			"progress": 100.0,
+			"color": HUD_TEXT_SUCCESS,
+		}
+	if phase == "failed":
+		return {
+			"stage": "C",
+			"title": "Failure Threshold",
+			"progress": 100.0,
+			"color": HUD_TEXT_DANGER,
+		}
+	match pressure_phase:
+		NetworkRuntime.RUN_PRESSURE_PHASE_COLLAPSE:
+			return {"stage": "C", "title": "Collapse Window", "progress": 98.0, "color": HUD_TEXT_DANGER}
+		NetworkRuntime.RUN_PRESSURE_PHASE_CASCADE:
+			return {"stage": "C", "title": "Cascade Window", "progress": 88.0, "color": HUD_TEXT_DANGER}
+		NetworkRuntime.RUN_PRESSURE_PHASE_CRITICAL:
+			return {"stage": "B", "title": "Night Surge", "progress": 74.0, "color": HUD_TEXT_WARNING}
+		NetworkRuntime.RUN_PRESSURE_PHASE_STRAINED:
+			return {"stage": "B", "title": "Pressure Rising", "progress": 56.0, "color": HUD_TEXT_WARNING}
+		_:
+			return {
+				"stage": "A",
+				"title": "Dawn Push %.0fs" % elapsed_seconds,
+				"progress": 18.0,
+				"color": HUD_TEXT_PRIMARY,
+			}
+
+func _build_goal_chain_text(local_overboard: bool, local_downed: bool, cargo_count: int, cargo_capacity: int, rescue_available: bool) -> String:
+	if local_downed:
+		return "Recover -> Rally"
+	if local_overboard:
+		return "Swim -> Ladder -> Reboard"
+	if cargo_capacity > 0 and cargo_count >= cargo_capacity:
+		return "Loaded -> Outpost -> Extract"
+	if rescue_available:
+		return "Salvage -> Rescue -> Outpost"
+	return "Salvage -> Outpost"
+
+func _build_station_prompt_compact(selected_station_id: String, local_station_id: String, local_overboard: bool, local_downed: bool) -> String:
+	if local_downed:
+		return "DOWNED | Hold still and wait for a rally."
+	if local_overboard:
+		return "OVERBOARD | Swim for the ladder marker and press F."
+	if not local_station_id.is_empty():
+		return "%s HELD | %s" % [
+			NetworkRuntime.get_station_label(local_station_id),
+			NetworkRuntime.get_station_prompt(local_station_id),
+		]
+	if selected_station_id.is_empty():
+		return "Q / E select role. F to claim."
+	if _is_local_near_station(selected_station_id):
+		return "F to claim %s." % NetworkRuntime.get_station_label(selected_station_id)
+	return "Move closer to %s." % NetworkRuntime.get_station_label(selected_station_id)
+
 func _refresh_world() -> void:
 	_refresh_chunk_visuals()
 	_refresh_horizon_storm_wall()
 	_refresh_runtime_block_visuals()
 	_refresh_sinking_chunk_visuals()
-	_refresh_station_visuals()
 	_refresh_local_run_avatar_controller()
+	_refresh_station_visuals()
+	_refresh_recovery_visuals()
 	_refresh_crew_visuals()
 	_refresh_hazard_visuals()
 	_refresh_loot_visuals()
@@ -2101,10 +2298,6 @@ func _refresh_hud() -> void:
 	var nearest_rescue := _get_nearest_poi_site(RunWorldGenerator.SITE_DISTRESS, true)
 	var nearest_cache := _get_nearest_poi_site(RunWorldGenerator.SITE_RESUPPLY, true)
 	var nearest_extraction := _get_nearest_extraction_site(true)
-	var current_chunk := _get_current_chunk_descriptor()
-	var current_biome := str(current_chunk.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN))
-	var extraction_progress: float = float(NetworkRuntime.run_state.get("extraction_progress", 0.0))
-	var extraction_duration: float = float(NetworkRuntime.run_state.get("extraction_duration", 1.0))
 	var hull_integrity: float = float(NetworkRuntime.boat_state.get("hull_integrity", 100.0))
 	var max_hull_integrity: float = float(NetworkRuntime.boat_state.get("max_hull_integrity", 100.0))
 	var breach_stacks := int(NetworkRuntime.boat_state.get("breach_stacks", 0))
@@ -2114,30 +2307,25 @@ func _refresh_hud() -> void:
 	var cache_distance := boat_position.distance_to(nearest_cache.get("position", boat_position)) if not nearest_cache.is_empty() else INF
 	var repair_supplies := int(NetworkRuntime.run_state.get("repair_supplies", 0))
 	var repair_supplies_max := int(NetworkRuntime.run_state.get("repair_supplies_max", 0))
-	var active_block_count := int(NetworkRuntime.boat_state.get("active_block_count", 0))
-	var destroyed_block_count := int(NetworkRuntime.run_state.get("destroyed_block_count", 0))
 	var detached_chunk_count := int(NetworkRuntime.run_state.get("detached_chunk_count", 0))
 	var cargo_lost_to_sea := int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0))
 	var overboard_count := int(NetworkRuntime.run_state.get("overboard_count", 0))
 	var recoveries_completed := int(NetworkRuntime.run_state.get("recoveries_completed", 0))
-	var crew_downed_count := int(NetworkRuntime.run_state.get("crew_downed_count", 0))
-	var crew_critical_count := int(NetworkRuntime.run_state.get("crew_critical_count", 0))
-	var crew_exhausted_count := int(NetworkRuntime.run_state.get("crew_exhausted_count", 0))
 	var rescue_progress: float = float(NetworkRuntime.run_state.get("rescue_progress", 0.0))
 	var rescue_duration: float = float(NetworkRuntime.run_state.get("rescue_duration", 1.0))
 	var rescue_available := bool(NetworkRuntime.run_state.get("rescue_available", false))
 	var rescue_completed := bool(NetworkRuntime.run_state.get("rescue_completed", false))
 	var squall_bands := Array(NetworkRuntime.run_state.get("squall_bands", []))
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
+	var pressure_phase := str(NetworkRuntime.run_state.get("pressure_phase", NetworkRuntime.RUN_PRESSURE_PHASE_CALM))
+	var pressure_label := str(NetworkRuntime.run_state.get("pressure_label", "Calm seas"))
 	var current_cargo := int(NetworkRuntime.run_state.get("cargo_count", 0))
 	var cargo_capacity := int(NetworkRuntime.run_state.get("cargo_capacity", int(NetworkRuntime.boat_state.get("cargo_capacity", 1))))
-	var loot_remaining := int(NetworkRuntime.run_state.get("loot_remaining", 0))
-	var layout_label := str(NetworkRuntime.run_state.get("layout_label", "Open Sea"))
+	var elapsed_seconds := float(NetworkRuntime.run_state.get("elapsed_time", 0.0))
 	var revealed_extractions := _get_revealed_extraction_sites()
-	var rally_target := _get_local_rally_target()
-	var extraction_distance_text := "?"
-	if not nearest_extraction.is_empty():
-		extraction_distance_text = "%.1fm" % extraction_distance
+	var compass_heading_degrees := fposmod(rad_to_deg(boat_root.rotation.y), 360.0)
+	var compass_cardinal := _get_compass_cardinal(compass_heading_degrees)
+
 	var brace_timer := float(NetworkRuntime.boat_state.get("brace_timer", 0.0))
 	var brace_cooldown := float(NetworkRuntime.boat_state.get("brace_cooldown", 0.0))
 	var brace_state := "Ready"
@@ -2146,17 +2334,76 @@ func _refresh_hud() -> void:
 	elif brace_cooldown > 0.0:
 		brace_state = "Recharging %.1fs" % brace_cooldown
 
-	hud_icons.set_icon(objective_icon, _get_run_objective_icon_id(phase, local_station_id, selected_station_id, current_cargo, cargo_capacity))
-	hud_icons.set_icon(extraction_panel_icon, "extraction")
-	hud_icons.set_icon(crew_panel_icon, "helm" if local_station_id == "helm" else "brace" if brace_timer > 0.0 else "helm")
 	var objective_text := _build_objective_text().trim_prefix("Objective: ").strip_edges()
-	objective_label.text = objective_text
-	if phase == "success":
-		objective_label.modulate = HUD_TEXT_SUCCESS
-	elif phase == "failed":
-		objective_label.modulate = HUD_TEXT_DANGER
-	else:
-		objective_label.modulate = HUD_TEXT_PRIMARY
+	var stage_snapshot := _build_stage_clock_snapshot(phase, pressure_phase, elapsed_seconds)
+	var stage_color: Color = stage_snapshot.get("color", HUD_TEXT_PRIMARY)
+	if clock_label != null:
+		clock_label.text = "Stage %s | %s" % [
+			str(stage_snapshot.get("stage", "A")),
+			str(stage_snapshot.get("title", "Dawn Push")),
+		]
+		clock_label.modulate = stage_color
+	if pressure_clock_label != null:
+		pressure_clock_label.text = pressure_label
+	if stage_clock_progress_bar != null:
+		stage_clock_progress_bar.value = float(stage_snapshot.get("progress", 0.0))
+		_apply_meter_bar_style(stage_clock_progress_bar, stage_color)
+	if stage_clock_icon != null:
+		if phase == "success":
+			hud_icons.set_icon(stage_clock_icon, "extraction")
+		elif phase == "failed":
+			hud_icons.set_icon(stage_clock_icon, "brace")
+		elif pressure_phase == NetworkRuntime.RUN_PRESSURE_PHASE_CALM:
+			hud_icons.set_icon(stage_clock_icon, "helm")
+		else:
+			hud_icons.set_icon(stage_clock_icon, "brace")
+
+	hud_icons.set_icon(objective_icon, _get_run_objective_icon_id(phase, local_station_id, selected_station_id, current_cargo, cargo_capacity))
+	if objective_label != null:
+		objective_label.text = objective_text
+		if phase == "success":
+			objective_label.modulate = HUD_TEXT_SUCCESS
+		elif phase == "failed":
+			objective_label.modulate = HUD_TEXT_DANGER
+		else:
+			objective_label.modulate = HUD_TEXT_PRIMARY
+
+	var goal_name := "Search Sector"
+	var goal_distance := INF
+	if local_overboard:
+		goal_name = "Ladder Marker"
+		var recovery_target := _get_local_recovery_target()
+		if not recovery_target.is_empty():
+			var target_position: Vector3 = recovery_target.get("position", boat_position)
+			goal_name = str(recovery_target.get("label", "Ladder Marker"))
+			goal_distance = boat_position.distance_to(target_position)
+	elif cargo_capacity > 0 and current_cargo >= cargo_capacity and not nearest_extraction.is_empty():
+		goal_name = str(nearest_extraction.get("label", "Extraction Outpost"))
+		goal_distance = extraction_distance
+	elif not nearest_salvage.is_empty():
+		goal_name = str(nearest_salvage.get("label", "Salvage Ring"))
+		goal_distance = wreck_distance
+	elif rescue_available and not nearest_rescue.is_empty():
+		goal_name = str(nearest_rescue.get("label", "Distress Site"))
+		goal_distance = rescue_distance
+	elif bool(NetworkRuntime.run_state.get("cache_available", false)) and not nearest_cache.is_empty():
+		goal_name = str(nearest_cache.get("label", "Resupply Cache"))
+		goal_distance = cache_distance
+	elif not nearest_extraction.is_empty():
+		goal_name = str(nearest_extraction.get("label", "Extraction Outpost"))
+		goal_distance = extraction_distance
+	var goal_chain := _build_goal_chain_text(local_overboard, local_downed, current_cargo, cargo_capacity, rescue_available)
+	if compass_label != null:
+		var goal_distance_text := "--"
+		if goal_distance < INF:
+			goal_distance_text = "%.0fm" % goal_distance
+		compass_label.text = "%s %03d | %s | %s %s" % [
+			compass_cardinal,
+			int(round(compass_heading_degrees)),
+			goal_chain,
+			goal_name,
+			goal_distance_text,
+		]
 
 	var health_meter_color := HUD_TEXT_SUCCESS
 	if local_downed or local_health <= NetworkRuntime.AVATAR_CRITICAL_THRESHOLD:
@@ -2169,10 +2416,10 @@ func _refresh_hud() -> void:
 	elif local_stamina <= 25.0:
 		stamina_meter_color = HUD_TEXT_WARNING
 	if health_meter_label != null:
-		health_meter_label.text = "HEALTH %d" % int(round(local_health))
+		health_meter_label.text = "CREW HP %d" % int(round(local_health))
 		health_meter_label.modulate = health_meter_color
 	if stamina_meter_label != null:
-		stamina_meter_label.text = "STAM %d" % int(round(local_stamina))
+		stamina_meter_label.text = "STAMINA %d" % int(round(local_stamina))
 		stamina_meter_label.modulate = stamina_meter_color
 	if health_meter_bar != null:
 		health_meter_bar.max_value = local_max_health
@@ -2183,252 +2430,103 @@ func _refresh_hud() -> void:
 		stamina_meter_bar.value = local_stamina
 		_apply_meter_bar_style(stamina_meter_bar, stamina_meter_color)
 
-	resource_label.text = "Cargo %d/%d | Reveal %d | Extract %.1f/%.1fs | Dist %s\nPatch Kits %d/%d | Gold %d | Haul %d mats / %d schematics" % [
+	_refresh_hotbar_slots(local_station_id)
+	if toolbelt_label != null:
+		toolbelt_label.text = _build_run_toolbelt_text(active_tool_id, local_station_id)
+	if station_label != null:
+		station_label.text = _build_station_prompt_compact(selected_station_id, local_station_id, local_overboard, local_downed)
+
+	var local_hint := _build_onboarding_text(selected_station_id, local_station_id).trim_prefix("Onboarding: ").strip_edges()
+	var propulsion_family := str(NetworkRuntime.boat_state.get("propulsion_family", NetworkRuntime.PROPULSION_FAMILY_RAFT_PADDLES))
+	var propulsion_label := str(NetworkRuntime.boat_state.get("propulsion_label", NetworkRuntime.get_propulsion_family_label(propulsion_family)))
+	var hull_ratio := hull_integrity / maxf(1.0, max_hull_integrity)
+	var inspect_requested := Input.is_key_pressed(KEY_ALT) or Input.is_key_pressed(KEY_TAB)
+	var inspect_forced := phase != "running" or hull_ratio <= 0.56 or breach_stacks > 0 or cargo_lost_to_sea > 0 or local_overboard or local_downed
+	var inspect_visible := inspect_requested or inspect_forced
+	if boat_inspect_panel != null:
+		boat_inspect_panel.visible = inspect_visible
+
+	if inspect_panel_icon != null:
+		hud_icons.set_icon(inspect_panel_icon, "brace" if hull_ratio <= 0.56 or breach_stacks > 0 else "repair-kit")
+
+	if boat_label != null:
+		boat_label.text = "Hull %.0f/%.0f | Breaches %d | Brace %s\n%s | Speed %.1f | Cargo %d/%d | Kits %d/%d" % [
+			hull_integrity,
+			max_hull_integrity,
+			breach_stacks,
+			brace_state,
+			propulsion_label,
+			float(NetworkRuntime.boat_state.get("speed", 0.0)),
+			current_cargo,
+			cargo_capacity,
+			repair_supplies,
+			repair_supplies_max,
+		]
+		boat_label.modulate = HUD_TEXT_DANGER if hull_ratio <= 0.35 else HUD_TEXT_WARNING if hull_ratio <= 0.6 else HUD_TEXT_PRIMARY
+
+	var storage_lines := PackedStringArray()
+	storage_lines.append("Storage %d/%d | Outposts %d | Bonus Gold %d" % [
 		current_cargo,
 		cargo_capacity,
 		revealed_extractions.size(),
-		extraction_progress,
-		extraction_duration,
-		extraction_distance_text,
-		repair_supplies,
-		repair_supplies_max,
 		int(NetworkRuntime.run_state.get("bonus_gold_bank", 0)),
-		NetworkRuntime._sum_material_dict_ui(NetworkRuntime.run_state.get("run_item_bank", {})),
-		Array(NetworkRuntime.run_state.get("run_schematic_bank", [])).size(),
-	]
-	if local_overboard:
-		var recovery_target := _get_local_recovery_target()
-		var target_label := str(recovery_target.get("label", "Recovery Point"))
-		resource_label.text = "Overboard | Swim Radius %.1fm | Recoveries %d\nTarget %s | Press F once you grab on" % [
-			NetworkRuntime.RUN_OVERBOARD_SWIM_RADIUS,
-			recoveries_completed,
-			target_label,
-		]
-	elif local_downed:
-		resource_label.text = "Downed | Recoveries %d | Crew Downed %d\nSelf recover %.1fs | Hold steady for a rally" % [
-			recoveries_completed,
-			crew_downed_count,
-			float(local_avatar_state.get("downed_timer", 0.0)),
-		]
+	])
+	if not nearest_extraction.is_empty():
+		storage_lines.append("Nearest outpost %.1fm" % extraction_distance)
+	if rescue_available and not nearest_rescue.is_empty():
+		storage_lines.append("Rescue window %.1f/%.1fs at %.1fm" % [rescue_progress, rescue_duration, rescue_distance])
+	elif rescue_completed:
+		storage_lines.append("Rescue secured")
+	if bool(NetworkRuntime.run_state.get("cache_available", false)) and not nearest_cache.is_empty():
+		storage_lines.append("Cache spotted %.1fm" % cache_distance)
+	if cargo_lost_to_sea > 0:
+		storage_lines.append("Cargo lost to sea %d" % cargo_lost_to_sea)
+	if resource_label != null:
+		resource_label.text = "\n".join(storage_lines)
 
-	var pressure_lines := PackedStringArray()
-	pressure_lines.append("%s | Biome %s | Loot %d left" % [layout_label, current_biome.replace("_", " "), loot_remaining])
-	pressure_lines.append("%s | Score %.0f | Nav %.0f | Salvage %.0f | Recovery %.0f | Extract %.0f" % [
-		str(NetworkRuntime.run_state.get("pressure_label", "Calm seas")),
-		float(NetworkRuntime.run_state.get("pressure_score", 0.0)),
-		float(NetworkRuntime.run_state.get("pressure_navigation", 0.0)),
-		float(NetworkRuntime.run_state.get("pressure_salvage", 0.0)),
-		float(NetworkRuntime.run_state.get("pressure_recovery", 0.0)),
-		float(NetworkRuntime.run_state.get("pressure_extraction", 0.0)),
+	var risk_lines := PackedStringArray()
+	risk_lines.append("%s | %s | Squalls %d" % [
+		pressure_label,
+		"Inside storm band" if _boat_inside_any_squall() else "Open water lane",
+		squall_bands.size(),
 	])
 	if not nearest_salvage.is_empty():
-		pressure_lines.append("Nearest Salvage %.1fm | %s" % [wreck_distance, str(nearest_salvage.get("label", "Salvage"))])
-	if rescue_available and not nearest_rescue.is_empty():
-		pressure_lines.append("Rescue %.1fm | Window %.1f/%.1fs" % [rescue_distance, rescue_progress, rescue_duration])
-	elif rescue_completed:
-		pressure_lines.append("Rescue secured")
-	if bool(NetworkRuntime.run_state.get("cache_available", false)) and not nearest_cache.is_empty():
-		pressure_lines.append("Cache %.1fm | Quick bonus stop" % cache_distance)
-	if not revealed_extractions.is_empty() and not nearest_extraction.is_empty():
-		pressure_lines.append("Outpost %.1fm | %s" % [extraction_distance, str(nearest_extraction.get("label", "Outpost"))])
-	if not squall_bands.is_empty():
-		pressure_lines.append("Squalls %d | %s" % [squall_bands.size(), "Inside storm band" if _boat_inside_any_squall() else "Route pressure"])
-	if cargo_lost_to_sea > 0:
-		pressure_lines.append("Cargo washed overboard: %d" % cargo_lost_to_sea)
+		risk_lines.append("Nearest salvage %.1fm" % wreck_distance)
+	if detached_chunk_count > 0:
+		risk_lines.append("Detached chunks %d" % detached_chunk_count)
 	if overboard_count > 0:
-		pressure_lines.append("Crew overboard: %d" % overboard_count)
-	if crew_downed_count > 0:
-		pressure_lines.append("Crew downed: %d" % crew_downed_count)
-	if crew_critical_count > 0:
-		pressure_lines.append("Crew critical: %d" % crew_critical_count)
-	if crew_exhausted_count > 0:
-		pressure_lines.append("Crew exhausted: %d" % crew_exhausted_count)
-	if bool(NetworkRuntime.run_state.get("propulsion_crisis", false)) or bool(NetworkRuntime.run_state.get("hull_crisis", false)) or bool(NetworkRuntime.run_state.get("recovery_crisis", false)):
-		pressure_lines.append("Crisis flags | Propulsion %s | Hull %s | Recovery %s | Support %s" % [
-			"Yes" if bool(NetworkRuntime.run_state.get("propulsion_crisis", false)) else "No",
-			"Yes" if bool(NetworkRuntime.run_state.get("hull_crisis", false)) else "No",
-			"Yes" if bool(NetworkRuntime.run_state.get("recovery_crisis", false)) else "No",
-			"Yes" if bool(NetworkRuntime.run_state.get("support_crisis", false)) else "No",
-		])
-	run_label.text = "\n".join(pressure_lines)
+		risk_lines.append("Crew overboard %d | Recoveries %d" % [overboard_count, recoveries_completed])
+	if run_label != null:
+		run_label.text = "\n".join(risk_lines)
 
-	var station_lines := PackedStringArray()
-	for station_id in _get_claimable_station_ids():
-		var occupant_name := NetworkRuntime.get_station_occupant_name(station_id)
-		var marker := ">" if station_id == selected_station_id else " "
-		station_lines.append("%s %s %s" % [
-			marker,
-			NetworkRuntime.get_station_label(station_id),
-			occupant_name,
-		])
-	station_lines.append("  Brace Anywhere")
-	station_lines.append("  Patch Nearby Hull")
-	if local_overboard:
-		station_lines.append("  Swim To Ladder")
-	elif local_downed:
-		station_lines.append("  Wait For Rally")
-	station_label.text = "Deck Jobs | Tool %s\n%s" % [_get_run_tool_label(active_tool_id), ("\n".join(station_lines) if not station_lines.is_empty() else "No stations available.")]
+	if interaction_label != null:
+		interaction_label.text = "Inspect: hold Alt (or Tab). %s" % local_hint
+	if status_label != null:
+		var item_label := "None"
+		if not active_tool_id.is_empty():
+			item_label = _get_run_tool_label(active_tool_id)
+		status_label.text = "%s | Heading %s %03d | Item %s\nQ/E stations | F claim/use | LMB item | Space brace | I inventory" % [
+			phase.capitalize(),
+			compass_cardinal,
+			int(round(compass_heading_degrees)),
+			item_label,
+		]
+		status_label.modulate = HUD_TEXT_MUTED
 
-	var local_hint := _build_onboarding_text(selected_station_id, local_station_id).trim_prefix("Onboarding: ").strip_edges()
-	onboarding_label.text = "Local Tip\n%s" % local_hint
+	if not inspect_visible and phase == "running":
+		if boat_label != null:
+			boat_label.text = ""
+		if resource_label != null:
+			resource_label.text = ""
+		if run_label != null:
+			run_label.text = ""
+		if interaction_label != null:
+			interaction_label.text = ""
+		if status_label != null:
+			status_label.text = ""
 
-	var propulsion_family := str(NetworkRuntime.boat_state.get("propulsion_family", NetworkRuntime.PROPULSION_FAMILY_RAFT_PADDLES))
-	var propulsion_label := str(NetworkRuntime.boat_state.get("propulsion_label", NetworkRuntime.get_propulsion_family_label(propulsion_family)))
-	var propulsion_fault := str(NetworkRuntime.boat_state.get("fault_state", NetworkRuntime.PROPULSION_FAULT_STATE_STABLE))
-	boat_label.text = "Hull %.0f/%.0f | Speed %.1f/%.1f\n%s | Order %s | Eff %d%% | Fault %s\nDrive HP %.0f/%.0f | Actual Thrust %d%% | Rudder %.0f%%\nPort %.0f%% | Starboard %.0f%% | Trim %.0f%% | Sync %.0f%% | Heat %.0f%% | Pressure %.0f%%\nBreaches %d | Patch Kits %d/%d | Blocks %d active / %d lost\nBrace %s | Cargo %d/%d | Workload %.0f | Crew %d | Collisions %d\nSafety %.0f | Stability %.0f | Repair %.0f%% | Recovery %.0f | Redundancy %.0f | Pathing %.0f" % [
-		hull_integrity,
-		max_hull_integrity,
-		float(NetworkRuntime.boat_state.get("speed", 0.0)),
-		float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED)),
-		propulsion_label,
-		str(NetworkRuntime.boat_state.get("speed_order", "Stop")),
-		int(round(float(NetworkRuntime.boat_state.get("propulsion_efficiency", 0.0)) * 100.0)),
-		NetworkRuntime.get_propulsion_fault_label(propulsion_fault),
-		float(NetworkRuntime.boat_state.get("propulsion_health", 100.0)),
-		float(NetworkRuntime.boat_state.get("propulsion_health_rating", 100.0)),
-		int(round(float(NetworkRuntime.boat_state.get("actual_thrust", 0.0)) * 100.0)),
-		float(NetworkRuntime.boat_state.get("rudder_input", 0.0)) * 100.0,
-		float(NetworkRuntime.boat_state.get("propulsion_port_output", 0.0)) * 100.0,
-		float(NetworkRuntime.boat_state.get("propulsion_starboard_output", 0.0)) * 100.0,
-		float(NetworkRuntime.boat_state.get("propulsion_trim", 1.0)) * 100.0,
-		float(NetworkRuntime.boat_state.get("propulsion_sync", 0.0)) * 100.0,
-		float(NetworkRuntime.boat_state.get("propulsion_heat", 0.0)) * 100.0,
-		float(NetworkRuntime.boat_state.get("propulsion_pressure", 0.0)) * 100.0,
-		breach_stacks,
-		repair_supplies,
-		repair_supplies_max,
-		active_block_count,
-		destroyed_block_count,
-		brace_state,
-		current_cargo,
-		cargo_capacity,
-		float(NetworkRuntime.boat_state.get("workload", 0.0)),
-		int(NetworkRuntime.boat_state.get("recommended_crew", 1)),
-		int(NetworkRuntime.boat_state.get("collision_count", 0)),
-		float(NetworkRuntime.boat_state.get("crew_safety", 0.0)),
-		float(NetworkRuntime.boat_state.get("storm_stability", 0.0)),
-		float(NetworkRuntime.boat_state.get("repair_coverage", 0.0)),
-		float(NetworkRuntime.boat_state.get("recovery_access_rating", 0.0)),
-		float(NetworkRuntime.boat_state.get("damage_redundancy", 0.0)),
-		float(NetworkRuntime.boat_state.get("pathing_score", 0.0)),
-	]
-	if overboard_count > 0:
-		boat_label.text += "\nOverboard %d | Recoveries %d" % [overboard_count, recoveries_completed]
-	boat_label.text += "\nCrew Downed %d | Critical %d | Exhausted %d" % [
-		crew_downed_count,
-		crew_critical_count,
-		crew_exhausted_count,
-	]
-	var hull_ratio := hull_integrity / maxf(1.0, max_hull_integrity)
-	var propulsion_ratio := float(NetworkRuntime.boat_state.get("propulsion_health", 100.0)) / maxf(1.0, float(NetworkRuntime.boat_state.get("propulsion_health_rating", 100.0)))
-	hud_icons.set_icon(survival_panel_icon, "brace" if hull_ratio <= 0.6 or detached_chunk_count > 0 or breach_stacks > 0 else "repair-kit")
-	if hull_ratio <= 0.3 or propulsion_ratio <= 0.28 or detached_chunk_count > 0:
-		boat_label.modulate = HUD_TEXT_DANGER
-	elif hull_ratio <= 0.6 or propulsion_ratio <= 0.52 or breach_stacks > 0:
-		boat_label.modulate = HUD_TEXT_WARNING
-	else:
-		boat_label.modulate = HUD_TEXT_PRIMARY
-
-	var interaction_lines := PackedStringArray()
-	var selected_label := NetworkRuntime.get_station_label(selected_station_id) if not selected_station_id.is_empty() else "No station"
-	var local_label := NetworkRuntime.get_station_label(local_station_id) if not local_station_id.is_empty() else "Free Roam"
-	interaction_lines.append("Selected %s | You %s" % [selected_label, local_label])
-	var selected_prompt := NetworkRuntime.get_station_prompt(selected_station_id)
-	var local_prompt := NetworkRuntime.get_station_prompt(local_station_id)
-	if local_downed:
-		interaction_lines.append("You are downed. Hold still and avoid fresh hits while the timer runs.")
-		interaction_lines.append("A nearby crewmate can hold F to rally you back with partial health and stamina.")
-	elif local_overboard:
-		var recovery_target := _get_local_recovery_target()
-		if recovery_target.is_empty():
-			interaction_lines.append("Swim toward a ladder or stern line before the boat drifts farther away.")
-		elif bool(recovery_target.get("ready", false)):
-			interaction_lines.append("Grabbed %s. Press F to climb back aboard." % str(recovery_target.get("label", "Recovery Point")))
-		else:
-			interaction_lines.append("Swim to the %s and press F once you reach it." % str(recovery_target.get("label", "Recovery Point")))
-	elif not rally_target.is_empty():
-		var rally_progress := assist_rally_hold_seconds if assist_rally_hold_target_peer_id == int(rally_target.get("peer_id", 0)) else 0.0
-		interaction_lines.append("Hold F to rally %s (%.1f/%.1fs)." % [
-			str(rally_target.get("name", "Crew")),
-			rally_progress,
-			ASSIST_RALLY_HOLD_SECONDS,
-		])
-	elif not selected_station_id.is_empty() and local_station_id.is_empty():
-		if _is_local_near_station(selected_station_id):
-			interaction_lines.append("Press F to take %s from this deck position." % selected_label)
-		else:
-			interaction_lines.append("Move closer to %s before claiming it." % selected_label)
-		if not selected_prompt.is_empty():
-			interaction_lines.append(selected_prompt)
-	if local_station_id == "helm":
-		interaction_lines.append("Stay near the helm to keep steering. Drift away and you lose control.")
-	elif local_station_id == "drive":
-		match propulsion_family:
-			NetworkRuntime.PROPULSION_FAMILY_SAIL_RIG:
-				interaction_lines.append("Trim deck: press G to trim for the wind and R to reef when a bad angle or squall starts stealing drive.")
-			NetworkRuntime.PROPULSION_FAMILY_STEAM_TUG:
-				interaction_lines.append("Engine console: press G to stoke pressure and R to vent heat before the boiler turns on you.")
-			NetworkRuntime.PROPULSION_FAMILY_TWIN_ENGINE:
-				interaction_lines.append("Engineering panel: press G to tune response and R to cool the engines before they desync.")
-			_:
-				interaction_lines.append("Paddle bench: press G to dig in for burst speed and R to backwater when helm needs the boat to settle.")
-	elif local_station_id == "grapple":
-		interaction_lines.append("Stay on the crane and recover loot only when the helm has settled the boat.")
-	elif not local_prompt.is_empty():
-		interaction_lines.append(local_prompt)
-	elif not _find_local_repair_target().is_empty():
-		interaction_lines.append("You are close enough to patch this section. Spend kits only when the trade is worth it.")
-	else:
-		interaction_lines.append("Move to the helm, drive station, or grapple crane, brace anywhere, and patch damage up close.")
-	if local_stamina_exhausted:
-		interaction_lines.append("Too winded to brace, patch, or rally until stamina climbs back above 20.")
-	elif local_stamina < NetworkRuntime.AVATAR_REPAIR_STAMINA_COST:
-		interaction_lines.append("Stamina is low. Save your next burst for the moment that matters.")
-	if not local_downed and local_health <= NetworkRuntime.AVATAR_CRITICAL_THRESHOLD:
-		interaction_lines.append("Critical - recover or play safe before the next slam.")
-	interaction_label.text = "\n".join(interaction_lines)
-
-	var crew_lines := PackedStringArray()
-	for peer_id in NetworkRuntime.get_player_peer_ids():
-		var peer_data: Dictionary = NetworkRuntime.peer_snapshot[peer_id]
-		var crew_station := NetworkRuntime.get_peer_station_id(int(peer_id))
-		var peer_reaction := _get_reaction_visual(int(peer_id))
-		var crew_avatar_state: Dictionary = NetworkRuntime.get_run_avatar_state().get(int(peer_id), {})
-		var reaction_text := ""
-		if not peer_reaction.is_empty():
-			reaction_text = " | %s" % str(peer_reaction.get("type", "reacting")).capitalize()
-		var badge_text := _format_avatar_badges(crew_avatar_state)
-		if not badge_text.is_empty():
-			reaction_text += " | %s" % badge_text
-		crew_lines.append("%s - %s%s" % [
-			str(peer_data.get("name", "Unknown")),
-			NetworkRuntime.get_station_label(crew_station) if not crew_station.is_empty() else "Free",
-			reaction_text,
-		])
-	roster_label.text = "Crew Snapshot\n%s" % ("\n".join(crew_lines) if not crew_lines.is_empty() else "No crew connected yet.")
-
-	status_label.text = "Seed %d | %s | %s" % [
-		NetworkRuntime.run_seed,
-		phase.capitalize(),
-		NetworkRuntime.status_message,
-	]
-	status_label.text += "\nVital %.0f/%.0f HP | %.0f/%.0f STA" % [
-		local_health,
-		local_max_health,
-		local_stamina,
-		local_max_stamina,
-	]
-	status_label.text += "\n%s | Stability %.0f | Safety %.0f | Repair %.0f%%" % [
-		propulsion_label,
-		float(NetworkRuntime.boat_state.get("storm_stability", 0.0)),
-		float(NetworkRuntime.boat_state.get("crew_safety", 0.0)),
-		float(NetworkRuntime.boat_state.get("repair_coverage", 0.0)),
-	]
-	status_label.modulate = HUD_TEXT_MUTED
-	if footer_label != null:
-		footer_label.text = "Mouse aim | Shift burst | 1-6 tools | I inventory | Q/E stations | F use/claim/rally | Space brace | G grapple/drive | R patch/vent"
-	toolbelt_label.text = _build_run_toolbelt_text()
-	inventory_label.text = _build_run_inventory_text()
+	if inventory_label != null:
+		inventory_label.text = _build_run_inventory_text()
 	if inventory_panel != null:
 		inventory_panel.visible = inventory_panel_visible
 
@@ -2463,9 +2561,9 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 		else:
 			lines.append("Press G to dig the paddles in for burst speed and R to backwater when the helm needs control.")
 	elif local_station_id == "grapple":
-		lines.append("Press G to recover nearby wreck salvage, rescue cargo, or bonus caches once the helm has slowed the boat.")
+		lines.append("Use your equipped grapple item here to recover nearby wreck salvage, rescue cargo, or bonus caches once the helm has slowed the boat.")
 	else:
-		lines.append("Brace anywhere with Space, or patch nearby hull damage with R.")
+		lines.append("Brace anywhere with Space, or use your equipped hammer item near damaged hull sections.")
 
 	lines.append("Unbraced wreck grapples add hull breaches that slow the boat until repaired.")
 	lines.append("Repairs now spend shared patch kits, so decide whether to patch now or save them for extraction.")
@@ -2556,8 +2654,7 @@ func _apply_runtime_block_visual_style(block_node: Node3D, block_def: Dictionary
 		if body_material == null:
 			body_material = StandardMaterial3D.new()
 			mesh_instance.material_override = body_material
-		body_material.albedo_color = block_color
-		body_material.roughness = 0.45
+		BoatBlockMaterials.apply_wood(body_material, block_color, 0.45)
 
 	var facing_marker := block_node.get_node_or_null("Marker") as MeshInstance3D
 	if facing_marker != null:
@@ -2624,16 +2721,16 @@ func _make_runtime_block_visual(block: Dictionary, detached_visual: bool) -> Nod
 	mesh_instance.name = "Body"
 	var mesh := BoxMesh.new()
 	var block_size: Vector3 = block_def.get("size", Vector3.ONE)
-	mesh.size = block_size
+	mesh.size = block_size * BOAT_BLOCK_VISUAL_SCALE
 	mesh_instance.mesh = mesh
 	block_node.add_child(mesh_instance)
 
 	var facing_marker := MeshInstance3D.new()
 	facing_marker.name = "Marker"
 	var marker_mesh := BoxMesh.new()
-	marker_mesh.size = Vector3(0.22, 0.14, 0.26)
+	marker_mesh.size = Vector3(0.22, 0.14, 0.26) * BOAT_BLOCK_VISUAL_SCALE
 	facing_marker.mesh = marker_mesh
-	facing_marker.position = Vector3(0.0, 0.0, -0.36)
+	facing_marker.position = Vector3(0.0, 0.0, -0.36 * BOAT_BLOCK_VISUAL_SCALE)
 	block_node.add_child(facing_marker)
 	_apply_runtime_block_visual_style(
 		block_node,
@@ -2725,6 +2822,9 @@ func _refresh_station_visuals() -> void:
 	_ensure_selected_station_valid()
 	var local_peer_id := _get_local_peer_id()
 	var selected_station_id := _get_selected_station_id()
+	var local_station_id := NetworkRuntime.get_peer_station_id(local_peer_id)
+	var local_overboard := _is_local_overboard()
+	var local_downed := _is_local_downed()
 
 	for station_id in NetworkRuntime.get_station_ids():
 		var station_visual: Dictionary = station_visuals.get(station_id, {})
@@ -2761,10 +2861,48 @@ func _refresh_station_visuals() -> void:
 				label_text += "\n%s" % burst_action.capitalize()
 		if not bool(station_data.get("active", true)):
 			label_text += "\nOffline"
+		var show_label: bool = station_id == selected_station_id or occupant_peer_id == local_peer_id
+		if not local_overboard and not local_downed and _is_local_near_station(station_id, 0.9):
+			show_label = true
+		if not local_station_id.is_empty() and local_station_id == station_id:
+			show_label = true
+		if local_overboard or local_downed:
+			show_label = show_label and station_id == selected_station_id
 		if station_root.has_method("set_marker_color"):
 			station_root.call("set_marker_color", color)
 		if station_root.has_method("set_marker_text"):
 			station_root.call("set_marker_text", label_text)
+		if station_root.has_method("set_label_visible"):
+			station_root.call("set_label_visible", show_label and not label_text.is_empty())
+
+func _refresh_recovery_visuals() -> void:
+	if recovery_visuals.is_empty():
+		return
+	var local_overboard := _is_local_overboard()
+	var active_target := _get_local_recovery_target()
+	var local_world_position := _get_local_avatar_world_position()
+	for target_variant in NetworkRuntime.get_run_recovery_points():
+		var target: Dictionary = target_variant
+		var target_id := str(target.get("id", ""))
+		var recovery_visual: Dictionary = recovery_visuals.get(target_id, {})
+		var recovery_root := recovery_visual.get("root") as Node3D
+		if recovery_root == null:
+			continue
+		var water_position: Vector3 = target.get("water_position", Vector3.ZERO)
+		var world_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO) + water_position.rotated(Vector3.UP, float(NetworkRuntime.boat_state.get("rotation_y", 0.0)))
+		world_position.y = NetworkRuntime.RUN_OVERBOARD_WATER_HEIGHT
+		var is_active_target: bool = target_id == str(active_target.get("id", ""))
+		var near_marker: bool = local_world_position.distance_to(world_position) <= 2.6
+		var show_label: bool = local_overboard or near_marker or is_active_target
+		if recovery_root.has_method("set_marker_color"):
+			var recovery_color := Color(0.20, 0.70, 0.74)
+			if is_active_target:
+				recovery_color = HUD_TEXT_WARNING
+				if bool(active_target.get("ready", false)):
+					recovery_color = HUD_TEXT_SUCCESS
+			recovery_root.call("set_marker_color", recovery_color)
+		if recovery_root.has_method("set_label_visible"):
+			recovery_root.call("set_label_visible", show_label)
 
 func _refresh_crew_visuals() -> void:
 	if crew_container == null or not is_instance_valid(crew_container) or not crew_container.is_inside_tree():
@@ -3091,6 +3229,8 @@ func _refresh_result_overlay() -> void:
 	var phase := str(NetworkRuntime.run_state.get("phase", "running"))
 	result_layer.visible = phase != "running"
 	if phase == "running":
+		if result_panel != null:
+			result_panel.modulate = Color.WHITE
 		return
 
 	hud_icons.set_icon(result_panel_icon, "extraction" if phase == "success" else "brace")
@@ -3101,25 +3241,36 @@ func _refresh_result_overlay() -> void:
 	var loot_lost_items := Dictionary(NetworkRuntime.run_state.get("loot_lost_items", {}))
 	var repair_debt_delta := Dictionary(NetworkRuntime.run_state.get("repair_debt_delta", {}))
 	result_title_label.text = str(NetworkRuntime.run_state.get("result_title", "Run Complete"))
-	result_body_label.text = "%s\n\nCollected: %d\nSecured: %d\nLost: %d\nGold: %d\nMaterials: %d\nSchematics: %d\nLost Haul: %d\nRepair Debt Gold: %d\nRepair Debt Mats: %d\nCache Recovered: %s\nPatch Kits Left: %d\nBlocks Destroyed: %d\nChunks Lost: %d\nCargo Lost To Sea: %d\nBlueprint Version: %d" % [
+	result_body_label.text = "%s\n\nSECURED\nCargo %d / %d | Gold %d | Mats %d | Schematics %d\nCache %s | Patch Kits Left %d\n\nINCIDENT REPORT\nCargo Lost %d | Lost Haul %d | Blocks Destroyed %d | Chunks Lost %d\nSea Loss %d | Repair Debt %d gold / %d mats\n\nNEXT DOCK STATE\nBlueprint v%d | Spend it in the yard and relaunch." % [
 		str(NetworkRuntime.run_state.get("result_message", "")),
-		cargo_count,
 		cargo_secured,
-		cargo_lost,
+		cargo_count,
 		int(NetworkRuntime.run_state.get("reward_gold", 0)),
 		NetworkRuntime._sum_material_dict_ui(reward_items),
 		Array(NetworkRuntime.run_state.get("reward_schematics", [])).size(),
-		NetworkRuntime._sum_material_dict_ui(loot_lost_items),
-		int(repair_debt_delta.get("gold", 0)),
-		NetworkRuntime._sum_material_dict_ui(repair_debt_delta.get("items", {})),
-		"yes" if bool(NetworkRuntime.run_state.get("cache_recovered", false)) else "no",
+		"Recovered" if bool(NetworkRuntime.run_state.get("cache_recovered", false)) else "Missed",
 		int(NetworkRuntime.run_state.get("repair_supplies", 0)),
+		cargo_lost,
+		NetworkRuntime._sum_material_dict_ui(loot_lost_items),
 		int(NetworkRuntime.run_state.get("destroyed_block_count", 0)),
 		int(NetworkRuntime.run_state.get("detached_chunk_count", 0)),
 		int(NetworkRuntime.run_state.get("cargo_lost_to_sea", 0)),
+		int(repair_debt_delta.get("gold", 0)),
+		NetworkRuntime._sum_material_dict_ui(repair_debt_delta.get("items", {})),
 		int(NetworkRuntime.run_state.get("blueprint_version", 1)),
 	]
-	result_panel.modulate = Color(0.98, 1.0, 0.98) if phase == "success" else Color(1.0, 0.94, 0.94)
+	_apply_hud_panel_style(
+		result_panel,
+		ExpeditionHudSkin.SEA_GLASS_GREEN if phase == "success" else ExpeditionHudSkin.FLARE_RED,
+		ExpeditionHudSkin.HANGAR_PANEL_SOFT,
+		"manifest"
+	)
+	ExpeditionHudSkin.apply_heading(result_title_label, HUD_TEXT_SUCCESS if phase == "success" else HUD_TEXT_WARNING)
+	ExpeditionHudSkin.apply_button(
+		result_continue_button,
+		ExpeditionHudSkin.SEA_GLASS_GREEN if phase == "success" else ExpeditionHudSkin.BUOY_ORANGE,
+		ExpeditionHudSkin.RUST_BROWN
+	)
 	result_continue_button.disabled = false
 
 func _get_run_objective_icon_id(
@@ -3158,8 +3309,9 @@ func _push_event_callout(text: String, color: Color, duration: float = 1.9) -> v
 		return
 	event_callout_timer = duration
 	event_callout_color = color
-	event_callout_label.text = text
+	event_callout_label.text = text.to_upper()
 	event_callout_label.modulate = color
+	event_callout_label.scale = Vector2(1.06, 1.06)
 	event_callout_label.visible = true
 
 func _update_event_callout(delta: float) -> void:
@@ -3167,11 +3319,14 @@ func _update_event_callout(delta: float) -> void:
 		return
 	if event_callout_timer <= 0.0:
 		event_callout_label.visible = false
+		event_callout_label.scale = Vector2.ONE
 		return
 	event_callout_timer = maxf(0.0, event_callout_timer - delta)
 	var fade_ratio := clampf(event_callout_timer / 1.9, 0.0, 1.0)
 	event_callout_label.visible = true
 	event_callout_label.modulate = Color(event_callout_color.r, event_callout_color.g, event_callout_color.b, clampf(0.2 + fade_ratio, 0.0, 1.0))
+	var pulse := 1.0 + 0.06 * fade_ratio
+	event_callout_label.scale = Vector2(pulse, pulse)
 
 func _tick_reaction_visuals(delta: float) -> void:
 	var expired_peer_ids: Array = []
@@ -3469,7 +3624,6 @@ func _collect_station_interaction_input(delta: float, input_state: Dictionary) -
 		interact_latched = interact_pressed
 		return
 	if interact_pressed and not interact_latched:
-		var active_tool_id := _get_selected_run_tool_id()
 		if _is_local_overboard():
 			input_state["request_recover"] = true
 			interact_latched = interact_pressed
@@ -3477,21 +3631,6 @@ func _collect_station_interaction_input(delta: float, input_state: Dictionary) -
 		if _is_local_downed():
 			interact_latched = interact_pressed
 			return
-		match active_tool_id:
-			"brace":
-				if _can_local_use_stamina_action(NetworkRuntime.AVATAR_BRACE_STAMINA_COST):
-					input_state["request_brace"] = true
-				else:
-					_show_local_action_blocked("Too winded to brace")
-				interact_latched = interact_pressed
-				return
-			"repair":
-				if _can_local_use_stamina_action(NetworkRuntime.AVATAR_REPAIR_STAMINA_COST):
-					input_state["request_repair"] = true
-				else:
-					_show_local_action_blocked("Too winded to patch")
-				interact_latched = interact_pressed
-				return
 		var selected_station_id := _get_selected_station_id()
 		var selected_station: Dictionary = NetworkRuntime.station_state.get(selected_station_id, {})
 		var occupant_peer_id := int(selected_station.get("occupant_peer_id", 0))
@@ -3502,12 +3641,33 @@ func _collect_station_interaction_input(delta: float, input_state: Dictionary) -
 	interact_latched = interact_pressed
 
 func _collect_action_input(input_state: Dictionary) -> void:
+	var item_use_pressed := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 	if _is_local_overboard() or _is_local_downed():
+		if _is_local_overboard() and item_use_pressed and not item_use_request_latched and _get_selected_run_tool_id() == "recover":
+			input_state["request_recover"] = true
+		item_use_request_latched = item_use_pressed
 		brace_request_latched = Input.is_key_pressed(KEY_SPACE)
 		grapple_request_latched = Input.is_key_pressed(KEY_G)
 		repair_request_latched = Input.is_key_pressed(KEY_R)
 		return
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
+	var active_tool_id := _get_selected_run_tool_id()
+
+	if item_use_pressed and not item_use_request_latched:
+		match active_tool_id:
+			"grapple":
+				if local_station_id == "grapple":
+					input_state["request_grapple"] = true
+				else:
+					_show_local_action_blocked("Need the grapple station")
+			"repair":
+				if _can_local_use_stamina_action(NetworkRuntime.AVATAR_REPAIR_STAMINA_COST):
+					input_state["request_repair"] = true
+				else:
+					_show_local_action_blocked("Too winded to patch")
+			"recover":
+				_show_local_action_blocked("Recovery gear is for overboard use")
+	item_use_request_latched = item_use_pressed
 
 	var brace_pressed := Input.is_key_pressed(KEY_SPACE)
 	if brace_pressed and not brace_request_latched:
@@ -4056,9 +4216,19 @@ func _update_boat_visual(delta: float) -> void:
 	var server_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var rotation_y: float = float(NetworkRuntime.boat_state.get("rotation_y", 0.0))
 	var sea_pose := _sample_boat_wave_pose(server_position, rotation_y)
-	var target_position := server_position + Vector3(0.0, 0.34 + float(sea_pose.get("height", 0.0)), 0.0)
-	var target_pitch := float(sea_pose.get("pitch", 0.0))
-	var target_roll := -float(sea_pose.get("roll", 0.0))
+	var draft_ratio := float(NetworkRuntime.boat_state.get("draft_ratio", 0.72))
+	var roll_resistance := clampf(float(NetworkRuntime.boat_state.get("roll_resistance", 50.0)) / 100.0, 0.0, 1.0)
+	var pitch_resistance := clampf(float(NetworkRuntime.boat_state.get("pitch_resistance", 50.0)) / 100.0, 0.0, 1.0)
+	var heel_bias := float(NetworkRuntime.boat_state.get("heel_bias", 0.0))
+	var trim_bias := float(NetworkRuntime.boat_state.get("trim_bias", 0.0))
+	var ride_height_offset := -clampf((draft_ratio - 0.72) * 0.85, -0.04, 0.34)
+	var pitch_wave_scale := lerpf(1.12, 0.45, pitch_resistance)
+	var roll_wave_scale := lerpf(1.18, 0.40, roll_resistance)
+	var hydro_pitch := clampf(trim_bias * 0.30, -0.22, 0.22)
+	var hydro_roll := clampf(heel_bias * 0.38, -0.26, 0.26)
+	var target_position := server_position + Vector3(0.0, 0.36 + ride_height_offset + float(sea_pose.get("height", 0.0)), 0.0)
+	var target_pitch := float(sea_pose.get("pitch", 0.0)) * pitch_wave_scale + hydro_pitch
+	var target_roll := -(float(sea_pose.get("roll", 0.0)) * roll_wave_scale + hydro_roll)
 	boat_root.position = boat_root.position.lerp(target_position, minf(1.0, delta * 6.8))
 	boat_root.rotation.y = lerp_angle(boat_root.rotation.y, rotation_y, minf(1.0, delta * 8.0))
 	boat_root.rotation.x = lerpf(boat_root.rotation.x, target_pitch, minf(1.0, delta * 4.2))
@@ -4475,12 +4645,6 @@ func _unhandled_input(event: InputEvent) -> void:
 					return
 				KEY_4, KEY_KP_4:
 					_select_run_tool(3)
-					return
-				KEY_5, KEY_KP_5:
-					_select_run_tool(4)
-					return
-				KEY_6, KEY_KP_6:
-					_select_run_tool(5)
 					return
 		return
 	if event is InputEventKey and event.pressed and not event.echo and (event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER):

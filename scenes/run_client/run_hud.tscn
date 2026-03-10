@@ -1,266 +1,512 @@
-[gd_scene load_steps=1 format=3]
+[gd_scene format=3 uid="uid://c0d5rb4sxu4lj"]
 
-[node name="RunHUD" type="CanvasLayer"]
+[node name="RunHUD" type="CanvasLayer" unique_id=2023986015]
 
-[node name="ObjectivePanel" type="PanelContainer" parent="."]
-anchor_right = 1.0
-offset_left = 360.0
+[node name="StageClockPanel" type="PanelContainer" parent="." unique_id=1506505236]
+offset_left = 18.0
 offset_top = 18.0
-offset_right = -360.0
-offset_bottom = 96.0
+offset_right = 244.0
+offset_bottom = 156.0
 
-[node name="Margin" type="MarginContainer" parent="ObjectivePanel"]
+[node name="Margin" type="MarginContainer" parent="StageClockPanel" unique_id=174282349]
 layout_mode = 2
-theme_override_constants/margin_left = 18
-theme_override_constants/margin_top = 12
-theme_override_constants/margin_right = 18
-theme_override_constants/margin_bottom = 12
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 10
 
-[node name="Layout" type="VBoxContainer" parent="ObjectivePanel/Margin"]
+[node name="Layout" type="VBoxContainer" parent="StageClockPanel/Margin" unique_id=761542227]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="HeadingRow" type="HBoxContainer" parent="ObjectivePanel/Margin/Layout"]
+[node name="HeadingRow" type="HBoxContainer" parent="StageClockPanel/Margin/Layout" unique_id=1819212486]
 layout_mode = 2
-alignment = 1
 theme_override_constants/separation = 8
 
-[node name="ObjectiveIcon" type="TextureRect" parent="ObjectivePanel/Margin/Layout/HeadingRow"]
+[node name="ClockIcon" type="TextureRect" parent="StageClockPanel/Margin/Layout/HeadingRow" unique_id=959257486]
+custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
-custom_minimum_size = Vector2(22, 22)
 
-[node name="ObjectiveHeading" type="Label" parent="ObjectivePanel/Margin/Layout/HeadingRow"]
+[node name="ClockHeading" type="Label" parent="StageClockPanel/Margin/Layout/HeadingRow" unique_id=2011050058]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "RUN CLOCK"
+vertical_alignment = 1
+
+[node name="ClockLabel" type="Label" parent="StageClockPanel/Margin/Layout" unique_id=1741497729]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "Stage A | Dawn Push"
+
+[node name="PressureLabel" type="Label" parent="StageClockPanel/Margin/Layout" unique_id=506479289]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "Calm seas"
+autowrap_mode = 3
+
+[node name="ClockProgressBar" type="ProgressBar" parent="StageClockPanel/Margin/Layout" unique_id=1058244213]
+custom_minimum_size = Vector2(0, 10)
+layout_mode = 2
+value = 10.0
+show_percentage = false
+
+[node name="ObjectivePanel" type="PanelContainer" parent="." unique_id=431645926]
+anchors_preset = 10
+anchor_right = 1.0
+offset_left = 334.0
+offset_top = 18.0
+offset_right = -334.0
+offset_bottom = 110.0
+
+[node name="Margin" type="MarginContainer" parent="ObjectivePanel" unique_id=2107492731]
+layout_mode = 2
+theme_override_constants/margin_left = 18
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 18
+theme_override_constants/margin_bottom = 10
+
+[node name="Layout" type="VBoxContainer" parent="ObjectivePanel/Margin" unique_id=999043113]
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="HeadingRow" type="HBoxContainer" parent="ObjectivePanel/Margin/Layout" unique_id=1501064386]
+layout_mode = 2
+theme_override_constants/separation = 8
+alignment = 1
+
+[node name="ObjectiveIcon" type="TextureRect" parent="ObjectivePanel/Margin/Layout/HeadingRow" unique_id=677473319]
+custom_minimum_size = Vector2(22, 22)
+layout_mode = 2
+
+[node name="ObjectiveHeading" type="Label" parent="ObjectivePanel/Margin/Layout/HeadingRow" unique_id=1295389507]
 layout_mode = 2
 theme_override_font_sizes/font_size = 13
 text = "CURRENT ORDER"
 vertical_alignment = 1
 
-[node name="ObjectiveLabel" type="Label" parent="ObjectivePanel/Margin/Layout"]
+[node name="CompassLabel" type="Label" parent="ObjectivePanel/Margin/Layout" unique_id=1862974564]
 layout_mode = 2
-theme_override_font_sizes/font_size = 18
-autowrap_mode = 3
+theme_override_font_sizes/font_size = 11
+text = "N 000 | OPEN SEA | TARGET --"
 horizontal_alignment = 1
 
-[node name="ExtractionPanel" type="PanelContainer" parent="."]
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -326.0
-offset_top = 132.0
-offset_right = -18.0
-offset_bottom = 276.0
-
-[node name="Margin" type="MarginContainer" parent="ExtractionPanel"]
+[node name="ObjectiveLabel" type="Label" parent="ObjectivePanel/Margin/Layout" unique_id=1036068013]
 layout_mode = 2
-theme_override_constants/margin_left = 16
-theme_override_constants/margin_top = 12
-theme_override_constants/margin_right = 16
-theme_override_constants/margin_bottom = 12
-
-[node name="Layout" type="VBoxContainer" parent="ExtractionPanel/Margin"]
-layout_mode = 2
-theme_override_constants/separation = 6
-
-[node name="Header" type="HBoxContainer" parent="ExtractionPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="ExtractionPanelIcon" type="TextureRect" parent="ExtractionPanel/Margin/Layout/Header"]
-layout_mode = 2
-custom_minimum_size = Vector2(26, 26)
-
-[node name="ExtractionHeading" type="Label" parent="ExtractionPanel/Margin/Layout/Header"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 14
-text = "EXTRACTION BOARD"
-vertical_alignment = 1
-
-[node name="ResourceLabel" type="Label" parent="ExtractionPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 14
+theme_override_font_sizes/font_size = 18
+text = "Hold the route and collect cargo."
+horizontal_alignment = 1
 autowrap_mode = 3
 
-[node name="RunLabel" type="Label" parent="ExtractionPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 13
-autowrap_mode = 3
-
-[node name="CrewPanel" type="PanelContainer" parent="."]
+[node name="HealthPanel" type="PanelContainer" parent="." unique_id=638762602]
+anchors_preset = 2
 anchor_top = 1.0
 anchor_bottom = 1.0
 offset_left = 18.0
-offset_top = -182.0
-offset_right = 406.0
-offset_bottom = -18.0
+offset_top = -128.0
+offset_right = 286.0
+offset_bottom = -70.0
 
-[node name="Margin" type="MarginContainer" parent="CrewPanel"]
+[node name="Margin" type="MarginContainer" parent="HealthPanel" unique_id=1918943365]
 layout_mode = 2
-theme_override_constants/margin_left = 16
-theme_override_constants/margin_top = 12
-theme_override_constants/margin_right = 16
-theme_override_constants/margin_bottom = 12
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 8
 
-[node name="Layout" type="VBoxContainer" parent="CrewPanel/Margin"]
+[node name="Layout" type="VBoxContainer" parent="HealthPanel/Margin" unique_id=1297867147]
 layout_mode = 2
-theme_override_constants/separation = 6
+theme_override_constants/separation = 3
 
-[node name="Header" type="HBoxContainer" parent="CrewPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="CrewPanelIcon" type="TextureRect" parent="CrewPanel/Margin/Layout/Header"]
-layout_mode = 2
-custom_minimum_size = Vector2(26, 26)
-
-[node name="CrewHeading" type="Label" parent="CrewPanel/Margin/Layout/Header"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 14
-text = "CREW DECK"
-vertical_alignment = 1
-
-[node name="StationLabel" type="Label" parent="CrewPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 13
-autowrap_mode = 3
-
-[node name="RosterLabel" type="Label" parent="CrewPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 12
-autowrap_mode = 3
-
-[node name="OnboardingLabel" type="Label" parent="CrewPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 12
-autowrap_mode = 3
-
-[node name="FooterLabel" type="Label" parent="CrewPanel/Margin/Layout"]
+[node name="HealthMeterLabel" type="Label" parent="HealthPanel/Margin/Layout" unique_id=1362945825]
 layout_mode = 2
 theme_override_font_sizes/font_size = 11
-text = "Mouse aim | Q/E helm/grapple | F claim | W A S D helm | Space brace anywhere | G grapple | R patch nearby hull"
-autowrap_mode = 3
+text = "CREW HP 100"
 
-[node name="SurvivalPanel" type="PanelContainer" parent="."]
-anchor_left = 1.0
-anchor_top = 1.0
-anchor_right = 1.0
-anchor_bottom = 1.0
-offset_left = -384.0
-offset_top = -208.0
-offset_right = -18.0
-offset_bottom = -18.0
-
-[node name="Margin" type="MarginContainer" parent="SurvivalPanel"]
+[node name="HealthMeterBar" type="ProgressBar" parent="HealthPanel/Margin/Layout" unique_id=1691783934]
+custom_minimum_size = Vector2(0, 12)
 layout_mode = 2
-theme_override_constants/margin_left = 16
-theme_override_constants/margin_top = 12
-theme_override_constants/margin_right = 16
-theme_override_constants/margin_bottom = 12
-
-[node name="Layout" type="VBoxContainer" parent="SurvivalPanel/Margin"]
-layout_mode = 2
-theme_override_constants/separation = 6
-
-[node name="Header" type="HBoxContainer" parent="SurvivalPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="SurvivalPanelIcon" type="TextureRect" parent="SurvivalPanel/Margin/Layout/Header"]
-layout_mode = 2
-custom_minimum_size = Vector2(26, 26)
-
-[node name="SurvivalHeading" type="Label" parent="SurvivalPanel/Margin/Layout/Header"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 14
-text = "BOAT PLATE"
-vertical_alignment = 1
-
-[node name="HealthMeterRow" type="HBoxContainer" parent="SurvivalPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="HealthMeterLabel" type="Label" parent="SurvivalPanel/Margin/Layout/HealthMeterRow"]
-layout_mode = 2
-custom_minimum_size = Vector2(64, 0)
-theme_override_font_sizes/font_size = 10
-text = "HEALTH"
-vertical_alignment = 1
-
-[node name="HealthMeterBar" type="ProgressBar" parent="SurvivalPanel/Margin/Layout/HealthMeterRow"]
-layout_mode = 2
-size_flags_horizontal = 3
-custom_minimum_size = Vector2(0, 10)
-max_value = 100.0
-show_percentage = false
 value = 100.0
-
-[node name="StaminaMeterRow" type="HBoxContainer" parent="SurvivalPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="StaminaMeterLabel" type="Label" parent="SurvivalPanel/Margin/Layout/StaminaMeterRow"]
-layout_mode = 2
-custom_minimum_size = Vector2(64, 0)
-theme_override_font_sizes/font_size = 10
-text = "STAMINA"
-vertical_alignment = 1
-
-[node name="StaminaMeterBar" type="ProgressBar" parent="SurvivalPanel/Margin/Layout/StaminaMeterRow"]
-layout_mode = 2
-size_flags_horizontal = 3
-custom_minimum_size = Vector2(0, 10)
-max_value = 100.0
 show_percentage = false
+
+[node name="StaminaPanel" type="PanelContainer" parent="." unique_id=1440335307]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -132.0
+offset_top = 313.0
+offset_right = 132.0
+offset_bottom = 347.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Margin" type="MarginContainer" parent="StaminaPanel" unique_id=1305566079]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 5
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 5
+
+[node name="Layout" type="VBoxContainer" parent="StaminaPanel/Margin" unique_id=1752041581]
+layout_mode = 2
+theme_override_constants/separation = 2
+
+[node name="StaminaMeterLabel" type="Label" parent="StaminaPanel/Margin/Layout" unique_id=167124711]
+layout_mode = 2
+theme_override_font_sizes/font_size = 9
+text = "STAMINA 100"
+horizontal_alignment = 1
+
+[node name="StaminaMeterBar" type="ProgressBar" parent="StaminaPanel/Margin/Layout" unique_id=1037184572]
+custom_minimum_size = Vector2(0, 6)
+layout_mode = 2
 value = 100.0
+show_percentage = false
 
-[node name="BoatLabel" type="Label" parent="SurvivalPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 14
-autowrap_mode = 3
-
-[node name="InteractionLabel" type="Label" parent="SurvivalPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 12
-autowrap_mode = 3
-
-[node name="StatusLabel" type="Label" parent="SurvivalPanel/Margin/Layout"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 11
-autowrap_mode = 3
-
-[node name="ToolPanel" type="PanelContainer" parent="."]
+[node name="ToolPanel" type="PanelContainer" parent="." unique_id=542126157]
+anchors_preset = 7
 anchor_left = 0.5
 anchor_top = 1.0
 anchor_right = 0.5
 anchor_bottom = 1.0
-offset_left = -260.0
-offset_top = -112.0
-offset_right = 260.0
+offset_left = -154.0
+offset_top = -92.0
+offset_right = 154.0
+offset_bottom = -22.0
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel" unique_id=1799296422]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 6
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin" unique_id=1669354555]
+layout_mode = 2
+theme_override_constants/separation = 2
+
+[node name="Heading" type="Label" parent="ToolPanel/Margin/Layout" unique_id=299552590]
+visible = false
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "ITEM BELT"
+horizontal_alignment = 1
+
+[node name="HotbarRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout" unique_id=1560897090]
+layout_mode = 2
+theme_override_constants/separation = 6
+alignment = 1
+
+[node name="Slot1" type="PanelContainer" parent="ToolPanel/Margin/Layout/HotbarRow" unique_id=1537303277]
+custom_minimum_size = Vector2(64, 56)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1" unique_id=1902100834]
+layout_mode = 2
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 4
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin" unique_id=142080624]
+layout_mode = 2
+theme_override_constants/separation = 1
+
+[node name="TopRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin/Layout" unique_id=1835231830]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KeyLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin/Layout/TopRow" unique_id=1487883101]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "1"
+
+[node name="NameLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin/Layout/TopRow" unique_id=768350768]
+visible = false
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 10
+text = "GRAPPLE"
+horizontal_alignment = 2
+
+[node name="Icon" type="TextureRect" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin/Layout" unique_id=1345591447]
+custom_minimum_size = Vector2(32, 32)
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 4
+
+[node name="Slot2" type="PanelContainer" parent="ToolPanel/Margin/Layout/HotbarRow" unique_id=1905527100]
+custom_minimum_size = Vector2(64, 56)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2" unique_id=1127289967]
+layout_mode = 2
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 4
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin" unique_id=1829970115]
+layout_mode = 2
+theme_override_constants/separation = 1
+
+[node name="TopRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin/Layout" unique_id=1336580549]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KeyLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin/Layout/TopRow" unique_id=1730324321]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "2"
+
+[node name="NameLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin/Layout/TopRow" unique_id=1807837206]
+visible = false
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 10
+text = "HAMMER"
+horizontal_alignment = 2
+
+[node name="Icon" type="TextureRect" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin/Layout" unique_id=1396672867]
+custom_minimum_size = Vector2(32, 32)
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 4
+
+[node name="Slot3" type="PanelContainer" parent="ToolPanel/Margin/Layout/HotbarRow" unique_id=1319767263]
+custom_minimum_size = Vector2(64, 56)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3" unique_id=1822891556]
+layout_mode = 2
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 4
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin" unique_id=1272039329]
+layout_mode = 2
+theme_override_constants/separation = 1
+
+[node name="TopRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin/Layout" unique_id=1437476114]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KeyLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin/Layout/TopRow" unique_id=275869678]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "3"
+
+[node name="NameLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin/Layout/TopRow" unique_id=1590788360]
+visible = false
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 10
+text = "RECOVER"
+horizontal_alignment = 2
+
+[node name="Icon" type="TextureRect" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin/Layout" unique_id=857254092]
+custom_minimum_size = Vector2(32, 32)
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 4
+
+[node name="Slot4" type="PanelContainer" parent="ToolPanel/Margin/Layout/HotbarRow" unique_id=2013116114]
+custom_minimum_size = Vector2(64, 56)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot4" unique_id=2117199357]
+layout_mode = 2
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 4
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot4/Margin" unique_id=1923290438]
+layout_mode = 2
+theme_override_constants/separation = 1
+
+[node name="TopRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot4/Margin/Layout" unique_id=1931898226]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KeyLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot4/Margin/Layout/TopRow" unique_id=1140765202]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "4"
+
+[node name="NameLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot4/Margin/Layout/TopRow" unique_id=748875902]
+visible = false
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 10
+horizontal_alignment = 2
+
+[node name="Icon" type="TextureRect" parent="ToolPanel/Margin/Layout/HotbarRow/Slot4/Margin/Layout" unique_id=225571464]
+custom_minimum_size = Vector2(32, 32)
+layout_mode = 2
+size_flags_horizontal = 4
+size_flags_vertical = 4
+
+[node name="Slot5" type="PanelContainer" parent="ToolPanel/Margin/Layout/HotbarRow" unique_id=421618925]
+visible = false
+custom_minimum_size = Vector2(108, 72)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot5" unique_id=2050832581]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 6
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot5/Margin" unique_id=1231387620]
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="TopRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot5/Margin/Layout" unique_id=718597694]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KeyLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot5/Margin/Layout/TopRow" unique_id=330187872]
+layout_mode = 2
+theme_override_font_sizes/font_size = 10
+text = "5"
+
+[node name="NameLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot5/Margin/Layout/TopRow" unique_id=1642660640]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 10
+text = "REPAIR"
+horizontal_alignment = 2
+
+[node name="Icon" type="TextureRect" parent="ToolPanel/Margin/Layout/HotbarRow/Slot5/Margin/Layout" unique_id=2063365815]
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+
+[node name="Slot6" type="PanelContainer" parent="ToolPanel/Margin/Layout/HotbarRow" unique_id=1236648232]
+visible = false
+custom_minimum_size = Vector2(108, 72)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot6" unique_id=778636620]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 6
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot6/Margin" unique_id=1082925737]
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="TopRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot6/Margin/Layout" unique_id=111868545]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KeyLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot6/Margin/Layout/TopRow" unique_id=364875180]
+layout_mode = 2
+theme_override_font_sizes/font_size = 10
+text = "6"
+
+[node name="NameLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot6/Margin/Layout/TopRow" unique_id=1735941727]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 10
+text = "RECOVER"
+horizontal_alignment = 2
+
+[node name="Icon" type="TextureRect" parent="ToolPanel/Margin/Layout/HotbarRow/Slot6/Margin/Layout" unique_id=402695257]
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+
+[node name="ToolLabel" type="Label" parent="ToolPanel/Margin/Layout" unique_id=29075122]
+visible = false
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "4-slot item belt."
+horizontal_alignment = 1
+autowrap_mode = 3
+
+[node name="StationPromptLabel" type="Label" parent="ToolPanel/Margin/Layout" unique_id=896481085]
+visible = false
+layout_mode = 2
+theme_override_font_sizes/font_size = 10
+text = "LMB item. F station. Hold Space to brace."
+horizontal_alignment = 1
+autowrap_mode = 3
+
+[node name="BoatInspectPanel" type="PanelContainer" parent="." unique_id=1477190325]
+visible = false
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -392.0
+offset_top = -286.0
+offset_right = -18.0
 offset_bottom = -18.0
 
-[node name="Margin" type="MarginContainer" parent="ToolPanel"]
+[node name="Margin" type="MarginContainer" parent="BoatInspectPanel" unique_id=1637594350]
 layout_mode = 2
 theme_override_constants/margin_left = 14
 theme_override_constants/margin_top = 10
 theme_override_constants/margin_right = 14
 theme_override_constants/margin_bottom = 10
 
-[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin"]
+[node name="Layout" type="VBoxContainer" parent="BoatInspectPanel/Margin" unique_id=909093599]
 layout_mode = 2
-theme_override_constants/separation = 4
+theme_override_constants/separation = 5
 
-[node name="Heading" type="Label" parent="ToolPanel/Margin/Layout"]
+[node name="HeadingRow" type="HBoxContainer" parent="BoatInspectPanel/Margin/Layout" unique_id=1210840283]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="InspectIcon" type="TextureRect" parent="BoatInspectPanel/Margin/Layout/HeadingRow" unique_id=96457780]
+custom_minimum_size = Vector2(24, 24)
+layout_mode = 2
+
+[node name="InspectHeading" type="Label" parent="BoatInspectPanel/Margin/Layout/HeadingRow" unique_id=2006774385]
 layout_mode = 2
 theme_override_font_sizes/font_size = 13
-text = "TOOL BELT"
-horizontal_alignment = 1
+text = "BOAT INSPECT"
+vertical_alignment = 1
 
-[node name="ToolLabel" type="Label" parent="ToolPanel/Margin/Layout"]
+[node name="BoatLabel" type="Label" parent="BoatInspectPanel/Margin/Layout" unique_id=1674232313]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
+text = "Hull stable."
 autowrap_mode = 3
-horizontal_alignment = 1
 
-[node name="InventoryPanel" type="PanelContainer" parent="."]
+[node name="ResourceLabel" type="Label" parent="BoatInspectPanel/Margin/Layout" unique_id=536695408]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "Storage stable."
+autowrap_mode = 3
+
+[node name="RunLabel" type="Label" parent="BoatInspectPanel/Margin/Layout" unique_id=585731593]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "No immediate crisis."
+autowrap_mode = 3
+
+[node name="InteractionLabel" type="Label" parent="BoatInspectPanel/Margin/Layout" unique_id=1950765808]
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+text = "Hold Alt to inspect."
+autowrap_mode = 3
+
+[node name="StatusLabel" type="Label" parent="BoatInspectPanel/Margin/Layout" unique_id=489229443]
+layout_mode = 2
+theme_override_font_sizes/font_size = 10
+text = "Q/E stations | F claim | LMB item | Space brace"
+autowrap_mode = 3
+
+[node name="InventoryPanel" type="PanelContainer" parent="." unique_id=891137816]
 visible = false
+anchors_preset = 7
 anchor_left = 0.5
 anchor_top = 1.0
 anchor_right = 0.5
@@ -270,29 +516,31 @@ offset_top = -304.0
 offset_right = 290.0
 offset_bottom = -126.0
 
-[node name="Margin" type="MarginContainer" parent="InventoryPanel"]
+[node name="Margin" type="MarginContainer" parent="InventoryPanel" unique_id=1880865252]
 layout_mode = 2
 theme_override_constants/margin_left = 14
 theme_override_constants/margin_top = 12
 theme_override_constants/margin_right = 14
 theme_override_constants/margin_bottom = 12
 
-[node name="Layout" type="VBoxContainer" parent="InventoryPanel/Margin"]
+[node name="Layout" type="VBoxContainer" parent="InventoryPanel/Margin" unique_id=796672063]
 layout_mode = 2
 theme_override_constants/separation = 4
 
-[node name="Heading" type="Label" parent="InventoryPanel/Margin/Layout"]
+[node name="Heading" type="Label" parent="InventoryPanel/Margin/Layout" unique_id=716722196]
 layout_mode = 2
 theme_override_font_sizes/font_size = 14
 text = "SHIP INVENTORY"
 horizontal_alignment = 1
 
-[node name="InventoryLabel" type="Label" parent="InventoryPanel/Margin/Layout"]
+[node name="InventoryLabel" type="Label" parent="InventoryPanel/Margin/Layout" unique_id=539207670]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
 autowrap_mode = 3
 
-[node name="CrosshairLabel" type="Label" parent="."]
+[node name="CrosshairLabel" type="Label" parent="." unique_id=808045208]
+modulate = Color(0.98, 0.97, 0.92, 0.9)
+anchors_preset = 8
 anchor_left = 0.5
 anchor_top = 0.5
 anchor_right = 0.5
@@ -302,20 +550,20 @@ offset_top = -16.0
 offset_right = 10.0
 offset_bottom = 16.0
 theme_override_font_sizes/font_size = 26
-modulate = Color(0.98, 0.97, 0.92, 0.9)
 text = "+"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="EventCalloutLabel" type="Label" parent="."]
+[node name="EventCalloutLabel" type="Label" parent="." unique_id=2094636283]
 visible = false
+anchors_preset = 5
 anchor_left = 0.5
 anchor_right = 0.5
-offset_left = -260.0
-offset_top = 136.0
-offset_right = 260.0
-offset_bottom = 196.0
+offset_left = -280.0
+offset_top = 140.0
+offset_right = 280.0
+offset_bottom = 200.0
 theme_override_font_sizes/font_size = 24
-autowrap_mode = 3
 horizontal_alignment = 1
 vertical_alignment = 1
+autowrap_mode = 3

@@ -1,7 +1,7 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene format=3 uid="uid://bmfy6p0sphns0"]
 
-[ext_resource type="Script" path="res://scenes/shared/avatar/player_avatar_visual.gd" id="1_script"]
-[ext_resource type="PackedScene" path="res://assets/characters/player/meshy/meshy_idle.glb" id="2_rig"]
+[ext_resource type="Script" uid="uid://b58h4w7fefogn" path="res://scenes/shared/avatar/player_avatar_visual.gd" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://dvkhl356nji1x" path="res://assets/characters/player/meshy/meshy_idle.glb" id="2_rig"]
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_ring"]
 top_radius = 0.38
@@ -11,24 +11,24 @@ height = 0.05
 [sub_resource type="BoxMesh" id="BoxMesh_tool"]
 size = Vector3(0.18, 0.18, 0.85)
 
-[node name="AvatarVisual" type="Node3D"]
+[node name="AvatarVisual" type="Node3D" unique_id=95711705]
 script = ExtResource("1_script")
 
-[node name="ModelRoot" type="Node3D" parent="."]
+[node name="ModelRoot" type="Node3D" parent="." unique_id=795236236]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.08, 0)
 
-[node name="Rig" parent="ModelRoot" instance=ExtResource("2_rig")]
+[node name="Rig" parent="ModelRoot" unique_id=1312643678 instance=ExtResource("2_rig")]
 
-[node name="FootRing" type="MeshInstance3D" parent="."]
+[node name="FootRing" type="MeshInstance3D" parent="." unique_id=2125171962]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.05, 0)
 mesh = SubResource("CylinderMesh_ring")
-position = Vector3(0, 0.05, 0)
 
-[node name="Tool" type="MeshInstance3D" parent="."]
+[node name="Tool" type="MeshInstance3D" parent="." unique_id=887801153]
+transform = Transform3D(0.90450853, 0.29389265, 0.309017, -0.309017, 0.95105654, 0, -0.29389265, -0.095491506, 0.95105654, 0.36, 1, -0.1)
 mesh = SubResource("BoxMesh_tool")
-position = Vector3(0.36, 1, -0.1)
-rotation_degrees = Vector3(0, 18, -18)
 
-[node name="Nameplate" type="Label3D" parent="."]
-position = Vector3(0, 2.05, 0)
+[node name="Nameplate" type="Label3D" parent="." unique_id=3505665]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.05, 0)
 billboard = 1
 font_size = 16
 outline_size = 8

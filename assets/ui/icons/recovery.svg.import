@@ -2,24 +2,20 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://c4fcb8hl1y1jk"
-path.s3tc="res://.godot/imported/meshy_run_texture_0.png-778ef328a5f9e635fde33714625bf9d6.s3tc.ctex"
+uid="uid://cmc72sgf0rsak"
+path="res://.godot/imported/recovery.svg-89515aa4d5d70444455ce5d1a1d0b905.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
-"vram_texture": true
-}
-generator_parameters={
-"md5": "e928c9b63f00c3f7616853ce91afc390"
+"vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/characters/player/meshy/meshy_run_texture_0.png"
-dest_files=["res://.godot/imported/meshy_run_texture_0.png-778ef328a5f9e635fde33714625bf9d6.s3tc.ctex"]
+source_file="res://assets/ui/icons/recovery.svg"
+dest_files=["res://.godot/imported/recovery.svg-89515aa4d5d70444455ce5d1a1d0b905.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
@@ -27,7 +23,7 @@ compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=true
+mipmaps/generate=false
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""
@@ -41,4 +37,7 @@ process/normal_map_invert_y=false
 process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
-detect_3d/compress_to=0
+detect_3d/compress_to=1
+svg/scale=1.0
+editor/scale_with_editor_scale=false
+editor/convert_colors_with_editor_theme=false

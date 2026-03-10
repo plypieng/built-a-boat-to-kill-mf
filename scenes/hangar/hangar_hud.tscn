@@ -27,9 +27,11 @@ text = "Shared Build Yard"
 [node name="OnboardingLabel" type="Label" parent="LeftPanel/Margin/Layout"]
 layout_mode = 2
 modulate = Color(0.86, 0.95, 1, 1)
+theme_override_font_sizes/font_size = 14
 autowrap_mode = 3
 
 [node name="SelectionHeader" type="HBoxContainer" parent="LeftPanel/Margin/Layout"]
+visible = false
 layout_mode = 2
 theme_override_constants/separation = 8
 
@@ -44,10 +46,12 @@ text = "Selected Part"
 vertical_alignment = 1
 
 [node name="SelectionLabel" type="Label" parent="LeftPanel/Margin/Layout"]
+visible = false
 layout_mode = 2
 autowrap_mode = 3
 
 [node name="TargetLabel" type="Label" parent="LeftPanel/Margin/Layout"]
+visible = false
 layout_mode = 2
 autowrap_mode = 3
 
@@ -67,10 +71,12 @@ vertical_alignment = 1
 
 [node name="LaunchReadinessLabel" type="Label" parent="LeftPanel/Margin/Layout"]
 layout_mode = 2
+theme_override_font_sizes/font_size = 15
 autowrap_mode = 3
 
 [node name="StatusLabel" type="Label" parent="LeftPanel/Margin/Layout"]
 layout_mode = 2
+theme_override_font_sizes/font_size = 13
 autowrap_mode = 3
 
 [node name="Actions" type="HBoxContainer" parent="LeftPanel/Margin/Layout"]
@@ -80,6 +86,10 @@ theme_override_constants/separation = 10
 [node name="LaunchButton" type="Button" parent="LeftPanel/Margin/Layout/Actions"]
 layout_mode = 2
 text = "Launch Run"
+
+[node name="ResetButton" type="Button" parent="LeftPanel/Margin/Layout/Actions"]
+layout_mode = 2
+text = "Reset Boat"
 
 [node name="ReturnToConnectButton" type="Button" parent="LeftPanel/Margin/Layout/Actions"]
 layout_mode = 2
@@ -124,6 +134,7 @@ vertical_alignment = 1
 
 [node name="ProfileLabel" type="Label" parent="RightPanel/Margin/Layout"]
 layout_mode = 2
+theme_override_font_sizes/font_size = 14
 autowrap_mode = 3
 
 [node name="StoreHeader" type="HBoxContainer" parent="RightPanel/Margin/Layout"]
@@ -142,6 +153,7 @@ vertical_alignment = 1
 
 [node name="StoreLabel" type="Label" parent="RightPanel/Margin/Layout"]
 layout_mode = 2
+theme_override_font_sizes/font_size = 14
 autowrap_mode = 3
 
 [node name="UnlockButton" type="Button" parent="RightPanel/Margin/Layout"]
@@ -156,7 +168,7 @@ text = "Show Details"
 anchor_top = 1.0
 anchor_bottom = 1.0
 offset_left = 18.0
-offset_top = -118.0
+offset_top = -132.0
 offset_right = 404.0
 offset_bottom = -18.0
 
@@ -173,10 +185,12 @@ theme_override_constants/separation = 6
 
 [node name="RosterLabel" type="Label" parent="BottomLeftPanel/Margin/Layout"]
 layout_mode = 2
+theme_override_font_sizes/font_size = 14
 autowrap_mode = 3
 
 [node name="ControlsLabel" type="Label" parent="BottomLeftPanel/Margin/Layout"]
 layout_mode = 2
+theme_override_font_sizes/font_size = 13
 autowrap_mode = 3
 
 [node name="DetailPanel" type="PanelContainer" parent="."]
@@ -241,32 +255,198 @@ vertical_alignment = 1
 layout_mode = 2
 autowrap_mode = 3
 
+[node name="BuildFocusPanel" type="PanelContainer" parent="."]
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -272.0
+offset_top = -170.0
+offset_right = 272.0
+offset_bottom = -98.0
+
+[node name="Margin" type="MarginContainer" parent="BuildFocusPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 7
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 7
+
+[node name="Layout" type="VBoxContainer" parent="BuildFocusPanel/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 2
+
+[node name="TopRow" type="HBoxContainer" parent="BuildFocusPanel/Margin/Layout"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 8
+
+[node name="FocusIcon" type="TextureRect" parent="BuildFocusPanel/Margin/Layout/TopRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(20, 20)
+
+[node name="PartLabel" type="Label" parent="BuildFocusPanel/Margin/Layout/TopRow"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+horizontal_alignment = 1
+text = "Keel Hull | Build"
+vertical_alignment = 1
+
+[node name="StateLabel" type="Label" parent="BuildFocusPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+horizontal_alignment = 1
+text = "Ready | Rot 0 deg | Hull 34 | Float 5.5 | Thrust 0.0"
+
+[node name="HintLabel" type="Label" parent="BuildFocusPanel/Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+horizontal_alignment = 1
+text = "Core at -3,1,2 | F place/use | R rotate | X scrap | Q/E part | I locker"
+
 [node name="ToolPanel" type="PanelContainer" parent="."]
 anchor_left = 0.5
 anchor_top = 1.0
 anchor_right = 0.5
 anchor_bottom = 1.0
-offset_left = -240.0
-offset_top = -118.0
-offset_right = 240.0
-offset_bottom = -18.0
+offset_left = -224.0
+offset_top = -82.0
+offset_right = 224.0
+offset_bottom = -24.0
 
 [node name="Margin" type="MarginContainer" parent="ToolPanel"]
 layout_mode = 2
-theme_override_constants/margin_left = 14
-theme_override_constants/margin_top = 10
-theme_override_constants/margin_right = 14
-theme_override_constants/margin_bottom = 10
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 4
 
 [node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin"]
 layout_mode = 2
-theme_override_constants/separation = 4
+theme_override_constants/separation = 3
 
 [node name="Heading" type="Label" parent="ToolPanel/Margin/Layout"]
+visible = false
 layout_mode = 2
 theme_override_font_sizes/font_size = 13
 text = "BUILD TOOLS"
 horizontal_alignment = 1
+
+[node name="HotbarRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 6
+
+[node name="Slot1" type="PanelContainer" parent="ToolPanel/Margin/Layout/HotbarRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(88, 54)
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1"]
+layout_mode = 2
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 4
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 1
+
+[node name="TopRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KeyLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin/Layout/TopRow"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 10
+text = "1"
+
+[node name="NameLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin/Layout/TopRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 10
+text = "BUILD"
+horizontal_alignment = 2
+
+[node name="Icon" type="TextureRect" parent="ToolPanel/Margin/Layout/HotbarRow/Slot1/Margin/Layout"]
+layout_mode = 2
+custom_minimum_size = Vector2(24, 24)
+size_flags_horizontal = 4
+size_flags_vertical = 4
+
+[node name="Slot2" type="PanelContainer" parent="ToolPanel/Margin/Layout/HotbarRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(88, 54)
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2"]
+layout_mode = 2
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 4
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 1
+
+[node name="TopRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KeyLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin/Layout/TopRow"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 10
+text = "2"
+
+[node name="NameLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin/Layout/TopRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 10
+text = "REMOVE"
+horizontal_alignment = 2
+
+[node name="Icon" type="TextureRect" parent="ToolPanel/Margin/Layout/HotbarRow/Slot2/Margin/Layout"]
+layout_mode = 2
+custom_minimum_size = Vector2(24, 24)
+size_flags_horizontal = 4
+size_flags_vertical = 4
+
+[node name="Slot3" type="PanelContainer" parent="ToolPanel/Margin/Layout/HotbarRow"]
+layout_mode = 2
+custom_minimum_size = Vector2(88, 54)
+
+[node name="Margin" type="MarginContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3"]
+layout_mode = 2
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 4
+
+[node name="Layout" type="VBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 1
+
+[node name="TopRow" type="HBoxContainer" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin/Layout"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="KeyLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin/Layout/TopRow"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 10
+text = "3"
+
+[node name="NameLabel" type="Label" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin/Layout/TopRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 10
+text = "WORKSHOP"
+horizontal_alignment = 2
+
+[node name="Icon" type="TextureRect" parent="ToolPanel/Margin/Layout/HotbarRow/Slot3/Margin/Layout"]
+layout_mode = 2
+custom_minimum_size = Vector2(24, 24)
+size_flags_horizontal = 4
+size_flags_vertical = 4
 
 [node name="ToolLabel" type="Label" parent="ToolPanel/Margin/Layout"]
 layout_mode = 2

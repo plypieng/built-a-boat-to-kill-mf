@@ -34,6 +34,10 @@ func set_marker_text(text: String) -> void:
 	if label != null:
 		label.text = text
 
+func set_label_visible(is_visible: bool) -> void:
+	if label != null:
+		label.visible = is_visible
+
 func set_marker_color(color: Color) -> void:
 	if base_mesh != null:
 		var base_material := base_mesh.material_override as StandardMaterial3D
