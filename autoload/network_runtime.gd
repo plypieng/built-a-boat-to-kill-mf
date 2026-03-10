@@ -1140,12 +1140,15 @@ var _disconnect_broadcast_scheduled := false
 var _client_bootstrap_complete := false
 var _last_applied_local_result_run_instance_id := -1
 
+const OFFLINE_LOCAL_PEER_ID := 1
+
 func _ready() -> void:
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
+	shutdown()
 
 func start_server(listen_port: int = GameConfig.DEFAULT_PORT, seed: int = GameConfig.DEFAULT_RUN_SEED) -> int:
 	shutdown()
@@ -1219,6 +1222,7 @@ func shutdown() -> void:
 	_disconnect_broadcast_scheduled = false
 	_reset_reaction_runtime()
 	_reset_run_runtime()
+	_ensure_offline_local_state()
 	emit_signal("mode_changed", _mode_name())
 	emit_signal("run_seed_changed", run_seed)
 	_emit_all_runtime_state()
@@ -1228,6 +1232,17 @@ func get_mode_name() -> String:
 
 func get_session_phase() -> String:
 	return session_phase
+
+func get_local_peer_id() -> int:
+	if multiplayer.multiplayer_peer == null:
+		return OFFLINE_LOCAL_PEER_ID
+	return multiplayer.get_unique_id()
+
+func _has_runtime_authority() -> bool:
+	return multiplayer.multiplayer_peer == null or multiplayer.is_server()
+
+func _has_network_server() -> bool:
+	return multiplayer.multiplayer_peer != null and multiplayer.is_server()
 
 func get_builder_bounds_min() -> Vector3i:
 	return BUILDER_BOUNDS_MIN
@@ -2660,7 +2675,7 @@ func get_driver_name() -> String:
 
 func get_player_peer_ids() -> Array:
 	var peer_ids: Array = []
-	if multiplayer.is_server():
+	if _has_network_server():
 		for peer_id in multiplayer.get_peers():
 			var peer_data: Dictionary = peer_snapshot.get(peer_id, {})
 			if str(peer_data.get("status", "")) == "hosting":
@@ -3006,6 +3021,9 @@ func request_driver_control() -> void:
 	request_station_claim("helm")
 
 func request_station_claim(station_id: String) -> void:
+	if multiplayer.multiplayer_peer == null:
+		_claim_station(OFFLINE_LOCAL_PEER_ID, station_id)
+		return
 	if multiplayer.is_server():
 		_claim_station(multiplayer.get_unique_id(), station_id)
 		return
@@ -3013,6 +3031,9 @@ func request_station_claim(station_id: String) -> void:
 	server_request_station_claim.rpc_id(1, station_id)
 
 func request_station_release() -> void:
+	if multiplayer.multiplayer_peer == null:
+		_release_station(OFFLINE_LOCAL_PEER_ID)
+		return
 	if multiplayer.is_server():
 		_release_station(multiplayer.get_unique_id())
 		return
@@ -3022,6 +3043,9 @@ func request_station_release() -> void:
 func request_unlock_builder_block(block_type: String) -> void:
 	var normalized_block_type := block_type.strip_edges().to_lower()
 	if normalized_block_type.is_empty():
+		return
+	if multiplayer.multiplayer_peer == null:
+		_unlock_builder_block(OFFLINE_LOCAL_PEER_ID, normalized_block_type)
 		return
 	if multiplayer.is_server():
 		_unlock_builder_block(multiplayer.get_unique_id(), normalized_block_type)
@@ -3036,6 +3060,9 @@ func request_donate_workshop_resource(resource_id: String, quantity: int) -> boo
 		return false
 	if not DockState.remove_local_resource(normalized_resource_id, amount):
 		return false
+	if multiplayer.multiplayer_peer == null:
+		_donate_workshop_resource(OFFLINE_LOCAL_PEER_ID, normalized_resource_id, amount)
+		return true
 	if multiplayer.is_server():
 		_donate_workshop_resource(multiplayer.get_unique_id(), normalized_resource_id, amount)
 		return true
@@ -3104,6 +3131,9 @@ func request_place_blueprint_block(cell_value: Variant, block_type: String, rota
 	var cell := _normalize_blueprint_cell(cell_value)
 	var normalized_type := block_type.strip_edges().to_lower()
 	var normalized_rotation := wrapi(rotation_steps, 0, 4)
+	if multiplayer.multiplayer_peer == null:
+		_place_blueprint_block(OFFLINE_LOCAL_PEER_ID, cell, normalized_type, normalized_rotation)
+		return
 	if multiplayer.is_server():
 		_place_blueprint_block(multiplayer.get_unique_id(), cell, normalized_type, normalized_rotation)
 		return
@@ -3112,6 +3142,9 @@ func request_place_blueprint_block(cell_value: Variant, block_type: String, rota
 
 func request_remove_blueprint_block(cell_value: Variant) -> void:
 	var cell := _normalize_blueprint_cell(cell_value)
+	if multiplayer.multiplayer_peer == null:
+		_remove_blueprint_block(OFFLINE_LOCAL_PEER_ID, cell)
+		return
 	if multiplayer.is_server():
 		_remove_blueprint_block(multiplayer.get_unique_id(), cell)
 		return
@@ -3119,6 +3152,9 @@ func request_remove_blueprint_block(cell_value: Variant) -> void:
 	server_request_remove_blueprint_block.rpc_id(1, cell)
 
 func request_reset_blueprint() -> void:
+	if multiplayer.multiplayer_peer == null:
+		_reset_blueprint_for_peer(OFFLINE_LOCAL_PEER_ID)
+		return
 	if multiplayer.is_server():
 		_reset_blueprint_for_peer(multiplayer.get_unique_id())
 		return
@@ -3126,6 +3162,9 @@ func request_reset_blueprint() -> void:
 	server_request_reset_blueprint.rpc_id(1)
 
 func request_launch_run() -> void:
+	if multiplayer.multiplayer_peer == null:
+		_launch_run_session(OFFLINE_LOCAL_PEER_ID)
+		return
 	if multiplayer.is_server():
 		_launch_run_session(multiplayer.get_unique_id())
 		return
@@ -3133,6 +3172,9 @@ func request_launch_run() -> void:
 	server_request_launch_run.rpc_id(1)
 
 func request_return_to_hangar() -> void:
+	if multiplayer.multiplayer_peer == null:
+		_return_to_hangar_session(OFFLINE_LOCAL_PEER_ID)
+		return
 	if multiplayer.is_server():
 		_return_to_hangar_session(multiplayer.get_unique_id())
 		return
@@ -3141,6 +3183,21 @@ func request_return_to_hangar() -> void:
 
 func send_local_hangar_avatar_state(position: Vector3, velocity: Vector3, facing_y: float, grounded: bool) -> void:
 	if session_phase != SESSION_PHASE_HANGAR:
+		return
+	if multiplayer.multiplayer_peer == null:
+		_receive_hangar_avatar_state(
+			OFFLINE_LOCAL_PEER_ID,
+			position,
+			velocity,
+			facing_y,
+			grounded,
+			"",
+			0,
+			[0, 0, 0],
+			[0, 0, 0],
+			false,
+			"hidden"
+		)
 		return
 	if multiplayer.is_server():
 		_receive_hangar_avatar_state(
@@ -3187,6 +3244,21 @@ func send_local_hangar_avatar_presence(
 		return
 	var normalized_target_cell := _normalize_blueprint_cell(target_cell_value)
 	var normalized_remove_cell := _normalize_blueprint_cell(remove_cell_value)
+	if multiplayer.multiplayer_peer == null:
+		_receive_hangar_avatar_state(
+			OFFLINE_LOCAL_PEER_ID,
+			position,
+			velocity,
+			facing_y,
+			grounded,
+			selected_block_id,
+			rotation_steps,
+			normalized_target_cell,
+			normalized_remove_cell,
+			has_target,
+			target_feedback_state
+		)
+		return
 	if multiplayer.is_server():
 		_receive_hangar_avatar_state(
 			multiplayer.get_unique_id(),
@@ -3616,96 +3688,96 @@ func _emit_all_runtime_state() -> void:
 
 func _broadcast_session_phase() -> void:
 	emit_signal("session_phase_changed", session_phase)
-	if multiplayer.is_server():
+	if _has_network_server():
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_session_phase.rpc_id(int(peer_id), session_phase)
 
 func _broadcast_blueprint_state() -> void:
 	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var snapshot := boat_blueprint.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_blueprint_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_progression_state() -> void:
 	emit_signal("progression_state_changed", progression_state.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var snapshot := progression_state.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_progression_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_peer_snapshot() -> void:
 	emit_signal("peer_snapshot_changed", peer_snapshot.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var snapshot := peer_snapshot.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_peer_snapshot.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_hangar_avatar_state() -> void:
 	emit_signal("hangar_avatar_state_changed", hangar_avatar_state.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var snapshot := hangar_avatar_state.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_hangar_avatar_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_run_avatar_state() -> void:
 	emit_signal("run_avatar_state_changed", run_avatar_state.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var snapshot := run_avatar_state.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_run_avatar_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_reaction_state() -> void:
 	emit_signal("reaction_state_changed", reaction_state.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var snapshot := reaction_state.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_reaction_state.rpc_id(int(peer_id), snapshot)
 
 func _broadcast_boat_state() -> void:
 	emit_signal("boat_state_changed", boat_state.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var state := _build_client_boat_state_snapshot()
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_boat_state.rpc_id(int(peer_id), state, driver_peer_id)
 
 func _broadcast_hazard_state() -> void:
 	emit_signal("hazard_state_changed", hazard_state.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var hazards := hazard_state.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_hazard_state.rpc_id(int(peer_id), hazards)
 
 func _broadcast_station_state() -> void:
 	emit_signal("station_state_changed", station_state.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var stations := station_state.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_station_state.rpc_id(int(peer_id), stations)
 
 func _broadcast_loot_state() -> void:
 	emit_signal("loot_state_changed", loot_state.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var targets := loot_state.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_loot_state.rpc_id(int(peer_id), targets)
 
 func _broadcast_run_state() -> void:
 	emit_signal("run_state_changed", run_state.duplicate(true))
-	if multiplayer.is_server():
+	if _has_network_server():
 		var state := run_state.duplicate(true)
 		for peer_id in _get_server_broadcast_peer_ids():
 			client_receive_run_state.rpc_id(int(peer_id), state)
 
 func _get_server_broadcast_peer_ids() -> Array:
-	if not multiplayer.is_server():
+	if not _has_network_server():
 		return []
 	if _disconnect_broadcast_scheduled:
 		return []
 	return get_player_peer_ids()
 
 func _send_bootstrap(peer_id: int) -> void:
-	if not multiplayer.is_server():
+	if not _has_network_server():
 		return
 
 	client_receive_bootstrap.rpc_id(peer_id, run_seed, current_port, GameConfig.MAX_PLAYERS, session_phase, boat_blueprint.duplicate(true))
@@ -4165,6 +4237,18 @@ func _make_default_hangar_avatar_state(spawn_index: int) -> Dictionary:
 		"has_target": false,
 		"target_feedback_state": "hidden",
 	}
+
+func _ensure_offline_local_state() -> void:
+	if multiplayer.multiplayer_peer != null:
+		return
+	peer_snapshot = {
+		OFFLINE_LOCAL_PEER_ID: {
+			"name": local_player_name if not local_player_name.is_empty() else GameConfig.DEFAULT_PLAYER_NAME,
+			"status": "local",
+		},
+	}
+	if not hangar_avatar_state.has(OFFLINE_LOCAL_PEER_ID):
+		hangar_avatar_state[OFFLINE_LOCAL_PEER_ID] = _make_default_hangar_avatar_state(0)
 
 func _make_default_run_avatar_state(spawn_index: int) -> Dictionary:
 	var clamped_index := wrapi(spawn_index, 0, RUN_DECK_SPAWN_POINTS.size())
@@ -6002,7 +6086,7 @@ func _heal_runtime_blocks_around(center_local: Vector3, total_heal: float) -> vo
 	boat_state["runtime_blocks"] = runtime_blocks
 
 func _launch_run_session(peer_id: int) -> void:
-	if not multiplayer.is_server():
+	if not _has_runtime_authority():
 		return
 	if session_phase != SESSION_PHASE_HANGAR:
 		return
@@ -6027,7 +6111,7 @@ func _launch_run_session(peer_id: int) -> void:
 	])
 
 func _return_to_hangar_session(peer_id: int) -> void:
-	if not multiplayer.is_server():
+	if not _has_runtime_authority():
 		return
 	if session_phase != SESSION_PHASE_RUN:
 		return
@@ -6149,7 +6233,7 @@ func _unlock_builder_block(peer_id: int, block_type: String) -> void:
 	])
 
 func _place_blueprint_block(peer_id: int, cell: Array, block_type: String, rotation_steps: int) -> void:
-	if not multiplayer.is_server():
+	if not _has_runtime_authority():
 		return
 	if session_phase != SESSION_PHASE_HANGAR:
 		return
@@ -6187,7 +6271,7 @@ func _place_blueprint_block(peer_id: int, cell: Array, block_type: String, rotat
 	])
 
 func _remove_blueprint_block(peer_id: int, cell: Array) -> void:
-	if not multiplayer.is_server():
+	if not _has_runtime_authority():
 		return
 	if session_phase != SESSION_PHASE_HANGAR:
 		return
@@ -6216,7 +6300,7 @@ func _remove_blueprint_block(peer_id: int, cell: Array) -> void:
 	])
 
 func _reset_blueprint_for_peer(peer_id: int) -> void:
-	if not multiplayer.is_server():
+	if not _has_runtime_authority():
 		return
 	if session_phase != SESSION_PHASE_HANGAR:
 		return
@@ -6227,7 +6311,7 @@ func _reset_blueprint_for_peer(peer_id: int) -> void:
 	_set_status("%s reset the boat to the core block." % _get_peer_name(peer_id))
 
 func _save_server_blueprint() -> void:
-	if multiplayer.is_server():
+	if _has_runtime_authority():
 		DockState.save_boat_blueprint(_extract_persisted_blueprint(boat_blueprint))
 
 func _extract_persisted_blueprint(snapshot: Dictionary) -> Dictionary:
@@ -7784,8 +7868,13 @@ func _receive_hangar_avatar_state(
 	has_target: bool,
 	target_feedback_state: String
 ) -> void:
-	if not multiplayer.is_server():
+	if not _has_runtime_authority():
 		return
+	if not peer_snapshot.has(peer_id):
+		if multiplayer.multiplayer_peer == null and peer_id == OFFLINE_LOCAL_PEER_ID:
+			_ensure_offline_local_state()
+		else:
+			return
 	if not peer_snapshot.has(peer_id):
 		return
 
@@ -7892,7 +7981,7 @@ func _maybe_apply_local_run_result() -> void:
 	var run_instance_id := int(run_state.get("run_instance_id", -1))
 	if run_instance_id == _last_applied_local_result_run_instance_id:
 		return
-	var local_peer_id := multiplayer.get_unique_id()
+	var local_peer_id := 1 if multiplayer.multiplayer_peer == null else multiplayer.get_unique_id()
 	var eligible_peer_ids := Array(run_state.get("eligible_reward_peer_ids", []))
 	var eligible := false
 	for peer_id_variant in eligible_peer_ids:

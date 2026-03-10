@@ -2820,6 +2820,6 @@ func _on_progression_state_changed(_snapshot: Dictionary) -> void:
 	_refresh_hud()
 
 func _get_local_peer_id() -> int:
-	if NetworkRuntime.multiplayer == null:
+	if NetworkRuntime == null:
 		return 0
-	return NetworkRuntime.multiplayer.get_unique_id()
+	return NetworkRuntime.get_local_peer_id()
