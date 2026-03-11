@@ -942,6 +942,7 @@ const BUILDER_BLOCK_LIBRARY := {
 		"walkable": true,
 	},
 }
+const BOAT_BLUEPRINT_GEOMETRY_SCHEMA_VERSION := 2
 const BUILDER_ARCHETYPE_PRESETS := {
 	"work_barge": {
 		"label": "Work Barge",
@@ -979,7 +980,7 @@ const BUILDER_ARCHETYPE_PRESETS := {
 		"required_blocks": ["catamaran_beam", "sail_rig", "auxiliary_kicker", "harpoon_crane", "ladder_rig"],
 	},
 }
-const RUNTIME_BLOCK_SPACING := 0.95
+const RUNTIME_BLOCK_SPACING := BUILDER_CELL_SIZE
 const RUNTIME_DAMAGE_CLUSTER_RADIUS := 1.9
 const RUNTIME_DAMAGE_CLUSTER_WEIGHTS := [1.0, 0.6, 0.45, 0.3, 0.2]
 const RUNTIME_SINK_SPEED := 0.95
@@ -1061,6 +1062,7 @@ const RUN_RECOVERY_POINTS := [
 ]
 const DISCONNECT_BROADCAST_DELAY_SECONDS := 0.12
 
+const SEA_SURFACE_Y := -0.12
 const BOAT_ACCELERATION := 8.0
 const BOAT_DECELERATION := 10.0
 const BOAT_TOP_SPEED := 14.0
@@ -1086,6 +1088,12 @@ const RESCUE_SALVAGE_BONUS_MAX := 2
 const BREACH_SPEED_PENALTY := 0.16
 const MAX_BREACH_STACKS := 4
 const HULL_LEAK_DAMAGE_PER_BREACH := 0.55
+const BOAT_HEAVE_SPRING := 10.5
+const BOAT_HEAVE_DAMPING := 6.8
+const BOAT_PITCH_SPRING := 8.4
+const BOAT_PITCH_DAMPING := 6.0
+const BOAT_ROLL_SPRING := 9.1
+const BOAT_ROLL_DAMPING := 6.4
 const REPAIR_COOLDOWN_SECONDS := 1.35
 const REPAIR_HULL_RECOVERY := 12.0
 const REPAIR_SUPPLIES_START := 3
@@ -1746,6 +1754,178 @@ func get_propulsion_fault_label(fault_state: String) -> String:
 			return "Crippled"
 		_:
 			return "Stable"
+
+func get_biome_sea_profile(biome_id: String) -> Dictionary:
+	match biome_id:
+		RunWorldGenerator.BIOME_REEF_WATERS:
+			return {
+				"wave_amp": 0.18,
+				"wave_speed": 0.92,
+				"chop_strength": 0.24,
+				"cross_weight": 0.28,
+				"background": Color(0.26, 0.58, 0.63),
+				"fog_density": 0.0,
+				"deep_color": Color(0.04, 0.20, 0.25),
+				"shallow_color": Color(0.12, 0.49, 0.46),
+				"foam_color": Color(0.76, 0.93, 0.88),
+				"horizon_color": Color(0.28, 0.54, 0.56),
+				"sun_energy": 0.95,
+				"sun_color": Color(0.96, 0.94, 0.85),
+				"sky_energy": 0.62,
+				"reflection_strength": 0.44,
+				"glint_strength": 0.26,
+				"clarity": 0.72,
+			}
+		RunWorldGenerator.BIOME_FOG_BANK:
+			return {
+				"wave_amp": 0.21,
+				"wave_speed": 0.84,
+				"chop_strength": 0.14,
+				"cross_weight": 0.24,
+				"background": Color(0.36, 0.42, 0.48),
+				"fog_density": 0.028,
+				"deep_color": Color(0.06, 0.11, 0.15),
+				"shallow_color": Color(0.11, 0.22, 0.28),
+				"foam_color": Color(0.76, 0.82, 0.88),
+				"horizon_color": Color(0.34, 0.40, 0.46),
+				"sun_energy": 0.56,
+				"sun_color": Color(0.82, 0.86, 0.90),
+				"sky_energy": 0.32,
+				"reflection_strength": 0.24,
+				"glint_strength": 0.14,
+				"clarity": 0.34,
+			}
+		RunWorldGenerator.BIOME_STORM_BELT:
+			return {
+				"wave_amp": 0.42,
+				"wave_speed": 1.18,
+				"chop_strength": 0.52,
+				"cross_weight": 0.44,
+				"background": Color(0.15, 0.19, 0.25),
+				"fog_density": 0.021,
+				"deep_color": Color(0.03, 0.08, 0.12),
+				"shallow_color": Color(0.06, 0.16, 0.21),
+				"foam_color": Color(0.86, 0.92, 0.97),
+				"horizon_color": Color(0.18, 0.25, 0.31),
+				"sun_energy": 0.36,
+				"sun_color": Color(0.60, 0.66, 0.76),
+				"sky_energy": 0.22,
+				"reflection_strength": 0.42,
+				"glint_strength": 0.40,
+				"clarity": 0.24,
+			}
+		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
+			return {
+				"wave_amp": 0.30,
+				"wave_speed": 0.98,
+				"chop_strength": 0.26,
+				"cross_weight": 0.31,
+				"background": Color(0.24, 0.29, 0.33),
+				"fog_density": 0.009,
+				"deep_color": Color(0.05, 0.10, 0.12),
+				"shallow_color": Color(0.08, 0.20, 0.20),
+				"foam_color": Color(0.72, 0.82, 0.84),
+				"horizon_color": Color(0.20, 0.26, 0.29),
+				"sun_energy": 0.52,
+				"sun_color": Color(0.78, 0.78, 0.72),
+				"sky_energy": 0.30,
+				"reflection_strength": 0.34,
+				"glint_strength": 0.18,
+				"clarity": 0.28,
+			}
+		_:
+			return {
+				"wave_amp": 0.28,
+				"wave_speed": 0.96,
+				"chop_strength": 0.18,
+				"cross_weight": 0.24,
+				"background": Color(0.23, 0.57, 0.73),
+				"fog_density": 0.002,
+				"deep_color": Color(0.02, 0.14, 0.25),
+				"shallow_color": Color(0.08, 0.39, 0.49),
+				"foam_color": Color(0.92, 0.97, 0.99),
+				"horizon_color": Color(0.47, 0.72, 0.82),
+				"sun_energy": 0.98,
+				"sun_color": Color(1.0, 0.94, 0.80),
+				"sky_energy": 0.76,
+				"reflection_strength": 0.70,
+				"glint_strength": 0.48,
+				"clarity": 0.82,
+			}
+
+func _sample_directional_wave(world_xz: Vector2, direction: Vector2, frequency: float, phase: float) -> float:
+	return sin(world_xz.dot(direction.normalized()) * frequency + phase)
+
+func _sample_wave_group_envelope(world_xz: Vector2, time: float, primary_direction: Vector2, secondary_direction: Vector2, strength: float) -> float:
+	var primary_group := sin(world_xz.dot(primary_direction.normalized()) * 0.006 + time * 0.18)
+	var secondary_group := cos(world_xz.dot(secondary_direction.normalized()) * 0.004 - time * 0.11)
+	return 0.86 + strength * (primary_group * 0.18 + secondary_group * 0.12 + 0.22)
+
+func sample_wave_height(world_position: Vector3, time_seconds: float = -1.0) -> float:
+	var descriptor := get_chunk_descriptor(get_world_chunk_coord(world_position))
+	var profile := get_biome_sea_profile(str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN)))
+	var hazard_level := clampf(float(descriptor.get("hazard_level", 0.35)), 0.0, 1.0)
+	var time := time_seconds if time_seconds >= 0.0 else float(run_state.get("elapsed_time", 0.0))
+	var world_xz := Vector2(world_position.x, world_position.z)
+	var wave_speed := float(profile.get("wave_speed", 1.0))
+	var wave_amplitude := float(profile.get("wave_amp", 0.24)) * (0.86 + hazard_level * 0.74)
+	var chop_strength := float(profile.get("chop_strength", 0.18))
+	var cross_weight := float(profile.get("cross_weight", 0.26))
+	var wind_angle := 0.34 + sin(time * 0.029) * 0.18 + hazard_level * 0.12
+	var wind_direction := Vector2.RIGHT.rotated(wind_angle)
+	var swell_direction := wind_direction.rotated(-0.56 + cos(time * 0.021) * 0.10)
+	var cross_direction := wind_direction.rotated(1.08 + sin(time * 0.017) * 0.08)
+	var drift_direction := wind_direction.rotated(-1.42)
+	var swell_group := _sample_wave_group_envelope(world_xz, time, swell_direction, cross_direction, 0.24 + hazard_level * 0.18)
+	var swell_a := _sample_directional_wave(world_xz, swell_direction, 0.030, time * (0.56 * wave_speed))
+	var swell_b := _sample_directional_wave(world_xz, wind_direction, 0.041, time * (0.92 * wave_speed) + 0.80)
+	var long_swell := _sample_directional_wave(world_xz, drift_direction, 0.018, time * (0.34 * wave_speed) - 1.20)
+	var cross := _sample_directional_wave(world_xz, cross_direction, 0.024, time * (0.48 * wave_speed) + 1.60)
+	var chop_carrier := _sample_directional_wave(world_xz, wind_direction, 0.18, time * (1.75 * wave_speed))
+	var chop_cross := _sample_directional_wave(world_xz, cross_direction, 0.22, -time * (1.38 * wave_speed) + 0.70)
+	var gust_envelope := 0.74 + 0.26 * (sin(time * 0.31 + world_xz.dot(wind_direction) * 0.008) * 0.5 + 0.5)
+	var wind_chop := chop_carrier * chop_cross * chop_strength * gust_envelope
+	var cap_ripple := _sample_directional_wave(world_xz, wind_direction.rotated(0.22), 0.31, time * (2.38 * wave_speed) + 1.40) * (0.05 + hazard_level * 0.08)
+	return (
+		(swell_a * 0.36 + swell_b * 0.28 + long_swell * 0.24 + cross * cross_weight * 0.42) * wave_amplitude * swell_group
+		+ wind_chop * wave_amplitude
+		+ cap_ripple * wave_amplitude
+	)
+
+func get_wave_surface_height(world_position: Vector3, time_seconds: float = -1.0) -> float:
+	return SEA_SURFACE_Y + sample_wave_height(world_position, time_seconds)
+
+func sample_boat_wave_pose(
+	world_position: Vector3,
+	rotation_y: float,
+	hull_length: float = 4.4,
+	hull_beam: float = 2.7,
+	time_seconds: float = -1.0
+) -> Dictionary:
+	var forward := -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
+	var right := Vector3.RIGHT.rotated(Vector3.UP, rotation_y)
+	var bow_distance := maxf(1.0, hull_length * 0.55)
+	var stern_distance := maxf(0.9, hull_length * 0.45)
+	var side_distance := maxf(0.7, hull_beam * 0.5)
+	var bow_sample := sample_wave_height(world_position + forward * bow_distance, time_seconds)
+	var stern_sample := sample_wave_height(world_position - forward * stern_distance, time_seconds)
+	var port_sample := sample_wave_height(world_position - right * side_distance, time_seconds)
+	var starboard_sample := sample_wave_height(world_position + right * side_distance, time_seconds)
+	var center_height := sample_wave_height(world_position, time_seconds)
+	return {
+		"height": center_height,
+		"surface_y": SEA_SURFACE_Y + center_height,
+		"pitch": clampf(atan2(bow_sample - stern_sample, bow_distance + stern_distance), -0.24, 0.24),
+		"roll": clampf(atan2(starboard_sample - port_sample, side_distance * 2.0), -0.30, 0.30),
+	}
+
+func _get_runtime_hull_dimensions_from_stats(stats: Dictionary) -> Dictionary:
+	var span_length := maxi(1, int(stats.get("span_length", 4)))
+	var span_width := maxi(1, int(stats.get("span_width", 2)))
+	return {
+		"hull_length": clampf(2.4 + float(span_length) * 0.42, 3.2, 6.8),
+		"hull_beam": clampf(1.35 + float(span_width) * 0.36, 1.9, 4.6),
+	}
 
 func _get_propulsion_station_label(family: String) -> String:
 	match family.strip_edges().to_lower():
@@ -3544,6 +3724,96 @@ func _step_propulsion_state(delta: float, throttle_intent: float, steer_intent: 
 		"yaw_bias": yaw_bias,
 	}
 
+func _step_boat_buoyancy(delta: float, world_position: Vector3, rotation_y: float, forward_speed: float) -> Dictionary:
+	var draft_ratio := clampf(float(boat_state.get("draft_ratio", 0.72)), 0.28, 1.15)
+	var reserve_buoyancy := float(boat_state.get("reserve_buoyancy", 0.0))
+	var roll_resistance := clampf(float(boat_state.get("roll_resistance", 50.0)) / 100.0, 0.0, 1.0)
+	var pitch_resistance := clampf(float(boat_state.get("pitch_resistance", 50.0)) / 100.0, 0.0, 1.0)
+	var heel_bias := float(boat_state.get("heel_bias", 0.0))
+	var trim_bias := float(boat_state.get("trim_bias", 0.0))
+	var hull_length := maxf(3.2, float(boat_state.get("hull_length", 4.4)))
+	var hull_beam := maxf(1.9, float(boat_state.get("hull_beam", 2.7)))
+	var wave_pose := sample_boat_wave_pose(world_position, rotation_y, hull_length, hull_beam)
+	var surface_offset := float(wave_pose.get("height", 0.0))
+	var rest_ride_height := 0.36 - clampf((draft_ratio - 0.72) * 0.85, -0.04, 0.34)
+	var probe_keel_offset := -clampf(0.30 + draft_ratio * 0.38, 0.30, 0.76)
+	var rest_probe_depth := clampf(0.18 + draft_ratio * 0.46, 0.22, 0.72)
+	var heave := float(boat_state.get("buoyancy_heave", 0.0))
+	var heave_velocity := float(boat_state.get("buoyancy_heave_velocity", 0.0))
+	var pitch_angle := float(boat_state.get("buoyancy_pitch", 0.0))
+	var pitch_velocity := float(boat_state.get("buoyancy_pitch_velocity", 0.0))
+	var roll_angle := float(boat_state.get("buoyancy_roll", 0.0))
+	var roll_velocity := float(boat_state.get("buoyancy_roll_velocity", 0.0))
+	var boat_center_y := SEA_SURFACE_Y + surface_offset + rest_ride_height + heave
+	var forward := -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
+	var right := Vector3.RIGHT.rotated(Vector3.UP, rotation_y)
+	var bow_distance := hull_length * 0.52
+	var stern_distance := hull_length * 0.42
+	var side_distance := hull_beam * 0.46
+	var probe_offsets: Array[Vector2] = [
+		Vector2(-side_distance, bow_distance),
+		Vector2(side_distance, bow_distance),
+		Vector2(-side_distance, -stern_distance),
+		Vector2(side_distance, -stern_distance),
+	]
+	var probe_depths: Array[float] = []
+	for probe_offset in probe_offsets:
+		var probe_world_position: Vector3 = world_position + forward * probe_offset.y + right * probe_offset.x
+		var probe_surface_y: float = get_wave_surface_height(probe_world_position)
+		var probe_hull_y: float = boat_center_y + probe_offset.y * sin(pitch_angle) + probe_offset.x * sin(roll_angle) + probe_keel_offset
+		probe_depths.append(probe_surface_y - probe_hull_y)
+
+	var average_depth := 0.0
+	for depth in probe_depths:
+		average_depth += depth
+	average_depth /= float(maxi(1, probe_depths.size()))
+	var bow_depth := (probe_depths[0] + probe_depths[1]) * 0.5
+	var stern_depth := (probe_depths[2] + probe_depths[3]) * 0.5
+	var port_depth := (probe_depths[0] + probe_depths[2]) * 0.5
+	var starboard_depth := (probe_depths[1] + probe_depths[3]) * 0.5
+	var heave_spring := BOAT_HEAVE_SPRING + maxf(0.0, reserve_buoyancy) * 0.35 + roll_resistance * 1.8
+	var heave_damping := BOAT_HEAVE_DAMPING + roll_resistance * 1.6
+	heave_velocity += (average_depth - rest_probe_depth) * heave_spring * delta
+	heave_velocity -= heave_velocity * heave_damping * delta
+	heave_velocity = clampf(heave_velocity, -1.8, 1.8)
+	heave += heave_velocity * delta
+	heave = clampf(heave, -0.42, 0.58)
+
+	var pitch_wave_scale := lerpf(1.12, 0.45, pitch_resistance)
+	var roll_wave_scale := lerpf(1.18, 0.40, roll_resistance)
+	var hydro_pitch := clampf(trim_bias * 0.30, -0.22, 0.22)
+	var hydro_roll := -clampf(heel_bias * 0.38, -0.26, 0.26)
+	var pitch_target := float(wave_pose.get("pitch", 0.0)) * pitch_wave_scale + hydro_pitch + clampf((bow_depth - stern_depth) * 0.08, -0.14, 0.14)
+	var roll_target := -(float(wave_pose.get("roll", 0.0)) * roll_wave_scale) + hydro_roll - clampf((starboard_depth - port_depth) * 0.10, -0.18, 0.18)
+	pitch_velocity += (pitch_target - pitch_angle) * (BOAT_PITCH_SPRING + pitch_resistance * 2.1) * delta
+	pitch_velocity -= pitch_velocity * (BOAT_PITCH_DAMPING + pitch_resistance * 1.8) * delta
+	roll_velocity += (roll_target - roll_angle) * (BOAT_ROLL_SPRING + roll_resistance * 2.4) * delta
+	roll_velocity -= roll_velocity * (BOAT_ROLL_DAMPING + roll_resistance * 2.0) * delta
+	pitch_velocity = clampf(pitch_velocity, -0.9, 0.9)
+	roll_velocity = clampf(roll_velocity, -1.0, 1.0)
+	pitch_angle = clampf(pitch_angle + pitch_velocity * delta, -0.34, 0.34)
+	roll_angle = clampf(roll_angle + roll_velocity * delta, -0.42, 0.42)
+	var submersion_ratio := clampf(maxf(0.0, average_depth) / maxf(0.01, rest_probe_depth), 0.0, 1.8)
+	var sea_resistance := clampf(
+		maxf(0.0, submersion_ratio - 1.0) * 0.18
+		+ absf(pitch_angle) * 0.22
+		+ absf(roll_angle) * 0.24
+		+ absf(forward_speed) / maxf(1.0, float(boat_state.get("base_top_speed", BOAT_TOP_SPEED))) * 0.05,
+		0.0,
+		0.14
+	)
+	return {
+		"water_surface_offset": surface_offset,
+		"buoyancy_heave": heave,
+		"buoyancy_heave_velocity": heave_velocity,
+		"buoyancy_pitch": pitch_angle,
+		"buoyancy_pitch_velocity": pitch_velocity,
+		"buoyancy_roll": roll_angle,
+		"buoyancy_roll_velocity": roll_velocity,
+		"water_drag_multiplier": clampf(1.0 - sea_resistance, 0.86, 1.0),
+		"buoyancy_submersion": submersion_ratio,
+	}
+
 func server_step_shared_boat(delta: float) -> void:
 	if not multiplayer.is_server():
 		return
@@ -3572,9 +3842,24 @@ func server_step_shared_boat(delta: float) -> void:
 	var breach_stacks := int(boat_state.get("breach_stacks", 0))
 	var base_top_speed: float = float(boat_state.get("base_top_speed", BOAT_TOP_SPEED))
 	var boat_position_for_drag: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var buoyancy_step := _step_boat_buoyancy(
+		delta,
+		boat_position_for_drag,
+		float(boat_state.get("rotation_y", 0.0)),
+		float(boat_state.get("speed", 0.0))
+	)
+	boat_state["water_surface_offset"] = float(buoyancy_step.get("water_surface_offset", 0.0))
+	boat_state["buoyancy_heave"] = float(buoyancy_step.get("buoyancy_heave", 0.0))
+	boat_state["buoyancy_heave_velocity"] = float(buoyancy_step.get("buoyancy_heave_velocity", 0.0))
+	boat_state["buoyancy_pitch"] = float(buoyancy_step.get("buoyancy_pitch", 0.0))
+	boat_state["buoyancy_pitch_velocity"] = float(buoyancy_step.get("buoyancy_pitch_velocity", 0.0))
+	boat_state["buoyancy_roll"] = float(buoyancy_step.get("buoyancy_roll", 0.0))
+	boat_state["buoyancy_roll_velocity"] = float(buoyancy_step.get("buoyancy_roll_velocity", 0.0))
+	boat_state["water_drag_multiplier"] = float(buoyancy_step.get("water_drag_multiplier", 1.0))
+	boat_state["buoyancy_submersion"] = float(buoyancy_step.get("buoyancy_submersion", 0.0))
 	var squall_drag_multiplier := _get_active_squall_drag_multiplier(boat_position_for_drag)
 	boat_state["squall_drag_multiplier"] = squall_drag_multiplier
-	var top_speed_limit := base_top_speed * maxf(0.45, 1.0 - float(breach_stacks) * BREACH_SPEED_PENALTY) * squall_drag_multiplier
+	var top_speed_limit := base_top_speed * maxf(0.45, 1.0 - float(breach_stacks) * BREACH_SPEED_PENALTY) * squall_drag_multiplier * float(boat_state.get("water_drag_multiplier", 1.0))
 	boat_state["top_speed_limit"] = top_speed_limit
 
 	var input_state: Dictionary = _peer_inputs.get(driver_peer_id, {
@@ -4303,9 +4588,7 @@ func _get_runtime_block_navigation_data(block_state: Dictionary) -> Dictionary:
 	var local_position: Vector3 = block_state.get("local_position", Vector3.ZERO)
 	if not block_state.has("local_position"):
 		local_position = _block_cell_to_local_position(blueprint_block.get("cell", [0, 0, 0]))
-	var block_size: Vector3 = get_builder_block_definition(block_type).get("size", Vector3.ONE)
-	if rotation_steps % 2 != 0:
-		block_size = Vector3(block_size.z, block_size.y, block_size.x)
+	var block_size := Vector3.ONE * RUNTIME_BLOCK_SPACING
 	return {
 		"id": block_id,
 		"type": block_type,
@@ -5038,6 +5321,7 @@ func _reset_run_runtime() -> void:
 	var repair_capacity := int(blueprint_stats.get("repair_capacity", REPAIR_SUPPLIES_START))
 	var brace_multiplier := float(blueprint_stats.get("brace_multiplier", 1.0))
 	var propulsion_family := str(blueprint_stats.get("propulsion_family", PROPULSION_FAMILY_RAFT_PADDLES))
+	var hull_dimensions := _get_runtime_hull_dimensions_from_stats(blueprint_stats)
 	var launch_warning_text := _build_blueprint_warning_text()
 
 	boat_state = {
@@ -5063,10 +5347,23 @@ func _reset_run_runtime() -> void:
 		"storm_stability": float(blueprint_stats.get("storm_stability", 50.0)),
 		"draft_ratio": float(blueprint_stats.get("draft_ratio", 0.72)),
 		"reserve_buoyancy": float(blueprint_stats.get("reserve_buoyancy", blueprint_stats.get("buoyancy_margin", 0.0))),
+		"span_width": int(blueprint_stats.get("span_width", 2)),
+		"span_length": int(blueprint_stats.get("span_length", 4)),
+		"hull_length": float(hull_dimensions.get("hull_length", 4.4)),
+		"hull_beam": float(hull_dimensions.get("hull_beam", 2.7)),
 		"roll_resistance": float(blueprint_stats.get("roll_resistance", 50.0)),
 		"pitch_resistance": float(blueprint_stats.get("pitch_resistance", 50.0)),
 		"heel_bias": float(blueprint_stats.get("heel_bias", 0.0)),
 		"trim_bias": float(blueprint_stats.get("trim_bias", 0.0)),
+		"water_surface_offset": 0.0,
+		"buoyancy_heave": 0.0,
+		"buoyancy_heave_velocity": 0.0,
+		"buoyancy_pitch": 0.0,
+		"buoyancy_pitch_velocity": 0.0,
+		"buoyancy_roll": 0.0,
+		"buoyancy_roll_velocity": 0.0,
+		"water_drag_multiplier": 1.0,
+		"buoyancy_submersion": 0.0,
 		"freeboard_rating": float(blueprint_stats.get("freeboard_rating", 50.0)),
 		"top_heavy_penalty": float(blueprint_stats.get("top_heavy_penalty", 0.0)),
 		"hydrostatic_class": str(blueprint_stats.get("hydrostatic_class", "stable")),
@@ -5842,6 +6139,7 @@ func _apply_runtime_stats_from_main_blocks(runtime_blocks: Array, main_block_ids
 		_spill_inventory_quantity("cargo_manifest", overflow)
 
 	var new_max_hull := float(stats.get("max_hull_integrity", BOAT_MAX_INTEGRITY))
+	var hull_dimensions := _get_runtime_hull_dimensions_from_stats(stats)
 	boat_state["max_hull_integrity"] = new_max_hull
 	boat_state["hull_integrity"] = minf(float(boat_state.get("hull_integrity", new_max_hull)), new_max_hull)
 	boat_state["base_top_speed"] = float(stats.get("top_speed", BOAT_TOP_SPEED))
@@ -5851,6 +6149,10 @@ func _apply_runtime_stats_from_main_blocks(runtime_blocks: Array, main_block_ids
 	boat_state["storm_stability"] = float(stats.get("storm_stability", 50.0))
 	boat_state["draft_ratio"] = float(stats.get("draft_ratio", 0.72))
 	boat_state["reserve_buoyancy"] = float(stats.get("reserve_buoyancy", stats.get("buoyancy_margin", 0.0)))
+	boat_state["span_width"] = int(stats.get("span_width", boat_state.get("span_width", 2)))
+	boat_state["span_length"] = int(stats.get("span_length", boat_state.get("span_length", 4)))
+	boat_state["hull_length"] = float(hull_dimensions.get("hull_length", boat_state.get("hull_length", 4.4)))
+	boat_state["hull_beam"] = float(hull_dimensions.get("hull_beam", boat_state.get("hull_beam", 2.7)))
 	boat_state["roll_resistance"] = float(stats.get("roll_resistance", 50.0))
 	boat_state["pitch_resistance"] = float(stats.get("pitch_resistance", 50.0))
 	boat_state["heel_bias"] = float(stats.get("heel_bias", 0.0))
@@ -6316,6 +6618,10 @@ func _save_server_blueprint() -> void:
 
 func _extract_persisted_blueprint(snapshot: Dictionary) -> Dictionary:
 	return {
+		"geometry_schema_version": maxi(
+			BOAT_BLUEPRINT_GEOMETRY_SCHEMA_VERSION,
+			int(snapshot.get("geometry_schema_version", BOAT_BLUEPRINT_GEOMETRY_SCHEMA_VERSION))
+		),
 		"version": int(snapshot.get("version", 1)),
 		"next_block_id": int(snapshot.get("next_block_id", 1)),
 		"blocks": Array(snapshot.get("blocks", [])).duplicate(true),
@@ -6500,7 +6806,12 @@ func _decorate_blueprint(snapshot: Dictionary) -> Dictionary:
 	return normalized
 
 func _normalize_blueprint(snapshot: Dictionary) -> Dictionary:
+	var geometry_schema_version := maxi(
+		BOAT_BLUEPRINT_GEOMETRY_SCHEMA_VERSION,
+		int(snapshot.get("geometry_schema_version", BOAT_BLUEPRINT_GEOMETRY_SCHEMA_VERSION))
+	)
 	var normalized := {
+		"geometry_schema_version": geometry_schema_version,
 		"version": maxi(1, int(snapshot.get("version", 1))),
 		"next_block_id": maxi(1, int(snapshot.get("next_block_id", 1))),
 		"blocks": [],

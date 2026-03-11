@@ -22,6 +22,7 @@ const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const ExpeditionHudSkin = preload("res://scenes/shared/expedition_hud_skin.gd")
 const BoatBlockMaterials = preload("res://scenes/shared/boat_block_materials.gd")
 const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
+const OpenSeaAbyssShader = preload("res://shaders/open_sea_abyss.gdshader")
 const OpenSeaWakeShader = preload("res://shaders/open_sea_wake.gdshader")
 const OpenSeaContactFoamShader = preload("res://shaders/open_sea_contact_foam.gdshader")
 const OpenSeaSplashShader = preload("res://shaders/open_sea_splash.gdshader")
@@ -31,7 +32,6 @@ const SEA_HDRI_PATH := "res://assets/third_party/polyhaven/overcast_soil_puresky
 const SEA_FOAM_MASK_TEXTURE_PATH := "res://assets/third_party/ambientcg/Foam001_Opacity.jpg"
 const SEA_FOAM_COLOR_TEXTURE_PATH := "res://assets/third_party/ambientcg/Foam001_Color.jpg"
 const SEA_FOAM_SPRAY_TEXTURE_PATH := "res://assets/third_party/ambientcg/Foam001_RGBA.png"
-const BOAT_BLOCK_VISUAL_SCALE := 0.72
 const IDLE_CREW_SLOTS := [
 	Vector3(0.0, 0.92, 1.35),
 	Vector3(-1.2, 0.92, 1.05),
@@ -57,6 +57,11 @@ const ASSIST_RALLY_HOLD_SECONDS := 1.5
 const WATER_SURFACE_Y := -0.12
 const WATER_SURFACE_SIZE := 640.0
 const WATER_SURFACE_SUBDIVISIONS := 220
+const OCEAN_ABYSS_DEPTH := 220.0
+const OCEAN_ABYSS_RADIUS := 560.0
+const OCEAN_FLOOR_SIZE := 1120.0
+const OCEAN_WALL_HEIGHT := 260.0
+const OCEAN_WALL_DISTANCE := 540.0
 const HUD_PANEL_BG := ExpeditionHudSkin.STORM_PANEL
 const HUD_PANEL_BG_SOFT := ExpeditionHudSkin.STORM_PANEL_SOFT
 const HUD_BORDER_BLUE := ExpeditionHudSkin.OXIDIZED_TEAL
@@ -70,15 +75,15 @@ const HUD_TEXT_SUCCESS := ExpeditionHudSkin.TEXT_SUCCESS
 
 @export_group("Run Camera")
 @export_range(-3.0, 3.0, 0.05) var run_camera_side_offset := 0.9
-@export_range(0.5, 6.0, 0.05) var run_camera_height := 2.2
-@export_range(1.0, 14.0, 0.05) var run_camera_distance := 5.9
+@export_range(0.5, 6.0, 0.05) var run_camera_height := 1.8
+@export_range(1.0, 14.0, 0.05) var run_camera_distance := 6.4
 @export_range(0.5, 4.0, 0.05) var run_camera_look_height := 1.32
 @export_range(0.0, 6.0, 0.05) var run_camera_look_ahead := 2.1
 @export_range(0.1, 20.0, 0.1) var run_camera_lag := 8.0
 @export_range(0.001, 0.02, 0.0001) var run_mouse_look_sensitivity := 0.0035
 @export_range(-89.0, 0.0, 0.5) var run_camera_pitch_min_degrees := -58.0
 @export_range(0.0, 89.0, 0.5) var run_camera_pitch_max_degrees := 44.0
-@export_range(-45.0, 45.0, 0.5) var run_camera_pitch_default_degrees := -10.0
+@export_range(-45.0, 45.0, 0.5) var run_camera_pitch_default_degrees := -7.0
 
 var status_label: Label
 var objective_label: Label
@@ -106,6 +111,9 @@ var boat_root: Node3D
 var chunk_container: Node3D
 var water_mesh_instance: MeshInstance3D
 var water_shader_material: ShaderMaterial
+var ocean_body_root: Node3D
+var ocean_floor_mesh_instance: MeshInstance3D
+var ocean_abyss_materials: Array[ShaderMaterial] = []
 var sun_light: DirectionalLight3D
 var storm_wall_container: Node3D
 var hull_mesh_instance: MeshInstance3D
@@ -240,7 +248,10 @@ var sea_hdri_texture: Texture2D
 var sea_foam_mask_texture: Texture2D
 var sea_foam_color_texture: Texture2D
 var sea_foam_spray_texture: Texture2D
-var sea_panorama_material: PanoramaSkyMaterial
+var sea_water_wave_texture: NoiseTexture2D
+var sea_water_normal_texture: NoiseTexture2D
+var sea_water_normal_texture_secondary: NoiseTexture2D
+var sea_sky_material: ProceduralSkyMaterial
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -426,6 +437,64 @@ func _load_optional_texture(path: String) -> Texture2D:
 		return resource as Texture2D
 	return null
 
+func _make_water_noise_texture(
+	noise_type: FastNoiseLite.NoiseType,
+	frequency: float,
+	fractal_type: FastNoiseLite.FractalType,
+	as_normal_map: bool,
+	bump_strength: float = 1.5,
+	seamless: bool = true,
+	fractal_octaves: int = 5,
+	seed: int = 1
+) -> NoiseTexture2D:
+	var noise := FastNoiseLite.new()
+	noise.noise_type = noise_type
+	noise.frequency = frequency
+	noise.fractal_type = fractal_type
+	noise.fractal_octaves = fractal_octaves
+	noise.seed = seed
+	var texture := NoiseTexture2D.new()
+	texture.seamless = seamless
+	texture.as_normal_map = as_normal_map
+	texture.bump_strength = bump_strength
+	texture.noise = noise
+	return texture
+
+func _ensure_sea_shader_noise_resources() -> void:
+	if sea_water_normal_texture == null:
+		sea_water_normal_texture = _make_water_noise_texture(
+			FastNoiseLite.TYPE_SIMPLEX,
+			0.01,
+			FastNoiseLite.FRACTAL_FBM,
+			true,
+			1.5,
+			true,
+			5,
+			11
+		)
+	if sea_water_normal_texture_secondary == null:
+		sea_water_normal_texture_secondary = _make_water_noise_texture(
+			FastNoiseLite.TYPE_SIMPLEX_SMOOTH,
+			0.01,
+			FastNoiseLite.FRACTAL_FBM,
+			true,
+			1.5,
+			true,
+			5,
+			23
+		)
+	if sea_water_wave_texture == null:
+		sea_water_wave_texture = _make_water_noise_texture(
+			FastNoiseLite.TYPE_SIMPLEX_SMOOTH,
+			0.001,
+			FastNoiseLite.FRACTAL_FBM,
+			false,
+			1.0,
+			true,
+			3,
+			37
+		)
+
 func _ensure_sea_reference_assets() -> void:
 	if sea_hdri_texture == null:
 		sea_hdri_texture = _load_optional_texture(SEA_HDRI_PATH)
@@ -435,6 +504,89 @@ func _ensure_sea_reference_assets() -> void:
 		sea_foam_color_texture = _load_optional_texture(SEA_FOAM_COLOR_TEXTURE_PATH)
 	if sea_foam_spray_texture == null:
 		sea_foam_spray_texture = _load_optional_texture(SEA_FOAM_SPRAY_TEXTURE_PATH)
+
+func _make_ocean_abyss_material() -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	material.shader = OpenSeaAbyssShader
+	material.set_shader_parameter("ocean_radius", OCEAN_ABYSS_RADIUS)
+	material.set_shader_parameter("top_y", WATER_SURFACE_Y)
+	material.set_shader_parameter("bottom_y", WATER_SURFACE_Y - OCEAN_ABYSS_DEPTH)
+	return material
+
+func _track_ocean_abyss_material(material: ShaderMaterial) -> void:
+	if material == null:
+		return
+	if ocean_abyss_materials.has(material):
+		return
+	ocean_abyss_materials.append(material)
+
+func _ensure_ocean_abyss_mesh(
+	parent: Node3D,
+	node_name: String,
+	mesh: Mesh,
+	position: Vector3,
+	rotation: Vector3 = Vector3.ZERO
+) -> MeshInstance3D:
+	var node := parent.get_node_or_null(node_name) as MeshInstance3D
+	if node == null:
+		node = MeshInstance3D.new()
+		node.name = node_name
+		node.mesh = mesh
+		node.position = position
+		node.rotation = rotation
+		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		parent.add_child(node)
+	var material := node.material_override as ShaderMaterial
+	if material == null or material.shader != OpenSeaAbyssShader:
+		material = _make_ocean_abyss_material()
+		node.material_override = material
+	_track_ocean_abyss_material(material)
+	return node
+
+func _ensure_ocean_body() -> void:
+	ocean_body_root = _ensure_root_node3d("OceanBodyRoot")
+	if ocean_floor_mesh_instance == null or not is_instance_valid(ocean_floor_mesh_instance):
+		var floor_mesh := PlaneMesh.new()
+		floor_mesh.size = Vector2(OCEAN_FLOOR_SIZE, OCEAN_FLOOR_SIZE)
+		floor_mesh.subdivide_width = 60
+		floor_mesh.subdivide_depth = 60
+		ocean_floor_mesh_instance = _ensure_ocean_abyss_mesh(
+			ocean_body_root,
+			"OceanFloor",
+			floor_mesh,
+			Vector3(0.0, WATER_SURFACE_Y - OCEAN_ABYSS_DEPTH, 0.0)
+		)
+
+	var wall_mesh := PlaneMesh.new()
+	wall_mesh.size = Vector2(OCEAN_FLOOR_SIZE, OCEAN_WALL_HEIGHT)
+	_ensure_ocean_abyss_mesh(
+		ocean_body_root,
+		"OceanWallNorth",
+		wall_mesh,
+		Vector3(0.0, WATER_SURFACE_Y - OCEAN_WALL_HEIGHT * 0.5, -OCEAN_WALL_DISTANCE),
+		Vector3(PI * 0.5, 0.0, 0.0)
+	)
+	_ensure_ocean_abyss_mesh(
+		ocean_body_root,
+		"OceanWallSouth",
+		wall_mesh,
+		Vector3(0.0, WATER_SURFACE_Y - OCEAN_WALL_HEIGHT * 0.5, OCEAN_WALL_DISTANCE),
+		Vector3(PI * 0.5, PI, 0.0)
+	)
+	_ensure_ocean_abyss_mesh(
+		ocean_body_root,
+		"OceanWallEast",
+		wall_mesh,
+		Vector3(OCEAN_WALL_DISTANCE, WATER_SURFACE_Y - OCEAN_WALL_HEIGHT * 0.5, 0.0),
+		Vector3(PI * 0.5, PI * 0.5, 0.0)
+	)
+	_ensure_ocean_abyss_mesh(
+		ocean_body_root,
+		"OceanWallWest",
+		wall_mesh,
+		Vector3(-OCEAN_WALL_DISTANCE, WATER_SURFACE_Y - OCEAN_WALL_HEIGHT * 0.5, 0.0),
+		Vector3(PI * 0.5, -PI * 0.5, 0.0)
+	)
 
 func _ensure_world_environment() -> void:
 	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
@@ -450,19 +602,18 @@ func _ensure_world_environment() -> void:
 func _make_default_environment_resource() -> Environment:
 	_ensure_sea_reference_assets()
 	var environment := Environment.new()
-	environment.ambient_light_energy = 0.62
-	environment.ambient_light_color = Color(0.33, 0.41, 0.47)
-	if sea_hdri_texture != null:
-		var sky := Sky.new()
-		sea_panorama_material = PanoramaSkyMaterial.new()
-		sea_panorama_material.panorama = sea_hdri_texture
-		sea_panorama_material.energy_multiplier = 0.54
-		sky.sky_material = sea_panorama_material
-		environment.sky = sky
-		environment.background_mode = Environment.BG_SKY
-	else:
-		environment.background_mode = Environment.BG_COLOR
-		environment.background_color = Color(0.46, 0.71, 0.92)
+	environment.ambient_light_energy = 0.78
+	environment.ambient_light_color = Color(0.43, 0.56, 0.62)
+	var sky := Sky.new()
+	sea_sky_material = ProceduralSkyMaterial.new()
+	sea_sky_material.sky_top_color = Color(0.17, 0.44, 0.72)
+	sea_sky_material.sky_horizon_color = Color(0.73, 0.84, 0.90)
+	sea_sky_material.ground_horizon_color = Color(0.24, 0.36, 0.42)
+	sea_sky_material.ground_bottom_color = Color(0.05, 0.10, 0.15)
+	sea_sky_material.energy_multiplier = 0.82
+	sky.sky_material = sea_sky_material
+	environment.sky = sky
+	environment.background_mode = Environment.BG_SKY
 	return environment
 
 func _build_static_world_fallback() -> void:
@@ -491,6 +642,7 @@ func _build_static_world_fallback() -> void:
 
 func _ensure_sea_fx() -> void:
 	_ensure_sea_reference_assets()
+	_ensure_ocean_body()
 	water_mesh_instance = get_node_or_null("Environment/Water") as MeshInstance3D
 	if water_mesh_instance == null:
 		water_mesh_instance = get_node_or_null("EnvironmentFallback/Water") as MeshInstance3D
@@ -534,19 +686,39 @@ func _configure_open_sea_water_material(material: ShaderMaterial) -> void:
 	if material == null:
 		return
 	_ensure_sea_reference_assets()
-	var has_mask := sea_foam_mask_texture != null
-	material.set_shader_parameter("use_foam_mask", has_mask)
-	if has_mask:
-		material.set_shader_parameter("foam_mask_texture", sea_foam_mask_texture)
-		material.set_shader_parameter("foam_mask_tiling", 0.013)
-		material.set_shader_parameter("foam_mask_scroll", Vector2(0.016, -0.010))
-		material.set_shader_parameter("foam_mask_influence", 0.34)
-	material.set_shader_parameter("refraction_strength", 0.015)
-	material.set_shader_parameter("refraction_blur", 1.25)
-	material.set_shader_parameter("depth_fade_distance", 9.5)
-	material.set_shader_parameter("depth_refraction_strength", 0.38)
-	material.set_shader_parameter("contact_edge_foam", 0.26)
-	material.set_shader_parameter("distance_haze", 0.16)
+	_ensure_sea_shader_noise_resources()
+	material.set_shader_parameter("metallic", 0.0)
+	material.set_shader_parameter("roughness", 0.04)
+	material.set_shader_parameter("wave_direction", Vector2(2.0, 0.0))
+	material.set_shader_parameter("wave_2_direction", Vector2(0.0, 1.0))
+	material.set_shader_parameter("wave_3_direction", Vector2(0.82, 0.38))
+	material.set_shader_parameter("time_scale", 0.025)
+	material.set_shader_parameter("wave_group_strength", 0.26)
+	material.set_shader_parameter("chop_strength", 0.18)
+	material.set_shader_parameter("chop_scale", 2.6)
+	material.set_shader_parameter("crest_foam_bias", 0.10)
+	material.set_shader_parameter("noise_scale", 10.0)
+	material.set_shader_parameter("normal_tiling", 1.55)
+	material.set_shader_parameter("beers_law", 0.14)
+	material.set_shader_parameter("depth_offset", -0.24)
+	material.set_shader_parameter("edge_scale", 0.18)
+	material.set_shader_parameter("near", 0.5)
+	material.set_shader_parameter("far", 100.0)
+	material.set_shader_parameter("texture_normal", sea_water_normal_texture)
+	material.set_shader_parameter("texture_normal2", sea_water_normal_texture_secondary)
+	material.set_shader_parameter("wave", sea_water_wave_texture)
+	material.set_shader_parameter("wave_time", 0.0)
+	material.set_shader_parameter("wave_speed", 0.20)
+	material.set_shader_parameter("height_scale", 0.36)
+	material.set_shader_parameter("reflection_strength", 0.72)
+	material.set_shader_parameter("fresnel_power", 3.6)
+	material.set_shader_parameter("refraction_strength", 0.022)
+	material.set_shader_parameter("whitecap_strength", 0.12)
+	material.set_shader_parameter("whitecap_cutoff", 0.76)
+	material.set_shader_parameter("crest_tint_strength", 0.22)
+	material.set_shader_parameter("trough_darkness", 0.22)
+	material.set_shader_parameter("distance_haze", 0.03)
+	material.set_shader_parameter("slope_shading_strength", 0.12)
 
 func _configure_contact_foam_material(material: ShaderMaterial) -> void:
 	if material == null:
@@ -724,131 +896,19 @@ func _fill_audio_layer(playback: AudioStreamGeneratorPlayback, layer_name: Strin
 	return current_time
 
 func _get_biome_sea_profile(biome_id: String) -> Dictionary:
-	match biome_id:
-		RunWorldGenerator.BIOME_REEF_WATERS:
-			return {
-				"wave_amp": 0.18,
-				"wave_speed": 0.92,
-				"chop_strength": 0.24,
-				"cross_weight": 0.28,
-				"background": Color(0.26, 0.58, 0.63),
-				"fog_density": 0.0,
-				"deep_color": Color(0.04, 0.20, 0.25),
-				"shallow_color": Color(0.12, 0.49, 0.46),
-				"foam_color": Color(0.76, 0.93, 0.88),
-				"horizon_color": Color(0.28, 0.54, 0.56),
-				"sun_energy": 0.95,
-				"sun_color": Color(0.96, 0.94, 0.85),
-				"sky_energy": 0.62,
-				"reflection_strength": 0.44,
-				"glint_strength": 0.26,
-				"clarity": 0.72,
-			}
-		RunWorldGenerator.BIOME_FOG_BANK:
-			return {
-				"wave_amp": 0.21,
-				"wave_speed": 0.84,
-				"chop_strength": 0.14,
-				"cross_weight": 0.24,
-				"background": Color(0.36, 0.42, 0.48),
-				"fog_density": 0.028,
-				"deep_color": Color(0.06, 0.11, 0.15),
-				"shallow_color": Color(0.11, 0.22, 0.28),
-				"foam_color": Color(0.76, 0.82, 0.88),
-				"horizon_color": Color(0.34, 0.40, 0.46),
-				"sun_energy": 0.56,
-				"sun_color": Color(0.82, 0.86, 0.90),
-				"sky_energy": 0.32,
-				"reflection_strength": 0.24,
-				"glint_strength": 0.14,
-				"clarity": 0.34,
-			}
-		RunWorldGenerator.BIOME_STORM_BELT:
-			return {
-				"wave_amp": 0.42,
-				"wave_speed": 1.18,
-				"chop_strength": 0.52,
-				"cross_weight": 0.44,
-				"background": Color(0.15, 0.19, 0.25),
-				"fog_density": 0.021,
-				"deep_color": Color(0.03, 0.08, 0.12),
-				"shallow_color": Color(0.06, 0.16, 0.21),
-				"foam_color": Color(0.86, 0.92, 0.97),
-				"horizon_color": Color(0.18, 0.25, 0.31),
-				"sun_energy": 0.36,
-				"sun_color": Color(0.60, 0.66, 0.76),
-				"sky_energy": 0.22,
-				"reflection_strength": 0.42,
-				"glint_strength": 0.40,
-				"clarity": 0.24,
-			}
-		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
-			return {
-				"wave_amp": 0.30,
-				"wave_speed": 0.98,
-				"chop_strength": 0.26,
-				"cross_weight": 0.31,
-				"background": Color(0.24, 0.29, 0.33),
-				"fog_density": 0.009,
-				"deep_color": Color(0.05, 0.10, 0.12),
-				"shallow_color": Color(0.08, 0.20, 0.20),
-				"foam_color": Color(0.72, 0.82, 0.84),
-				"horizon_color": Color(0.20, 0.26, 0.29),
-				"sun_energy": 0.52,
-				"sun_color": Color(0.78, 0.78, 0.72),
-				"sky_energy": 0.30,
-				"reflection_strength": 0.34,
-				"glint_strength": 0.18,
-				"clarity": 0.28,
-			}
-		_:
-			return {
-				"wave_amp": 0.28,
-				"wave_speed": 1.02,
-				"chop_strength": 0.24,
-				"cross_weight": 0.26,
-				"background": Color(0.17, 0.23, 0.30),
-				"fog_density": 0.006,
-				"deep_color": Color(0.03, 0.09, 0.13),
-				"shallow_color": Color(0.06, 0.20, 0.27),
-				"foam_color": Color(0.74, 0.86, 0.92),
-				"horizon_color": Color(0.15, 0.25, 0.31),
-				"sun_energy": 0.66,
-				"sun_color": Color(0.80, 0.84, 0.88),
-				"sky_energy": 0.46,
-				"reflection_strength": 0.50,
-				"glint_strength": 0.30,
-				"clarity": 0.48,
-			}
+	return NetworkRuntime.get_biome_sea_profile(biome_id)
 
 func _sample_wave_height(world_position: Vector3) -> float:
-	var descriptor := NetworkRuntime.get_chunk_descriptor(NetworkRuntime.get_world_chunk_coord(world_position))
-	var profile := _get_biome_sea_profile(str(descriptor.get("biome_id", RunWorldGenerator.BIOME_OPEN_OCEAN)))
-	var hazard_level := clampf(float(descriptor.get("hazard_level", 0.35)), 0.0, 1.0)
-	var x := world_position.x
-	var z := world_position.z
-	var time := connect_time_seconds
-	var wave_speed := float(profile.get("wave_speed", 1.0))
-	var swell_a := sin(x * 0.046 + time * (0.88 * wave_speed))
-	var swell_b := cos(z * 0.039 - time * (0.74 * wave_speed))
-	var cross := sin((x + z) * 0.026 + time * (0.52 * wave_speed))
-	var chop := sin(x * 0.19 - time * (1.70 * wave_speed)) * cos(z * 0.16 + time * (1.26 * wave_speed))
-	var wave_amplitude := float(profile.get("wave_amp", 0.24)) * (0.88 + hazard_level * 0.72)
-	return (swell_a * 0.55 + swell_b * 0.45 + cross * float(profile.get("cross_weight", 0.26))) * wave_amplitude + chop * wave_amplitude * float(profile.get("chop_strength", 0.18))
+	return NetworkRuntime.sample_wave_height(world_position, connect_time_seconds)
 
 func _sample_boat_wave_pose(world_position: Vector3, rotation_y: float) -> Dictionary:
-	var forward := -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
-	var right := Vector3.RIGHT.rotated(Vector3.UP, rotation_y)
-	var bow_sample := _sample_wave_height(world_position + forward * 2.4)
-	var stern_sample := _sample_wave_height(world_position - forward * 2.0)
-	var port_sample := _sample_wave_height(world_position - right * 1.35)
-	var starboard_sample := _sample_wave_height(world_position + right * 1.35)
-	var center_height := _sample_wave_height(world_position)
-	return {
-		"height": center_height,
-		"pitch": clampf(atan2(bow_sample - stern_sample, 4.4), -0.24, 0.24),
-		"roll": clampf(atan2(starboard_sample - port_sample, 2.7), -0.30, 0.30),
-	}
+	return NetworkRuntime.sample_boat_wave_pose(
+		world_position,
+		rotation_y,
+		float(NetworkRuntime.boat_state.get("hull_length", 4.4)),
+		float(NetworkRuntime.boat_state.get("hull_beam", 2.7)),
+		connect_time_seconds
+	)
 
 func _update_sea_presentation(delta: float) -> void:
 	var descriptor := _get_current_chunk_descriptor()
@@ -858,54 +918,97 @@ func _update_sea_presentation(delta: float) -> void:
 	var atmosphere_blend := minf(1.0, delta * 2.2)
 	var storm_strength := clampf(hazard_level * 0.8 + (0.35 if biome_id == RunWorldGenerator.BIOME_STORM_BELT else 0.0), 0.0, 1.0)
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var deep_color: Color = profile.get("deep_color", Color(0.05, 0.16, 0.22))
+	var shallow_color: Color = profile.get("shallow_color", Color(0.08, 0.34, 0.42))
+	var foam_color: Color = profile.get("foam_color", Color(0.76, 0.90, 0.96))
+	var clarity := float(profile.get("clarity", 0.5))
+	var glint_strength := float(profile.get("glint_strength", 0.24))
+	var chop_profile := float(profile.get("chop_strength", 0.18))
+	var abyss_mid_color := deep_color.darkened(0.32)
+	var abyss_deep_color := deep_color.darkened(0.72)
+	var wind_angle := 0.34 + sin(connect_time_seconds * 0.029) * 0.18 + hazard_level * 0.12
+	var wind_direction := Vector2.RIGHT.rotated(wind_angle)
+	var swell_direction := wind_direction.rotated(-0.56 + cos(connect_time_seconds * 0.021) * 0.10)
+	var cross_direction := wind_direction.rotated(1.08 + sin(connect_time_seconds * 0.017) * 0.08)
+	var drift_direction := wind_direction.rotated(-1.42)
+	var sea_state_strength := clampf(float(profile.get("wave_amp", 0.24)) * 1.7 + chop_profile * 0.9 + storm_strength * 0.35, 0.0, 1.0)
 
 	if water_mesh_instance != null:
 		water_mesh_instance.global_position = Vector3(boat_position.x, WATER_SURFACE_Y, boat_position.z)
+	if ocean_body_root != null:
+		ocean_body_root.global_position = Vector3(boat_position.x, 0.0, boat_position.z)
+	for material_variant in ocean_abyss_materials:
+		var abyss_material := material_variant as ShaderMaterial
+		if abyss_material == null:
+			continue
+		abyss_material.set_shader_parameter("world_center", Vector2(boat_position.x, boat_position.z))
+		abyss_material.set_shader_parameter("top_color", shallow_color.darkened(0.22))
+		abyss_material.set_shader_parameter("mid_color", abyss_mid_color)
+		abyss_material.set_shader_parameter("deep_color", abyss_deep_color)
+		abyss_material.set_shader_parameter("side_fade", 0.30 + storm_strength * 0.12)
 	if water_shader_material != null:
-		water_shader_material.set_shader_parameter("deep_color", profile.get("deep_color", Color(0.05, 0.16, 0.22)))
-		water_shader_material.set_shader_parameter("shallow_color", profile.get("shallow_color", Color(0.08, 0.34, 0.42)))
-		water_shader_material.set_shader_parameter("foam_color", profile.get("foam_color", Color(0.76, 0.90, 0.96)))
+		water_shader_material.set_shader_parameter("albedo", deep_color.lerp(shallow_color, 0.18))
+		water_shader_material.set_shader_parameter("albedo2", shallow_color.lightened(0.18))
+		water_shader_material.set_shader_parameter("color_deep", abyss_deep_color.lerp(deep_color, 0.18))
+		water_shader_material.set_shader_parameter("color_shallow", deep_color.lerp(shallow_color, 0.52))
 		water_shader_material.set_shader_parameter("horizon_color", profile.get("horizon_color", Color(0.25, 0.42, 0.50)))
-		water_shader_material.set_shader_parameter("wave_amplitude", float(profile.get("wave_amp", 0.24)) * (0.95 + hazard_level * 0.62))
-		water_shader_material.set_shader_parameter("wave_speed", float(profile.get("wave_speed", 1.0)) * (0.92 + hazard_level * 0.30))
-		water_shader_material.set_shader_parameter("chop_strength", float(profile.get("chop_strength", 0.18)) * (0.9 + hazard_level * 0.55))
-		water_shader_material.set_shader_parameter("storm_strength", storm_strength)
-		water_shader_material.set_shader_parameter("foam_amount", 0.34 + storm_strength * 0.30)
-		water_shader_material.set_shader_parameter("detail_amplitude", 0.045 + storm_strength * 0.05 + hazard_level * 0.03)
-		water_shader_material.set_shader_parameter("whitecap_strength", 0.36 + storm_strength * 0.42)
-		water_shader_material.set_shader_parameter("trough_darkness", 0.14 + storm_strength * 0.16)
-		water_shader_material.set_shader_parameter("reflection_strength", float(profile.get("reflection_strength", 0.48)) + storm_strength * 0.05)
-		water_shader_material.set_shader_parameter("glint_strength", float(profile.get("glint_strength", 0.28)) + storm_strength * 0.08)
-		water_shader_material.set_shader_parameter("clarity", clampf(float(profile.get("clarity", 0.5)) - storm_strength * 0.08, 0.18, 0.82))
-		water_shader_material.set_shader_parameter("fresnel_power", 3.4 - storm_strength * 0.45)
-		water_shader_material.set_shader_parameter("refraction_strength", 0.012 + storm_strength * 0.008 + hazard_level * 0.004)
-		water_shader_material.set_shader_parameter("refraction_blur", 1.0 + storm_strength * 0.8)
-		water_shader_material.set_shader_parameter("depth_fade_distance", 8.0 + (1.0 - float(profile.get("clarity", 0.5))) * 6.0)
-		water_shader_material.set_shader_parameter("depth_refraction_strength", 0.34 + storm_strength * 0.18)
-		water_shader_material.set_shader_parameter("contact_edge_foam", 0.22 + storm_strength * 0.20)
-		water_shader_material.set_shader_parameter("distance_haze", 0.12 + storm_strength * 0.14)
+		water_shader_material.set_shader_parameter("edge_color", foam_color.lightened(0.04))
+		water_shader_material.set_shader_parameter("wave_direction", wind_direction)
+		water_shader_material.set_shader_parameter("wave_2_direction", cross_direction)
+		water_shader_material.set_shader_parameter("wave_3_direction", drift_direction)
+		water_shader_material.set_shader_parameter("wave_time", connect_time_seconds)
+		water_shader_material.set_shader_parameter("wave_speed", 0.16 + float(profile.get("wave_speed", 1.0)) * 0.08 + hazard_level * 0.025)
+		water_shader_material.set_shader_parameter("time_scale", 0.022 + hazard_level * 0.007)
+		water_shader_material.set_shader_parameter("wave_group_strength", clampf(0.18 + hazard_level * 0.18 + chop_profile * 0.24, 0.18, 0.42))
+		water_shader_material.set_shader_parameter("chop_strength", clampf(0.10 + chop_profile * 0.62 + hazard_level * 0.18, 0.10, 0.46))
+		water_shader_material.set_shader_parameter("chop_scale", lerpf(2.2, 3.3, hazard_level))
+		water_shader_material.set_shader_parameter("crest_foam_bias", clampf(0.05 + glint_strength * 0.10 + storm_strength * 0.12, 0.05, 0.22))
+		water_shader_material.set_shader_parameter("noise_scale", lerpf(16.0, 10.0, clampf(hazard_level, 0.0, 1.0)))
+		water_shader_material.set_shader_parameter("height_scale", float(profile.get("wave_amp", 0.24)) * (0.94 + hazard_level * 0.70))
+		water_shader_material.set_shader_parameter("beers_law", clampf(0.12 + (1.0 - clarity) * 0.18 + storm_strength * 0.06, 0.10, 0.30))
+		water_shader_material.set_shader_parameter("depth_offset", -0.18 - storm_strength * 0.14)
+		water_shader_material.set_shader_parameter("edge_scale", clampf(0.14 + storm_strength * 0.08 + (1.0 - clarity) * 0.06, 0.12, 0.30))
+		water_shader_material.set_shader_parameter("reflection_strength", clampf(float(profile.get("reflection_strength", 0.50)) + 0.08 + glint_strength * 0.18 + storm_strength * 0.05, 0.64, 0.92))
+		water_shader_material.set_shader_parameter("fresnel_power", clampf(3.6 - storm_strength * 0.4, 2.8, 4.4))
+		water_shader_material.set_shader_parameter("refraction_strength", 0.020 + storm_strength * 0.006 + hazard_level * 0.004)
+		water_shader_material.set_shader_parameter("whitecap_strength", clampf(0.05 + storm_strength * 0.18 + hazard_level * 0.06 + chop_profile * 0.28, 0.04, 0.42))
+		water_shader_material.set_shader_parameter("whitecap_cutoff", clampf(0.84 - storm_strength * 0.16, 0.60, 0.88))
+		water_shader_material.set_shader_parameter("crest_tint_strength", clampf(0.18 + clarity * 0.16 + glint_strength * 0.08, 0.18, 0.38))
+		water_shader_material.set_shader_parameter("trough_darkness", clampf(0.22 + storm_strength * 0.16, 0.18, 0.42))
+		water_shader_material.set_shader_parameter("distance_haze", 0.02 + storm_strength * 0.05)
+		water_shader_material.set_shader_parameter("slope_shading_strength", clampf(0.10 + hazard_level * 0.08, 0.10, 0.24))
+		if camera != null:
+			water_shader_material.set_shader_parameter("near", camera.near)
+			water_shader_material.set_shader_parameter("far", camera.far)
 
 	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
 	if world_environment == null:
 		world_environment = get_node_or_null("WorldEnvironment") as WorldEnvironment
 	if world_environment != null and world_environment.environment != null:
 		var environment := world_environment.environment
-		if sea_panorama_material != null:
-			sea_panorama_material.energy_multiplier = lerpf(sea_panorama_material.energy_multiplier, float(profile.get("sky_energy", 0.44)) - storm_strength * 0.12, atmosphere_blend)
+		if sea_sky_material != null:
+			sea_sky_material.energy_multiplier = lerpf(sea_sky_material.energy_multiplier, float(profile.get("sky_energy", 0.44)) - storm_strength * 0.06, atmosphere_blend)
+			var horizon_color: Color = profile.get("horizon_color", Color(0.25, 0.42, 0.50))
+			var background_color: Color = profile.get("background", Color(0.28, 0.44, 0.55))
+			var deep_sky := background_color.darkened(0.18 + storm_strength * 0.08)
+			sea_sky_material.sky_top_color = sea_sky_material.sky_top_color.lerp(deep_sky, atmosphere_blend)
+			sea_sky_material.sky_horizon_color = sea_sky_material.sky_horizon_color.lerp(horizon_color.lightened(0.18 - storm_strength * 0.06), atmosphere_blend)
+			sea_sky_material.ground_horizon_color = sea_sky_material.ground_horizon_color.lerp(horizon_color.darkened(0.20 + storm_strength * 0.12), atmosphere_blend)
+			sea_sky_material.ground_bottom_color = sea_sky_material.ground_bottom_color.lerp(deep_color.darkened(0.60), atmosphere_blend)
 			environment.background_mode = Environment.BG_SKY
 		else:
 			environment.background_color = environment.background_color.lerp(profile.get("background", Color(0.28, 0.44, 0.55)), atmosphere_blend)
 		var target_fog_density := float(profile.get("fog_density", 0.0)) + hazard_level * 0.004
 		environment.fog_enabled = target_fog_density > 0.002
 		environment.fog_density = lerpf(environment.fog_density, target_fog_density, atmosphere_blend)
-		environment.ambient_light_color = environment.ambient_light_color.lerp(profile.get("horizon_color", Color(0.25, 0.42, 0.50)), atmosphere_blend)
-		environment.ambient_light_energy = lerpf(environment.ambient_light_energy, 0.65 - storm_strength * 0.18, atmosphere_blend)
+		environment.ambient_light_color = environment.ambient_light_color.lerp(profile.get("horizon_color", Color(0.25, 0.42, 0.50)).lerp(shallow_color, 0.34), atmosphere_blend)
+		environment.ambient_light_energy = lerpf(environment.ambient_light_energy, 0.78 - storm_strength * 0.16, atmosphere_blend)
 
 	if sun_light != null:
 		sun_light.light_color = sun_light.light_color.lerp(profile.get("sun_color", Color(0.95, 0.93, 0.85)), atmosphere_blend)
-		sun_light.light_energy = lerpf(sun_light.light_energy, float(profile.get("sun_energy", 0.82)) - storm_strength * 0.12, atmosphere_blend)
-		sun_light.rotation_degrees.x = lerpf(sun_light.rotation_degrees.x, -48.0 - storm_strength * 7.0, atmosphere_blend)
-		sun_light.rotation_degrees.y = lerpf(sun_light.rotation_degrees.y, 38.0 + storm_strength * 6.0, atmosphere_blend)
+		sun_light.light_energy = lerpf(sun_light.light_energy, float(profile.get("sun_energy", 0.82)) - storm_strength * 0.10, atmosphere_blend)
+		sun_light.rotation_degrees.x = lerpf(sun_light.rotation_degrees.x, -42.0 - storm_strength * 8.0, atmosphere_blend)
+		sun_light.rotation_degrees.y = lerpf(sun_light.rotation_degrees.y, 28.0 + storm_strength * 10.0, atmosphere_blend)
 
 	if storm_wall_container != null:
 		var wall_color: Color = profile.get("deep_color", Color(0.05, 0.16, 0.22)).darkened(0.42 + storm_strength * 0.16)
@@ -923,21 +1026,21 @@ func _update_sea_presentation(delta: float) -> void:
 			wall_material.set_shader_parameter("scroll_speed", 0.26 + storm_strength * 0.62)
 
 	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / maxf(0.1, float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED))), 0.0, 1.0)
+	var hull_motion_strength := clampf(absf(boat_root.rotation.x) * 2.4 + absf(boat_root.rotation.z) * 2.0, 0.0, 1.0)
 	if wake_mesh_instance != null:
 		wake_mesh_instance.position = Vector3(0.0, -0.18, 3.45)
-		wake_mesh_instance.scale = Vector3(1.5 + speed_ratio * 1.8, 1.0, 4.5 + speed_ratio * 7.5)
+		wake_mesh_instance.scale = Vector3(1.5 + speed_ratio * 1.8 + sea_state_strength * 0.35, 1.0, 4.5 + speed_ratio * 7.5 + sea_state_strength * 1.2)
 	if wake_material != null:
-		wake_material.set_shader_parameter("wake_strength", clampf(speed_ratio * 0.95 + storm_strength * 0.28, 0.0, 1.0))
+		wake_material.set_shader_parameter("wake_strength", clampf(speed_ratio * 0.88 + sea_state_strength * 0.18 + hull_motion_strength * 0.16 + storm_strength * 0.22, 0.0, 1.0))
 		wake_material.set_shader_parameter("core_color", Color(0.84, 0.94, 0.98, 1.0))
 		wake_material.set_shader_parameter("edge_color", profile.get("shallow_color", Color(0.08, 0.34, 0.42)))
-		wake_material.set_shader_parameter("noise_scale", 0.95 + storm_strength * 0.45)
+		wake_material.set_shader_parameter("noise_scale", 0.95 + storm_strength * 0.45 + chop_profile * 0.25)
 	if boat_contact_foam_mesh != null:
 		boat_contact_foam_mesh.visible = true
 		boat_contact_foam_mesh.position = Vector3(0.0, WATER_SURFACE_Y + 0.06, 0.08)
-		boat_contact_foam_mesh.scale = Vector3(2.9 + speed_ratio * 1.0, 1.0, 5.8 + speed_ratio * 1.7)
+		boat_contact_foam_mesh.scale = Vector3(2.9 + speed_ratio * 1.0 + sea_state_strength * 0.35, 1.0, 5.8 + speed_ratio * 1.7 + sea_state_strength * 0.75)
 	if boat_contact_foam_material != null:
-		var hull_motion_strength := clampf(absf(boat_root.rotation.x) * 2.4 + absf(boat_root.rotation.z) * 2.0, 0.0, 1.0)
-		var hull_foam_strength := clampf(0.16 + speed_ratio * 0.34 + hull_motion_strength * 0.22 + storm_strength * 0.28, 0.0, 1.0)
+		var hull_foam_strength := clampf(0.16 + speed_ratio * 0.30 + sea_state_strength * 0.18 + hull_motion_strength * 0.22 + storm_strength * 0.24, 0.0, 1.0)
 		boat_contact_foam_material.set_shader_parameter("core_color", profile.get("foam_color", Color(0.76, 0.90, 0.96)))
 		boat_contact_foam_material.set_shader_parameter("edge_color", profile.get("shallow_color", Color(0.08, 0.34, 0.42)))
 		boat_contact_foam_material.set_shader_parameter("intensity", hull_foam_strength)
@@ -947,7 +1050,7 @@ func _update_sea_presentation(delta: float) -> void:
 		boat_contact_foam_material.set_shader_parameter("breakup_strength", 0.26 + storm_strength * 0.16)
 		boat_contact_foam_material.set_shader_parameter("scroll_speed", 0.45 + speed_ratio * 0.28 + storm_strength * 0.40)
 
-	var spray_strength := clampf(speed_ratio * 0.85 + storm_strength * 0.48 + (0.20 if _boat_inside_any_squall() else 0.0), 0.0, 1.0)
+	var spray_strength := clampf(speed_ratio * 0.72 + sea_state_strength * 0.22 + hull_motion_strength * 0.20 + storm_strength * 0.38 + (0.20 if _boat_inside_any_squall() else 0.0), 0.0, 1.0)
 	for spray_pair in [
 		{"node": bow_spray_left, "material": bow_spray_left_material, "x": -0.95},
 		{"node": bow_spray_right, "material": bow_spray_right_material, "x": 0.95},
@@ -957,17 +1060,17 @@ func _update_sea_presentation(delta: float) -> void:
 		if spray_node != null:
 			spray_node.position = Vector3(float(spray_pair["x"]), -0.12, -2.58)
 			spray_node.rotation_degrees.y = -16.0 if float(spray_pair["x"]) < 0.0 else 16.0
-			spray_node.scale = Vector3(0.95 + spray_strength * 0.65, 1.0, 1.8 + spray_strength * 2.6)
+			spray_node.scale = Vector3(0.95 + spray_strength * 0.80, 1.0, 1.8 + spray_strength * 3.0)
 			spray_node.visible = spray_strength > 0.05
 		if spray_material != null:
 			spray_material.set_shader_parameter("wake_strength", spray_strength)
 			spray_material.set_shader_parameter("core_color", Color(0.92, 0.96, 0.98, 1.0))
 			spray_material.set_shader_parameter("edge_color", profile.get("foam_color", Color(0.76, 0.90, 0.96)))
-			spray_material.set_shader_parameter("noise_scale", 1.25 + storm_strength * 0.55)
+			spray_material.set_shader_parameter("noise_scale", 1.25 + storm_strength * 0.55 + chop_profile * 0.35)
 
-	_update_spray_particle_layer(bow_spray_left_particles, spray_strength, Vector3(-0.26, 0.92, -0.72), 26.0 + storm_strength * 10.0, 2.0, 4.4 + storm_strength * 1.4)
-	_update_spray_particle_layer(bow_spray_right_particles, spray_strength, Vector3(0.26, 0.92, -0.72), 26.0 + storm_strength * 10.0, 2.0, 4.4 + storm_strength * 1.4)
-	_update_spray_particle_layer(wake_mist_particles, clampf(speed_ratio * 0.72 + storm_strength * 0.34, 0.0, 1.0), Vector3(0.0, 0.58, 0.88), 34.0, 1.2, 3.3 + storm_strength * 1.1)
+	_update_spray_particle_layer(bow_spray_left_particles, spray_strength, Vector3(-0.26, 0.92, -0.72), 28.0 + storm_strength * 12.0 + chop_profile * 8.0, 2.0, 4.7 + storm_strength * 1.6 + sea_state_strength * 0.8)
+	_update_spray_particle_layer(bow_spray_right_particles, spray_strength, Vector3(0.26, 0.92, -0.72), 28.0 + storm_strength * 12.0 + chop_profile * 8.0, 2.0, 4.7 + storm_strength * 1.6 + sea_state_strength * 0.8)
+	_update_spray_particle_layer(wake_mist_particles, clampf(speed_ratio * 0.60 + sea_state_strength * 0.24 + storm_strength * 0.28, 0.0, 1.0), Vector3(0.0, 0.58, 0.88), 36.0, 1.2, 3.5 + storm_strength * 1.1 + sea_state_strength * 0.6)
 
 func _update_spray_particle_layer(particles: GPUParticles3D, intensity: float, direction: Vector3, spread: float, velocity_min: float, velocity_max: float) -> void:
 	if particles == null:
@@ -2720,17 +2823,16 @@ func _make_runtime_block_visual(block: Dictionary, detached_visual: bool) -> Nod
 	var mesh_instance := MeshInstance3D.new()
 	mesh_instance.name = "Body"
 	var mesh := BoxMesh.new()
-	var block_size: Vector3 = block_def.get("size", Vector3.ONE)
-	mesh.size = block_size * BOAT_BLOCK_VISUAL_SCALE
+	mesh.size = Vector3.ONE * NetworkRuntime.RUNTIME_BLOCK_SPACING
 	mesh_instance.mesh = mesh
 	block_node.add_child(mesh_instance)
 
 	var facing_marker := MeshInstance3D.new()
 	facing_marker.name = "Marker"
 	var marker_mesh := BoxMesh.new()
-	marker_mesh.size = Vector3(0.22, 0.14, 0.26) * BOAT_BLOCK_VISUAL_SCALE
+	marker_mesh.size = Vector3(0.22, 0.14, 0.26) * NetworkRuntime.RUNTIME_BLOCK_SPACING
 	facing_marker.mesh = marker_mesh
-	facing_marker.position = Vector3(0.0, 0.0, -0.36 * BOAT_BLOCK_VISUAL_SCALE)
+	facing_marker.position = Vector3(0.0, 0.0, -0.36 * NetworkRuntime.RUNTIME_BLOCK_SPACING)
 	block_node.add_child(facing_marker)
 	_apply_runtime_block_visual_style(
 		block_node,
@@ -4221,14 +4323,18 @@ func _update_boat_visual(delta: float) -> void:
 	var pitch_resistance := clampf(float(NetworkRuntime.boat_state.get("pitch_resistance", 50.0)) / 100.0, 0.0, 1.0)
 	var heel_bias := float(NetworkRuntime.boat_state.get("heel_bias", 0.0))
 	var trim_bias := float(NetworkRuntime.boat_state.get("trim_bias", 0.0))
+	var surface_offset := float(NetworkRuntime.boat_state.get("water_surface_offset", float(sea_pose.get("height", 0.0))))
+	var buoyancy_heave := float(NetworkRuntime.boat_state.get("buoyancy_heave", 0.0))
 	var ride_height_offset := -clampf((draft_ratio - 0.72) * 0.85, -0.04, 0.34)
 	var pitch_wave_scale := lerpf(1.12, 0.45, pitch_resistance)
 	var roll_wave_scale := lerpf(1.18, 0.40, roll_resistance)
 	var hydro_pitch := clampf(trim_bias * 0.30, -0.22, 0.22)
 	var hydro_roll := clampf(heel_bias * 0.38, -0.26, 0.26)
-	var target_position := server_position + Vector3(0.0, 0.36 + ride_height_offset + float(sea_pose.get("height", 0.0)), 0.0)
-	var target_pitch := float(sea_pose.get("pitch", 0.0)) * pitch_wave_scale + hydro_pitch
-	var target_roll := -(float(sea_pose.get("roll", 0.0)) * roll_wave_scale + hydro_roll)
+	var fallback_pitch := float(sea_pose.get("pitch", 0.0)) * pitch_wave_scale + hydro_pitch
+	var fallback_roll := -(float(sea_pose.get("roll", 0.0)) * roll_wave_scale + hydro_roll)
+	var target_position := server_position + Vector3(0.0, 0.36 + ride_height_offset + surface_offset + buoyancy_heave, 0.0)
+	var target_pitch := float(NetworkRuntime.boat_state.get("buoyancy_pitch", fallback_pitch))
+	var target_roll := float(NetworkRuntime.boat_state.get("buoyancy_roll", fallback_roll))
 	boat_root.position = boat_root.position.lerp(target_position, minf(1.0, delta * 6.8))
 	boat_root.rotation.y = lerp_angle(boat_root.rotation.y, rotation_y, minf(1.0, delta * 8.0))
 	boat_root.rotation.x = lerpf(boat_root.rotation.x, target_pitch, minf(1.0, delta * 4.2))

@@ -8,6 +8,7 @@ const LOCAL_PROFILE_SAVE_PATH := "user://local_player_profile.json"
 const HOST_WORKSHOP_SAVE_PATH := "user://host_workshop_state.json"
 const BOAT_BLUEPRINT_SAVE_PATH := "user://shared_boat_blueprint.json"
 const SCHEMA_VERSION := 2
+const BOAT_BLUEPRINT_GEOMETRY_SCHEMA_VERSION := 2
 const MATERIAL_ORDER := [
 	"scrap_metal",
 	"treated_planks",
@@ -52,6 +53,7 @@ const DEFAULT_HOST_WORKSHOP := {
 	},
 }
 const DEFAULT_BOAT_BLUEPRINT := {
+	"geometry_schema_version": BOAT_BLUEPRINT_GEOMETRY_SCHEMA_VERSION,
 	"version": 1,
 	"next_block_id": 2,
 	"blocks": [
@@ -420,6 +422,8 @@ func _load_boat_blueprint() -> void:
 	var parsed := _load_json_dictionary(BOAT_BLUEPRINT_SAVE_PATH)
 	if not parsed.is_empty():
 		boat_blueprint = _normalize_boat_blueprint(parsed)
+		if boat_blueprint != parsed:
+			_save_boat_blueprint()
 	emit_signal("boat_blueprint_changed", get_boat_blueprint())
 
 func _save_boat_blueprint() -> void:
@@ -615,6 +619,7 @@ func _can_afford_material_costs(stock_values: Variant, cost_values: Variant) -> 
 
 func _normalize_boat_blueprint(snapshot: Dictionary) -> Dictionary:
 	var normalized := DEFAULT_BOAT_BLUEPRINT.duplicate(true)
+	var geometry_schema_version := int(snapshot.get("geometry_schema_version", 1))
 	var version := int(snapshot.get("version", normalized.get("version", 1)))
 	var next_block_id := int(snapshot.get("next_block_id", normalized.get("next_block_id", 1)))
 	var normalized_blocks: Array = []
@@ -645,6 +650,8 @@ func _normalize_boat_blueprint(snapshot: Dictionary) -> Dictionary:
 		normalized_blocks = Array(DEFAULT_BOAT_BLUEPRINT.get("blocks", [])).duplicate(true)
 		next_block_id = int(DEFAULT_BOAT_BLUEPRINT.get("next_block_id", 1))
 		version = maxi(version, 1)
+		geometry_schema_version = BOAT_BLUEPRINT_GEOMETRY_SCHEMA_VERSION
+	normalized["geometry_schema_version"] = maxi(BOAT_BLUEPRINT_GEOMETRY_SCHEMA_VERSION, geometry_schema_version)
 	normalized["version"] = maxi(1, version)
 	normalized["next_block_id"] = maxi(1, next_block_id)
 	normalized["blocks"] = normalized_blocks

@@ -9,7 +9,6 @@ const BoatBlockMaterials = preload("res://scenes/shared/boat_block_materials.gd"
 const HANGAR_PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/hangar_player_controller.tscn")
 const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
 const BLOCK_CELL_SIZE := 1.25
-const BLOCK_VISUAL_SCALE := 0.72
 const CURSOR_OK_COLOR := Color(0.34, 0.82, 0.58, 0.55)
 const CURSOR_OCCUPIED_COLOR := Color(0.92, 0.57, 0.22, 0.58)
 const CURSOR_RANGE_COLOR := Color(0.23, 0.63, 0.90, 0.58)
@@ -28,6 +27,10 @@ const HANGAR_AIR_ACCELERATION := 10.0
 const HANGAR_JUMP_VELOCITY := 6.2
 const HANGAR_AVATAR_SYNC_INTERVAL := 0.05
 const HANGAR_AVATAR_NAME_HEIGHT := 1.4
+const HANGAR_POINTER_REPEAT_DELAY := 0.22
+const HANGAR_POINTER_REPEAT_INTERVAL := 0.12
+const HANGAR_CURSOR_SWITCH_STICKINESS := 0.08
+const HANGAR_CURSOR_PULSE_DURATION := 0.12
 const PALETTE_CATEGORY_ORDER := [
 	"all",
 	"hull",
@@ -147,8 +150,18 @@ var selected_hangar_tool_index := 0
 var launch_transition_pending := false
 var hangar_camera_dragging := false
 var hangar_tool_mouse_down := false
+var hangar_tool_hold_time := 0.0
+var hangar_tool_repeat_armed := false
 var hangar_hold_action_cooldown := 0.0
 var hangar_last_drag_action_key := ""
+var hangar_drag_plane_active := false
+var hangar_drag_plane_axis := -1
+var hangar_drag_plane_coordinate := 0
+var hangar_drag_plane_face_sign := 0
+var hangar_drag_plane_tool_id := ""
+var cursor_switch_candidate: Dictionary = {}
+var cursor_switch_candidate_started_at := 0.0
+var cursor_action_pulse_time := 0.0
 var hud_icons := HudIconLibrary.new()
 var selection_icon: TextureRect
 var build_focus_icon: TextureRect
@@ -199,12 +212,15 @@ func _process(delta: float) -> void:
 	connect_time_seconds += delta
 	if hangar_hold_action_cooldown > 0.0:
 		hangar_hold_action_cooldown = maxf(0.0, hangar_hold_action_cooldown - delta)
+	if cursor_action_pulse_time > 0.0:
+		cursor_action_pulse_time = maxf(0.0, cursor_action_pulse_time - delta)
+		_refresh_cursor_visual()
 	_tick_reaction_visuals(delta)
 	_update_boat_bob()
 	_update_camera(delta)
 	_update_remote_avatar_visuals(delta)
 	_update_build_target_from_camera()
-	_process_drag_building()
+	_process_drag_building(delta)
 	_process_autobuild(delta)
 
 func _physics_process(delta: float) -> void:
@@ -232,9 +248,18 @@ func _unhandled_input(event: InputEvent) -> void:
 				return
 			MOUSE_BUTTON_LEFT:
 				hangar_tool_mouse_down = button_event.pressed and not inventory_panel_visible
+				if button_event.pressed:
+					hangar_tool_hold_time = 0.0
+					hangar_tool_repeat_armed = false
+					_begin_hangar_drag_plane_lock()
 				if button_event.pressed and not inventory_panel_visible:
 					_apply_hangar_pointer_tool(true)
 				if not button_event.pressed:
+					hangar_tool_hold_time = 0.0
+					hangar_tool_repeat_armed = false
+					_clear_hangar_drag_plane_lock()
+					cursor_switch_candidate.clear()
+					cursor_switch_candidate_started_at = 0.0
 					hangar_last_drag_action_key = ""
 				return
 			MOUSE_BUTTON_WHEEL_UP:
@@ -304,6 +329,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_ESCAPE:
 			hangar_camera_dragging = false
 			hangar_tool_mouse_down = false
+			hangar_tool_hold_time = 0.0
+			hangar_tool_repeat_armed = false
+			_clear_hangar_drag_plane_lock()
+			cursor_switch_candidate.clear()
+			cursor_switch_candidate_started_at = 0.0
 			hangar_last_drag_action_key = ""
 			_set_mouse_capture(false)
 
@@ -646,14 +676,14 @@ func _create_remote_presence_entry(peer_id: int, display_name: String, body_colo
 func _build_cursor_visual() -> void:
 	cursor_mesh = MeshInstance3D.new()
 	var box := BoxMesh.new()
-	box.size = Vector3(1.1, 1.1, 1.1) * BLOCK_CELL_SIZE
+	box.size = Vector3.ONE * BLOCK_CELL_SIZE
 	cursor_mesh.mesh = box
 	cursor_root.add_child(cursor_mesh)
 
 	cursor_face_marker = MeshInstance3D.new()
 	cursor_face_marker.name = "CursorFaceMarker"
 	var face_box := BoxMesh.new()
-	face_box.size = Vector3(0.74, 0.06, 0.74) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+	face_box.size = Vector3(0.74, 0.06, 0.74) * BLOCK_CELL_SIZE
 	cursor_face_marker.mesh = face_box
 	cursor_root.add_child(cursor_face_marker)
 
@@ -943,8 +973,7 @@ func _refresh_blueprint_visuals() -> void:
 
 		var mesh_instance := MeshInstance3D.new()
 		var mesh := BoxMesh.new()
-		var block_size: Vector3 = block_def.get("size", Vector3.ONE)
-		mesh.size = block_size * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+		mesh.size = Vector3.ONE * BLOCK_CELL_SIZE
 		mesh_instance.mesh = mesh
 		var material := StandardMaterial3D.new()
 		var base_color: Color = block_def.get("color", Color(0.7, 0.7, 0.7))
@@ -959,9 +988,9 @@ func _refresh_blueprint_visuals() -> void:
 
 		var facing_marker := MeshInstance3D.new()
 		var marker_mesh := BoxMesh.new()
-		marker_mesh.size = Vector3(0.28, 0.18, 0.38) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+		marker_mesh.size = Vector3(0.28, 0.18, 0.38) * BLOCK_CELL_SIZE
 		facing_marker.mesh = marker_mesh
-		facing_marker.position = Vector3(0.0, 0.0, -0.42 * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE)
+		facing_marker.position = Vector3(0.0, 0.0, -0.42 * BLOCK_CELL_SIZE)
 		var marker_material := StandardMaterial3D.new()
 		marker_material.albedo_color = base_color.lightened(0.28)
 		facing_marker.material_override = marker_material
@@ -982,18 +1011,22 @@ func _refresh_blueprint_visuals() -> void:
 func _refresh_cursor_visual() -> void:
 	var block_id := _get_selected_block_id()
 	var block_def := NetworkRuntime.get_builder_block_definition(block_id)
-	var block_size: Vector3 = block_def.get("size", Vector3.ONE)
+	var pulse_ratio := 0.0
+	if HANGAR_CURSOR_PULSE_DURATION > 0.0:
+		pulse_ratio = clampf(cursor_action_pulse_time / HANGAR_CURSOR_PULSE_DURATION, 0.0, 1.0)
+	var pulse_amount := sin(pulse_ratio * PI)
 	cursor_root.position = _cell_to_local_position([cursor_cell.x, cursor_cell.y, cursor_cell.z])
 	cursor_root.rotation_degrees.y = float(selected_rotation_steps * 90)
+	cursor_root.scale = Vector3.ONE * (1.0 + pulse_amount * 0.055)
 	cursor_root.visible = cursor_has_target
 	var box_mesh := cursor_mesh.mesh as BoxMesh
 	if box_mesh != null:
-		box_mesh.size = block_size * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 1.05
+		box_mesh.size = Vector3.ONE * BLOCK_CELL_SIZE * (1.05 + pulse_amount * 0.04)
 	cursor_label.text = "%s • %s" % [
 		str(block_def.get("label", block_id.capitalize())),
 		_get_feedback_heading(cursor_feedback_state),
 	]
-	cursor_label.position = Vector3(0.0, block_size.y * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 0.82 + 0.42, 0.0)
+	cursor_label.position = Vector3(0.0, BLOCK_CELL_SIZE * 0.82 + 0.42, 0.0)
 	cursor_label.visible = cursor_has_target
 	_refresh_cursor_face_marker()
 
@@ -1001,6 +1034,9 @@ func _refresh_cursor_visual() -> void:
 	material.albedo_color = _get_feedback_color(cursor_feedback_state)
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material.roughness = 0.18
+	material.emission_enabled = pulse_amount > 0.001
+	material.emission = material.albedo_color.lightened(0.18)
+	material.emission_energy_multiplier = pulse_amount * 0.55
 	cursor_mesh.material_override = material
 	if crosshair_label != null:
 		crosshair_label.modulate = material.albedo_color.lightened(0.26)
@@ -1015,19 +1051,26 @@ func _refresh_cursor_face_marker() -> void:
 		return
 	var normal := cursor_face_normal
 	var dominant_axis := Vector3(absf(normal.x), absf(normal.y), absf(normal.z))
-	var marker_size := Vector3(0.74, 0.06, 0.74) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+	var pulse_ratio := 0.0
+	if HANGAR_CURSOR_PULSE_DURATION > 0.0:
+		pulse_ratio = clampf(cursor_action_pulse_time / HANGAR_CURSOR_PULSE_DURATION, 0.0, 1.0)
+	var pulse_amount := sin(pulse_ratio * PI)
+	var marker_size := Vector3(0.74, 0.06, 0.74) * BLOCK_CELL_SIZE
 	if dominant_axis.x >= dominant_axis.y and dominant_axis.x >= dominant_axis.z:
-		marker_size = Vector3(0.06, 0.74, 0.74) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+		marker_size = Vector3(0.06, 0.74, 0.74) * BLOCK_CELL_SIZE
 	elif dominant_axis.z >= dominant_axis.y:
-		marker_size = Vector3(0.74, 0.74, 0.06) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE
+		marker_size = Vector3(0.74, 0.74, 0.06) * BLOCK_CELL_SIZE
 	var marker_mesh := cursor_face_marker.mesh as BoxMesh
 	if marker_mesh != null:
-		marker_mesh.size = marker_size
-	cursor_face_marker.position = -normal.normalized() * (BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 0.52)
+		marker_mesh.size = marker_size * (1.0 + pulse_amount * 0.08)
+	cursor_face_marker.position = -normal.normalized() * (BLOCK_CELL_SIZE * 0.52)
 	var material := StandardMaterial3D.new()
 	material.albedo_color = _get_feedback_color(cursor_feedback_state).lightened(0.08)
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material.roughness = 0.12
+	material.emission_enabled = pulse_amount > 0.001
+	material.emission = material.albedo_color.lightened(0.12)
+	material.emission_energy_multiplier = pulse_amount * 0.5
 	cursor_face_marker.material_override = material
 
 func _get_feedback_heading(feedback_state: String) -> String:
@@ -1340,7 +1383,7 @@ func _refresh_hud() -> void:
 	_refresh_block_strip_slots()
 	toolbelt_label.text = _build_hangar_toolbelt_text()
 	inventory_label.text = _build_hangar_inventory_text()
-	controls_label.text = "LMB use tool | Hold RMB camera | Wheel part | R rotate | 1/2/3 tools | I locker\n%s" % mouse_hint
+	controls_label.text = "LMB click use | Hold LMB paint | Hold RMB camera | Wheel part | R rotate | 1/2/3 tools | I locker\n%s" % mouse_hint
 	_apply_hud_visibility()
 
 func _build_onboarding_text() -> String:
@@ -1349,14 +1392,14 @@ func _build_onboarding_text() -> String:
 	if cursor_feedback_state == "occupied":
 		return "Onboarding: That cell is taken. Rotate, remove, or pick a fresh face on the hull."
 	if not cursor_has_target:
-		return "Onboarding: Point at the dock or boat, left click to build, and hold right mouse to steer the camera."
+		return "Onboarding: Point at the dock or boat, click to place one block, or hold to paint. Hold right mouse to steer the camera."
 
 	var stats := NetworkRuntime.get_blueprint_stats()
 	if int(stats.get("loose_blocks", 0)) > 0:
 		return "Onboarding: Loose chunks are allowed, but they will sink the moment the run starts."
 	if Array(NetworkRuntime.get_builder_store_entries()).size() > 0:
 		return "Onboarding: Press I to open the part palette and workshop locker. Click a crafted part to equip it, then use Z/C for recipes, B/N for donations, G to donate, and V to craft."
-	return "Onboarding: Press I to open the part palette, pick a part, then left click to place it while keeping the main chunk floaty."
+	return "Onboarding: Press I to open the part palette, pick a part, then click to place or hold to paint while keeping the main chunk floaty."
 
 func _get_hangar_tool_label(tool_id: String) -> String:
 	for tool_variant in _get_hangar_toolbelt_entries():
@@ -1683,7 +1726,7 @@ func _get_launch_readiness_snapshot(stats: Dictionary, warnings: Array) -> Dicti
 func _update_build_target_from_camera() -> void:
 	if camera == null or local_avatar_body == null:
 		return
-	var next_state := _query_build_target_from_camera()
+	var next_state := _apply_cursor_target_stickiness(_query_build_target_from_camera())
 	var next_cursor_has_target := bool(next_state.get("has_target", false))
 	var next_cursor_cell: Vector3i = _variant_to_cell_vector(next_state.get("place_cell", cursor_cell))
 	var next_remove_cell: Vector3i = _variant_to_cell_vector(next_state.get("remove_cell", remove_cursor_cell))
@@ -1705,6 +1748,125 @@ func _update_build_target_from_camera() -> void:
 	_refresh_cursor_visual()
 	_refresh_hud()
 	avatar_sync_timer = 0.0
+
+func _build_current_cursor_target_state() -> Dictionary:
+	return {
+		"has_target": cursor_has_target,
+		"place_cell": cursor_cell,
+		"remove_cell": remove_cursor_cell,
+		"can_place": cursor_can_place,
+		"can_remove": cursor_can_remove,
+		"feedback_state": cursor_feedback_state,
+		"label": cursor_target_label,
+		"face_normal": cursor_face_normal,
+	}
+
+func _clear_hangar_drag_plane_lock() -> void:
+	hangar_drag_plane_active = false
+	hangar_drag_plane_axis = -1
+	hangar_drag_plane_coordinate = 0
+	hangar_drag_plane_face_sign = 0
+	hangar_drag_plane_tool_id = ""
+
+func _begin_hangar_drag_plane_lock() -> void:
+	_clear_hangar_drag_plane_lock()
+	if inventory_panel_visible or not cursor_has_target:
+		return
+	var tool_id := _get_selected_hangar_tool_id()
+	if tool_id == "yard":
+		return
+	var axis_step := _normal_to_cell_step(cursor_face_normal)
+	var axis_index := _get_dominant_axis_index(axis_step)
+	if axis_index == -1:
+		return
+	var action_cell := cursor_cell if tool_id != "remove" else remove_cursor_cell
+	hangar_drag_plane_active = true
+	hangar_drag_plane_axis = axis_index
+	hangar_drag_plane_coordinate = _get_cell_axis_value(action_cell, axis_index)
+	hangar_drag_plane_face_sign = _get_cell_axis_value(axis_step, axis_index)
+	hangar_drag_plane_tool_id = tool_id
+
+func _get_dominant_axis_index(cell_value: Variant) -> int:
+	var cell := _variant_to_cell_vector(cell_value)
+	if cell.x != 0:
+		return 0
+	if cell.y != 0:
+		return 1
+	if cell.z != 0:
+		return 2
+	return -1
+
+func _get_cell_axis_value(cell_value: Variant, axis_index: int) -> int:
+	var cell := _variant_to_cell_vector(cell_value)
+	match axis_index:
+		0:
+			return cell.x
+		1:
+			return cell.y
+		2:
+			return cell.z
+		_:
+			return 0
+
+func _state_matches_drag_plane_lock(state: Dictionary) -> bool:
+	if not hangar_drag_plane_active or not bool(state.get("has_target", false)):
+		return false
+	var state_tool_id := hangar_drag_plane_tool_id if not hangar_drag_plane_tool_id.is_empty() else _get_selected_hangar_tool_id()
+	var axis_step := _normal_to_cell_step(Vector3(state.get("face_normal", Vector3.UP)))
+	var axis_index := _get_dominant_axis_index(axis_step)
+	if axis_index != hangar_drag_plane_axis:
+		return false
+	if hangar_drag_plane_face_sign != 0 and _get_cell_axis_value(axis_step, axis_index) != hangar_drag_plane_face_sign:
+		return false
+	var action_cell := _variant_to_cell_vector(state.get("place_cell", Vector3i.ZERO))
+	if state_tool_id == "remove":
+		action_cell = _variant_to_cell_vector(state.get("remove_cell", Vector3i.ZERO))
+	return _get_cell_axis_value(action_cell, axis_index) == hangar_drag_plane_coordinate
+
+func _cursor_states_match(left: Dictionary, right: Dictionary) -> bool:
+	if bool(left.get("has_target", false)) != bool(right.get("has_target", false)):
+		return false
+	if not bool(left.get("has_target", false)):
+		return str(left.get("feedback_state", "hidden")) == str(right.get("feedback_state", "hidden"))
+	return (
+		_variant_to_cell_vector(left.get("place_cell", Vector3i.ZERO)) == _variant_to_cell_vector(right.get("place_cell", Vector3i.ZERO))
+		and _variant_to_cell_vector(left.get("remove_cell", Vector3i.ZERO)) == _variant_to_cell_vector(right.get("remove_cell", Vector3i.ZERO))
+		and str(left.get("feedback_state", "hidden")) == str(right.get("feedback_state", "hidden"))
+		and Vector3(left.get("face_normal", Vector3.UP)).is_equal_approx(Vector3(right.get("face_normal", Vector3.UP)))
+	)
+
+func _should_apply_cursor_stickiness(current_state: Dictionary, next_state: Dictionary) -> bool:
+	if not bool(current_state.get("has_target", false)) or not bool(next_state.get("has_target", false)):
+		return false
+	var current_place := _variant_to_cell_vector(current_state.get("place_cell", Vector3i.ZERO))
+	var next_place := _variant_to_cell_vector(next_state.get("place_cell", Vector3i.ZERO))
+	var current_remove := _variant_to_cell_vector(current_state.get("remove_cell", Vector3i.ZERO))
+	var next_remove := _variant_to_cell_vector(next_state.get("remove_cell", Vector3i.ZERO))
+	if current_place == next_place or current_remove == next_remove:
+		return true
+	return _cell_to_world_position(current_place).distance_to(_cell_to_world_position(next_place)) <= (BLOCK_CELL_SIZE * 1.05)
+
+func _apply_cursor_target_stickiness(next_state: Dictionary) -> Dictionary:
+	var current_state := _build_current_cursor_target_state()
+	if hangar_tool_mouse_down and _state_matches_drag_plane_lock(current_state) and not _state_matches_drag_plane_lock(next_state):
+		return current_state
+	if not _should_apply_cursor_stickiness(current_state, next_state):
+		cursor_switch_candidate.clear()
+		cursor_switch_candidate_started_at = 0.0
+		return next_state
+	if _cursor_states_match(current_state, next_state):
+		cursor_switch_candidate.clear()
+		cursor_switch_candidate_started_at = 0.0
+		return next_state
+	if not _cursor_states_match(cursor_switch_candidate, next_state):
+		cursor_switch_candidate = next_state.duplicate(true)
+		cursor_switch_candidate_started_at = connect_time_seconds
+		return current_state
+	if connect_time_seconds - cursor_switch_candidate_started_at < HANGAR_CURSOR_SWITCH_STICKINESS:
+		return current_state
+	cursor_switch_candidate.clear()
+	cursor_switch_candidate_started_at = 0.0
+	return next_state
 
 func _query_build_target_from_camera() -> Dictionary:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
@@ -1958,12 +2120,20 @@ func _apply_hangar_pointer_tool(force_single: bool) -> void:
 		_:
 			acted = _place_selected_block()
 	if acted:
-		hangar_hold_action_cooldown = 0.09
+		hangar_hold_action_cooldown = HANGAR_POINTER_REPEAT_INTERVAL
 		hangar_last_drag_action_key = action_key
+		cursor_action_pulse_time = HANGAR_CURSOR_PULSE_DURATION
+		_refresh_cursor_visual()
 
-func _process_drag_building() -> void:
+func _process_drag_building(delta: float) -> void:
 	if not hangar_tool_mouse_down or inventory_panel_visible or hangar_camera_dragging:
 		return
+	hangar_tool_hold_time += maxf(delta, 0.0)
+	if not hangar_tool_repeat_armed:
+		if hangar_tool_hold_time < HANGAR_POINTER_REPEAT_DELAY:
+			return
+		hangar_tool_repeat_armed = true
+		hangar_hold_action_cooldown = 0.0
 	_apply_hangar_pointer_tool(false)
 
 func _cycle_block(direction: int) -> void:
@@ -2553,12 +2723,11 @@ func _update_remote_avatar_visuals(delta: float) -> void:
 			ghost_root.visible = has_target
 			if has_target:
 				var target_cell := _variant_to_cell_vector(avatar_state.get("target_cell", [0, 0, 0]))
-				var block_size: Vector3 = selected_block_def.get("size", Vector3.ONE)
 				ghost_root.position = _cell_to_local_position(target_cell)
 				ghost_root.rotation_degrees.y = float(int(avatar_state.get("rotation_steps", 0)) * 90)
 				var ghost_box := ghost_mesh.mesh as BoxMesh
 				if ghost_box != null:
-					ghost_box.size = block_size * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 1.02
+					ghost_box.size = Vector3.ONE * BLOCK_CELL_SIZE * 1.02
 				var ghost_material := StandardMaterial3D.new()
 				var ghost_color := _get_presence_feedback_color(peer_color, presence_state).darkened(0.04)
 				ghost_color.a = 0.24 if presence_state == "ready" else 0.18
@@ -2568,10 +2737,10 @@ func _update_remote_avatar_visuals(delta: float) -> void:
 				ghost_mesh.material_override = ghost_material
 				var ring_shape := ghost_ring.mesh as CylinderMesh
 				if ring_shape != null:
-					var ring_radius := maxf(block_size.x, block_size.z) * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 0.58
+					var ring_radius := BLOCK_CELL_SIZE * 0.58
 					ring_shape.top_radius = ring_radius
 					ring_shape.bottom_radius = ring_radius + 0.08
-				ghost_ring.position.y = -(block_size.y * BLOCK_CELL_SIZE * BLOCK_VISUAL_SCALE * 0.49)
+				ghost_ring.position.y = -(BLOCK_CELL_SIZE * 0.49)
 				var ring_material := StandardMaterial3D.new()
 				var ring_color := _get_presence_feedback_color(peer_color, presence_state).lightened(0.08)
 				ring_color.a = 0.36 if presence_state == "ready" else 0.28
@@ -2704,6 +2873,57 @@ func _initialize_autobuild() -> void:
 				{"type": "place", "cell": [2, 1, 0], "block": "deck_plate"},
 				{"type": "launch"},
 			]
+		"builder_sea_test":
+			autobuild_actions = [
+				{"type": "reset"},
+				{"type": "place", "cell": [0, 0, -1], "block": "engine"},
+				{"type": "place", "cell": [-1, 0, 0], "block": "hull"},
+				{"type": "place", "cell": [1, 0, 0], "block": "hull"},
+				{"type": "place", "cell": [-1, 0, 1], "block": "hull"},
+				{"type": "place", "cell": [0, 0, 1], "block": "hull"},
+				{"type": "place", "cell": [1, 0, 1], "block": "hull"},
+				{"type": "place", "cell": [-1, 0, 2], "block": "hull"},
+				{"type": "place", "cell": [0, 0, 2], "block": "hull"},
+				{"type": "place", "cell": [1, 0, 2], "block": "hull"},
+				{"type": "place", "cell": [-1, 0, 3], "block": "hull"},
+				{"type": "place", "cell": [0, 0, 3], "block": "hull"},
+				{"type": "place", "cell": [1, 0, 3], "block": "hull"},
+				{"type": "place", "cell": [0, 1, -1], "block": "structure"},
+				{"type": "place", "cell": [0, 1, 0], "block": "deck_plate"},
+				{"type": "place", "cell": [-1, 1, 1], "block": "deck_plate"},
+				{"type": "place", "cell": [1, 1, 1], "block": "deck_plate"},
+				{"type": "place", "cell": [0, 1, 1], "block": "utility"},
+				{"type": "place", "cell": [0, 1, 2], "block": "cargo"},
+				{"type": "place", "cell": [0, 1, 3], "block": "light_crane"},
+				{"type": "place", "cell": [-2, 1, 1], "block": "ladder_rig"},
+				{"type": "place", "cell": [2, 1, 1], "block": "ladder_rig"},
+			]
+		"builder_sea_test_launch":
+			autobuild_actions = [
+				{"type": "reset"},
+				{"type": "place", "cell": [0, 0, -1], "block": "engine"},
+				{"type": "place", "cell": [-1, 0, 0], "block": "hull"},
+				{"type": "place", "cell": [1, 0, 0], "block": "hull"},
+				{"type": "place", "cell": [-1, 0, 1], "block": "hull"},
+				{"type": "place", "cell": [0, 0, 1], "block": "hull"},
+				{"type": "place", "cell": [1, 0, 1], "block": "hull"},
+				{"type": "place", "cell": [-1, 0, 2], "block": "hull"},
+				{"type": "place", "cell": [0, 0, 2], "block": "hull"},
+				{"type": "place", "cell": [1, 0, 2], "block": "hull"},
+				{"type": "place", "cell": [-1, 0, 3], "block": "hull"},
+				{"type": "place", "cell": [0, 0, 3], "block": "hull"},
+				{"type": "place", "cell": [1, 0, 3], "block": "hull"},
+				{"type": "place", "cell": [0, 1, -1], "block": "structure"},
+				{"type": "place", "cell": [0, 1, 0], "block": "deck_plate"},
+				{"type": "place", "cell": [-1, 1, 1], "block": "deck_plate"},
+				{"type": "place", "cell": [1, 1, 1], "block": "deck_plate"},
+				{"type": "place", "cell": [0, 1, 1], "block": "utility"},
+				{"type": "place", "cell": [0, 1, 2], "block": "cargo"},
+				{"type": "place", "cell": [0, 1, 3], "block": "light_crane"},
+				{"type": "place", "cell": [-2, 1, 1], "block": "ladder_rig"},
+				{"type": "place", "cell": [2, 1, 1], "block": "ladder_rig"},
+				{"type": "launch"},
+			]
 		"builder_rescue_tug":
 			autobuild_actions = [
 				{"type": "place", "cell": [-2, 0, 0], "block": "hull"},
@@ -2754,6 +2974,8 @@ func _process_autobuild(delta: float) -> void:
 
 func _execute_autobuild_action(action: Dictionary) -> void:
 	match str(action.get("type", "")):
+		"reset":
+			NetworkRuntime.request_reset_blueprint()
 		"unlock":
 			NetworkRuntime.request_unlock_builder_block(str(action.get("block", "")))
 		"place":
