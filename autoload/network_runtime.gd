@@ -1012,6 +1012,10 @@ const RUN_OVERBOARD_RECOVERY_RANGE := 1.15
 const RUN_OVERBOARD_DIRECT_REBOARD_RANGE := 0.72
 const RUN_OVERBOARD_DIRECT_REBOARD_MAX_HEIGHT := 1.42
 const RUN_OVERBOARD_DIRECT_REBOARD_WORLD_DISTANCE := 1.9
+const RUN_OVERBOARD_EMERGENCY_REBOARD_RANGE := 1.1
+const RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_HEIGHT := 1.8
+const RUN_OVERBOARD_EMERGENCY_REBOARD_WORLD_DISTANCE := 2.45
+const RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_SPEED := 2.1
 const RUN_OVERBOARD_EDGE_MARGIN := 0.24
 const RUN_OVERBOARD_MIN_STRENGTH := 0.54
 const AVATAR_MAX_HEALTH := 100.0
@@ -4445,7 +4449,33 @@ func _attempt_overboard_recovery(peer_id: int) -> void:
 		return
 	var recovery_target := _get_best_overboard_recovery_target(world_position)
 	if recovery_target.is_empty() or not bool(recovery_target.get("ready", false)):
-		_set_status("%s needs to reach a ladder before climbing back aboard." % _get_peer_name(peer_id))
+		var emergency_reboard_target := get_emergency_overboard_reboard_target(world_position)
+		if emergency_reboard_target.is_empty():
+			_set_status("%s needs to reach a ladder before climbing back aboard." % _get_peer_name(peer_id))
+			return
+		avatar_state["mode"] = RUN_AVATAR_MODE_DECK
+		avatar_state["deck_position"] = emergency_reboard_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
+		avatar_state["velocity"] = Vector3.ZERO
+		avatar_state["grounded"] = true
+		avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
+		avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+		run_avatar_state[peer_id] = avatar_state
+		_refresh_run_avatar_runtime_fields(peer_id)
+		var emergency_peer_reaction: Dictionary = reaction_state.get(peer_id, {})
+		if not emergency_peer_reaction.is_empty():
+			emergency_peer_reaction["type"] = "recovering"
+			emergency_peer_reaction["active_time"] = 0.0
+			emergency_peer_reaction["recovery_time"] = maxf(float(emergency_peer_reaction.get("recovery_time", 0.0)), 0.26)
+			reaction_state[peer_id] = emergency_peer_reaction
+		run_state["recoveries_completed"] = int(run_state.get("recoveries_completed", 0)) + 1
+		_refresh_overboard_run_metrics()
+		_broadcast_run_avatar_state()
+		_broadcast_reaction_state()
+		_broadcast_run_state()
+		_set_status("%s scrambled back aboard with an %s." % [
+			_get_peer_name(peer_id),
+			str(emergency_reboard_target.get("label", "emergency climb")),
+		])
 		return
 	avatar_state["mode"] = RUN_AVATAR_MODE_DECK
 	avatar_state["deck_position"] = get_nearest_run_avatar_deck_position(recovery_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
@@ -4766,6 +4796,40 @@ func get_direct_overboard_reboard_target(world_position: Vector3) -> Dictionary:
 		"horizontal_distance": float(projection.get("horizontal_distance", 0.0)),
 		"vertical_gap": vertical_gap,
 		"label": "gunwale",
+		"ready": true,
+	}
+
+func get_emergency_overboard_reboard_target(world_position: Vector3) -> Dictionary:
+	var detached_chunk_count := int(run_state.get("detached_chunk_count", 0))
+	var destroyed_block_count := int(run_state.get("destroyed_block_count", 0))
+	var recovery_access_rating := float(boat_state.get("recovery_access_rating", 50.0))
+	var recovery_points := get_run_recovery_points()
+	var fallback_required := detached_chunk_count > 0 \
+		or destroyed_block_count > 0 \
+		or recovery_access_rating < 42.0 \
+		or recovery_points.is_empty()
+	if not fallback_required:
+		return {}
+	if absf(float(boat_state.get("speed", 0.0))) > RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_SPEED:
+		return {}
+	var sanitized_world_position := _sanitize_overboard_world_position(world_position)
+	var local_position := _run_world_to_local(sanitized_world_position)
+	var projection := _project_run_deck_position(local_position, RUN_OVERBOARD_EMERGENCY_REBOARD_RANGE, false)
+	if not bool(projection.get("valid", false)):
+		return {}
+	var deck_position: Vector3 = projection.get("deck_position", local_position)
+	var vertical_gap := deck_position.y - local_position.y
+	if vertical_gap < 0.0 or vertical_gap > RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_HEIGHT:
+		return {}
+	var board_world_position := _run_local_to_world(deck_position)
+	if sanitized_world_position.distance_to(board_world_position) > RUN_OVERBOARD_EMERGENCY_REBOARD_WORLD_DISTANCE:
+		return {}
+	return {
+		"deck_position": deck_position,
+		"world_position": board_world_position,
+		"horizontal_distance": float(projection.get("horizontal_distance", 0.0)),
+		"vertical_gap": vertical_gap,
+		"label": "emergency climb",
 		"ready": true,
 	}
 

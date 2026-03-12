@@ -1809,6 +1809,11 @@ func _get_local_direct_reboard_target() -> Dictionary:
 		return {}
 	return NetworkRuntime.get_direct_overboard_reboard_target(local_run_avatar_world_position)
 
+func _get_local_emergency_reboard_target() -> Dictionary:
+	if not _is_local_overboard():
+		return {}
+	return NetworkRuntime.get_emergency_overboard_reboard_target(local_run_avatar_world_position)
+
 func _get_local_rally_target() -> Dictionary:
 	if _is_local_off_deck() or _is_local_downed():
 		return {}
@@ -1991,6 +1996,21 @@ func _build_recovery_visuals() -> void:
 	direct_reboard_node.visible = false
 	recovery_visuals["__direct_hull__"] = {
 		"root": direct_reboard_node,
+	}
+	var emergency_reboard_node := RUN_RECOVERY_MARKER_SCENE.instantiate() as Node3D
+	if emergency_reboard_node == null:
+		emergency_reboard_node = Node3D.new()
+	emergency_reboard_node.name = "EmergencyHullMarker"
+	recovery_container.add_child(emergency_reboard_node)
+	if emergency_reboard_node.has_method("set_marker_text"):
+		emergency_reboard_node.call("set_marker_text", "Emergency Climb")
+	if emergency_reboard_node.has_method("set_marker_color"):
+		emergency_reboard_node.call("set_marker_color", HUD_TEXT_WARNING)
+	if emergency_reboard_node.has_method("set_label_visible"):
+		emergency_reboard_node.call("set_label_visible", false)
+	emergency_reboard_node.visible = false
+	recovery_visuals["__emergency_hull__"] = {
+		"root": emergency_reboard_node,
 	}
 
 func _build_wreck_visual() -> void:
@@ -2564,6 +2584,8 @@ func _build_station_prompt_compact(selected_station_id: String, local_station_id
 	if local_overboard:
 		if not _get_local_direct_reboard_target().is_empty():
 			return "OVERBOARD | Reachable hull edge. Press Space or F to climb aboard."
+		if not _get_local_emergency_reboard_target().is_empty():
+			return "OVERBOARD | Emergency climb available. Press Space or F to scramble aboard."
 		return "OVERBOARD | Reach a ladder or nearby hull edge, then press Space or F to climb."
 	if not local_station_id.is_empty():
 		return "%s HELD | %s" % [
@@ -3209,6 +3231,7 @@ func _refresh_recovery_visuals() -> void:
 	var local_overboard := _is_local_off_deck()
 	var active_target := _get_local_recovery_target()
 	var direct_reboard_target := _get_local_direct_reboard_target()
+	var emergency_reboard_target := _get_local_emergency_reboard_target()
 	var local_world_position := _get_local_avatar_world_position()
 	for target_variant in NetworkRuntime.get_run_recovery_points():
 		var target: Dictionary = target_variant
@@ -3249,6 +3272,23 @@ func _refresh_recovery_visuals() -> void:
 				direct_root.call("set_marker_color", HUD_TEXT_SUCCESS)
 			if direct_root.has_method("set_label_visible"):
 				direct_root.call("set_label_visible", true)
+	var emergency_visual: Dictionary = recovery_visuals.get("__emergency_hull__", {})
+	var emergency_root := emergency_visual.get("root") as Node3D
+	if emergency_root != null:
+		if emergency_reboard_target.is_empty() or not local_overboard:
+			emergency_root.visible = false
+			if emergency_root.has_method("set_label_visible"):
+				emergency_root.call("set_label_visible", false)
+		else:
+			var emergency_world_position: Vector3 = emergency_reboard_target.get("world_position", local_world_position)
+			emergency_root.visible = true
+			emergency_root.position = boat_root.to_local(emergency_world_position)
+			if emergency_root.has_method("set_marker_text"):
+				emergency_root.call("set_marker_text", "Emergency Climb\nSpace / F Scramble")
+			if emergency_root.has_method("set_marker_color"):
+				emergency_root.call("set_marker_color", HUD_TEXT_WARNING)
+			if emergency_root.has_method("set_label_visible"):
+				emergency_root.call("set_label_visible", true)
 
 func _refresh_crew_visuals() -> void:
 	if crew_container == null or not is_instance_valid(crew_container) or not crew_container.is_inside_tree():
@@ -4111,7 +4151,8 @@ func _collect_action_input(input_state: Dictionary) -> void:
 		var recovery_target := _get_local_recovery_target()
 		var recovery_ready := bool(recovery_target.get("ready", false))
 		var direct_reboard_ready := not _get_local_direct_reboard_target().is_empty()
-		var recover_pressed := Input.is_key_pressed(KEY_F) or ((recovery_ready or direct_reboard_ready) and Input.is_physical_key_pressed(KEY_SPACE))
+		var emergency_reboard_ready := not _get_local_emergency_reboard_target().is_empty()
+		var recover_pressed := Input.is_key_pressed(KEY_F) or ((recovery_ready or direct_reboard_ready or emergency_reboard_ready) and Input.is_physical_key_pressed(KEY_SPACE))
 		if _is_local_overboard() and item_use_pressed and not item_use_request_latched and _get_selected_run_tool_id() == "recover":
 			input_state["request_recover"] = true
 		elif _is_local_overboard() and recover_pressed and not recover_request_latched:
@@ -5366,6 +5407,8 @@ func _build_objective_text() -> String:
 	if _is_local_off_deck():
 		if not _get_local_direct_reboard_target().is_empty():
 			return "Objective: Reach the nearby hull edge and press Space or F to climb back aboard."
+		if not _get_local_emergency_reboard_target().is_empty():
+			return "Objective: Use the emergency climb point and press Space or F to scramble back onto the damaged boat."
 		return "Objective: Swim to a ladder, stern line, or reachable hull edge, then press Space or F to climb back aboard."
 
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
