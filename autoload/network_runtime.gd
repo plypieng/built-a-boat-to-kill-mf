@@ -1009,6 +1009,9 @@ const RUN_OVERBOARD_PROBE_DISTANCE := 1.05
 const RUN_OVERBOARD_WATER_HEIGHT := 0.18
 const RUN_OVERBOARD_SWIM_RADIUS := 8.8
 const RUN_OVERBOARD_RECOVERY_RANGE := 1.15
+const RUN_OVERBOARD_DIRECT_REBOARD_RANGE := 0.72
+const RUN_OVERBOARD_DIRECT_REBOARD_MAX_HEIGHT := 1.42
+const RUN_OVERBOARD_DIRECT_REBOARD_WORLD_DISTANCE := 1.9
 const RUN_OVERBOARD_EDGE_MARGIN := 0.24
 const RUN_OVERBOARD_MIN_STRENGTH := 0.54
 const AVATAR_MAX_HEALTH := 100.0
@@ -3307,6 +3310,17 @@ func request_debug_overboard() -> void:
 
 	server_request_debug_overboard.rpc_id(1)
 
+func request_local_overboard_transition(world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
+	var sanitized_world_position := _sanitize_overboard_world_position(world_position)
+	var sanitized_velocity := velocity.limit_length(6.8)
+	if multiplayer.is_server():
+		_request_peer_overboard_transition(multiplayer.get_unique_id(), sanitized_world_position, sanitized_velocity, facing_y)
+		return
+
+	server_request_local_overboard_transition.rpc_id(1, sanitized_world_position, sanitized_velocity, facing_y)
+
 func request_place_blueprint_block(cell_value: Variant, block_type: String, rotation_steps: int) -> void:
 	var cell := _normalize_blueprint_cell(cell_value)
 	var normalized_type := block_type.strip_edges().to_lower()
@@ -4307,7 +4321,7 @@ func _try_knock_peer_overboard(peer_id: int, knockback_velocity: Vector3, streng
 	var overboard_local_position := overboard_probe
 	_set_peer_overboard(peer_id, overboard_local_position, knockback_velocity)
 
-func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockback_velocity: Vector3) -> void:
+func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockback_velocity: Vector3, facing_y_override = null) -> void:
 	if not multiplayer.is_server():
 		return
 	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
@@ -4324,6 +4338,8 @@ func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockb
 	avatar_state["world_position"] = world_position
 	avatar_state["velocity"] = knockback_velocity.limit_length(6.8)
 	avatar_state["grounded"] = false
+	if facing_y_override != null:
+		avatar_state["facing_y"] = float(facing_y_override)
 	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
 	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
 	run_avatar_state[peer_id] = avatar_state
@@ -4348,6 +4364,21 @@ func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockb
 	_broadcast_run_state()
 	_broadcast_boat_state()
 	_set_status("%s went overboard." % _get_peer_name(peer_id))
+
+func _request_peer_overboard_transition(peer_id: int, world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
+	if not multiplayer.is_server():
+		return
+	if session_phase != SESSION_PHASE_RUN:
+		return
+	if str(run_state.get("phase", "running")) != "running":
+		return
+	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+	if avatar_state.is_empty() or _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
+		return
+	var deck_position: Vector3 = avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
+	var local_position := _run_world_to_local(_sanitize_overboard_world_position(world_position))
+	local_position.y = deck_position.y
+	_set_peer_overboard(peer_id, local_position, velocity, facing_y)
 
 func _force_peer_overboard_for_debug(peer_id: int) -> void:
 	if not multiplayer.is_server():
@@ -4386,6 +4417,32 @@ func _attempt_overboard_recovery(peer_id: int) -> void:
 	if avatar_state.is_empty():
 		return
 	var world_position: Vector3 = avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO))
+	var direct_reboard_target := get_direct_overboard_reboard_target(world_position)
+	if not direct_reboard_target.is_empty():
+		avatar_state["mode"] = RUN_AVATAR_MODE_DECK
+		avatar_state["deck_position"] = direct_reboard_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
+		avatar_state["velocity"] = Vector3.ZERO
+		avatar_state["grounded"] = true
+		avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
+		avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+		run_avatar_state[peer_id] = avatar_state
+		_refresh_run_avatar_runtime_fields(peer_id)
+		var direct_peer_reaction: Dictionary = reaction_state.get(peer_id, {})
+		if not direct_peer_reaction.is_empty():
+			direct_peer_reaction["type"] = "recovering"
+			direct_peer_reaction["active_time"] = 0.0
+			direct_peer_reaction["recovery_time"] = maxf(float(direct_peer_reaction.get("recovery_time", 0.0)), 0.18)
+			reaction_state[peer_id] = direct_peer_reaction
+		run_state["recoveries_completed"] = int(run_state.get("recoveries_completed", 0)) + 1
+		_refresh_overboard_run_metrics()
+		_broadcast_run_avatar_state()
+		_broadcast_reaction_state()
+		_broadcast_run_state()
+		_set_status("%s hauled back aboard over the %s." % [
+			_get_peer_name(peer_id),
+			str(direct_reboard_target.get("label", "gunwale")),
+		])
+		return
 	var recovery_target := _get_best_overboard_recovery_target(world_position)
 	if recovery_target.is_empty() or not bool(recovery_target.get("ready", false)):
 		_set_status("%s needs to reach a ladder before climbing back aboard." % _get_peer_name(peer_id))
@@ -4679,6 +4736,9 @@ func get_nearest_run_avatar_deck_position(deck_position: Vector3) -> Vector3:
 	var projection := _project_run_deck_position(deck_position, RUN_DECK_SURFACE_SNAP_DISTANCE, true)
 	return projection.get("deck_position", deck_position)
 
+func get_run_avatar_support_projection(deck_position: Vector3, support_margin: float = RUN_OVERBOARD_EDGE_MARGIN) -> Dictionary:
+	return _project_run_deck_position(deck_position, support_margin, false)
+
 func sanitize_run_avatar_deck_position(deck_position: Vector3, fallback_position = null) -> Vector3:
 	var projection := _project_run_deck_position(deck_position)
 	if bool(projection.get("valid", false)):
@@ -4686,6 +4746,28 @@ func sanitize_run_avatar_deck_position(deck_position: Vector3, fallback_position
 	if fallback_position != null:
 		return get_nearest_run_avatar_deck_position(fallback_position)
 	return get_nearest_run_avatar_deck_position(deck_position)
+
+func get_direct_overboard_reboard_target(world_position: Vector3) -> Dictionary:
+	var sanitized_world_position := _sanitize_overboard_world_position(world_position)
+	var local_position := _run_world_to_local(sanitized_world_position)
+	var projection := _project_run_deck_position(local_position, RUN_OVERBOARD_DIRECT_REBOARD_RANGE, false)
+	if not bool(projection.get("valid", false)):
+		return {}
+	var deck_position: Vector3 = projection.get("deck_position", local_position)
+	var vertical_gap := deck_position.y - local_position.y
+	if vertical_gap < 0.0 or vertical_gap > RUN_OVERBOARD_DIRECT_REBOARD_MAX_HEIGHT:
+		return {}
+	var board_world_position := _run_local_to_world(deck_position)
+	if sanitized_world_position.distance_to(board_world_position) > RUN_OVERBOARD_DIRECT_REBOARD_WORLD_DISTANCE:
+		return {}
+	return {
+		"deck_position": deck_position,
+		"world_position": board_world_position,
+		"horizontal_distance": float(projection.get("horizontal_distance", 0.0)),
+		"vertical_gap": vertical_gap,
+		"label": "gunwale",
+		"ready": true,
+	}
 
 func _get_overboard_recovery_targets() -> Array:
 	var targets: Array = []
@@ -7968,6 +8050,14 @@ func server_request_debug_overboard() -> void:
 
 	var peer_id := multiplayer.get_remote_sender_id()
 	_force_peer_overboard_for_debug(peer_id)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_local_overboard_transition(world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_request_peer_overboard_transition(peer_id, world_position, velocity, facing_y)
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_request_place_blueprint_block(cell: Array, block_type: String, rotation_steps: int) -> void:

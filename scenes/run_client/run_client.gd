@@ -48,11 +48,28 @@ const EXTRACTION_READY_COLOR := Color(0.21, 0.82, 0.57)
 const EXTRACTION_FAILED_COLOR := Color(0.84, 0.25, 0.24)
 const RUN_AVATAR_MOVE_SPEED := 4.9
 const RUN_AVATAR_ACCELERATION := 15.0
+const RUN_AVATAR_AIR_ACCELERATION := 7.5
+const RUN_AVATAR_JUMP_VELOCITY := 5.4
+const RUN_AVATAR_GRAVITY := 18.0
+const RUN_AVATAR_FLOOR_SNAP_LENGTH := 0.28
+const RUN_AVATAR_SUPPORT_DROP_THRESHOLD := 0.16
+const RUN_AVATAR_OVERBOARD_ENTRY_BUFFER := 0.14
+const RUN_AVATAR_EDGE_EXIT_GRACE_DISTANCE := 0.42
+const RUN_WATER_ENTRY_GRAVITY := 20.0
+const RUN_WATER_ENTRY_MAX_DURATION := 1.35
+const RUN_WATER_ENTRY_SURFACE_BLEND_HEIGHT := 0.9
+const RUN_OFF_DECK_BLEND_DURATION := 1.05
+const RUN_SURFACE_TREAD_SETTLE_DURATION := 1.45
+const RUN_SURFACE_TREAD_BOB_SPEED := 2.7
+const RUN_SURFACE_TREAD_BOB_AMPLITUDE := 0.08
+const RUN_SURFACE_TREAD_LEAN_MAX := 0.12
+const RUN_BRACE_KEY := KEY_B
 const RUN_SWIM_MOVE_SPEED := 2.6
 const RUN_SWIM_ACCELERATION := 8.5
 const RUN_AVATAR_SPRINT_MULTIPLIER := 1.35
 const RUN_SWIM_BURST_MULTIPLIER := 1.25
 const RUN_AVATAR_SYNC_INTERVAL := 0.05
+const RUN_BLOCK_COLLISION_LAYER := 1
 const ASSIST_RALLY_HOLD_SECONDS := 1.5
 const WATER_SURFACE_Y := -0.12
 const WATER_SURFACE_SIZE := 640.0
@@ -212,6 +229,7 @@ var local_run_avatar_position := IDLE_CREW_SLOTS[0]
 var local_run_avatar_world_position := Vector3.ZERO
 var local_run_avatar_velocity := Vector3.ZERO
 var local_run_avatar_mode := NetworkRuntime.RUN_AVATAR_MODE_DECK
+var local_run_avatar_grounded := true
 var run_avatar_sync_timer := 0.0
 var autorun_overboard_forced := false
 var event_callout_timer := 0.0
@@ -226,6 +244,14 @@ var last_hud_downed_count := 0
 var last_hud_phase := "running"
 var last_local_overboard := false
 var last_local_downed := false
+var local_jump_latched := false
+var local_water_entry_active := false
+var local_water_entry_elapsed := 0.0
+var local_overboard_transition_pending := false
+var local_off_deck_entry_elapsed := RUN_OFF_DECK_BLEND_DURATION
+var local_surface_tread_active := false
+var local_surface_tread_elapsed := 0.0
+var boat_visual_velocity := Vector3.ZERO
 var selected_run_tool_index := 0
 var inventory_panel_visible := false
 var assist_rally_hold_target_peer_id := 0
@@ -335,7 +361,7 @@ func _physics_process(delta: float) -> void:
 	if assist_target_peer_id > 0:
 		NetworkRuntime.request_assist_rally(assist_target_peer_id)
 
-	if not _is_local_overboard() and not _is_local_downed() and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
+	if not _is_local_off_deck() and not _is_local_downed() and NetworkRuntime.get_peer_station_id(_get_local_peer_id()) == "helm":
 		NetworkRuntime.send_local_boat_input(
 			float(input_state.get("throttle", 0.0)),
 			float(input_state.get("steer", 0.0))
@@ -1099,7 +1125,7 @@ func _update_sea_audio() -> void:
 	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / maxf(0.1, float(NetworkRuntime.boat_state.get("top_speed_limit", NetworkRuntime.BOAT_TOP_SPEED))), 0.0, 1.0)
 	var storm_strength := clampf(hazard_level * 0.65 + (0.35 if biome_id == RunWorldGenerator.BIOME_STORM_BELT else 0.0) + (0.22 if _boat_inside_any_squall() else 0.0), 0.0, 1.0)
 	var hull_motion := clampf(absf(boat_root.rotation.x) * 2.8 + absf(boat_root.rotation.z) * 2.4, 0.0, 1.0)
-	var overboard_boost := 0.12 if _is_local_overboard() else 0.0
+	var overboard_boost := 0.12 if _is_local_off_deck() else 0.0
 	wind_audio_time = _fill_audio_layer(wind_audio_playback, "wind", wind_audio_time, 0.022 + speed_ratio * 0.035 + storm_strength * 0.055 + overboard_boost, storm_strength)
 	hull_audio_time = _fill_audio_layer(hull_audio_playback, "hull", hull_audio_time, 0.010 + speed_ratio * 0.020 + hull_motion * 0.024 + storm_strength * 0.012, hull_motion)
 	storm_audio_time = _fill_audio_layer(storm_audio_playback, "storm", storm_audio_time, storm_strength * 0.072 + (0.024 if _boat_inside_any_squall() else 0.0), storm_strength)
@@ -1443,13 +1469,29 @@ func _prime_local_run_avatar_state() -> void:
 		local_run_avatar_world_position = boat_root.to_global(local_run_avatar_position)
 		local_run_avatar_velocity = Vector3.ZERO
 		local_run_avatar_mode = NetworkRuntime.RUN_AVATAR_MODE_DECK
+		local_run_avatar_grounded = true
 		local_avatar_facing_y = PI
+		local_water_entry_active = false
+		local_water_entry_elapsed = 0.0
+		local_overboard_transition_pending = false
+		local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION
+		local_surface_tread_active = false
+		local_surface_tread_elapsed = 0.0
+		_sync_local_run_avatar_controller_from_state(true)
 		return
 	local_run_avatar_position = snapshot.get("deck_position", fallback_position)
 	local_run_avatar_world_position = snapshot.get("world_position", boat_root.to_global(local_run_avatar_position))
 	local_run_avatar_velocity = snapshot.get("velocity", Vector3.ZERO)
 	local_run_avatar_mode = str(snapshot.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
+	local_run_avatar_grounded = bool(snapshot.get("grounded", true))
 	local_avatar_facing_y = float(snapshot.get("facing_y", PI))
+	local_water_entry_active = false
+	local_water_entry_elapsed = 0.0
+	local_overboard_transition_pending = false
+	local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION if local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_DECK else 0.0
+	local_surface_tread_active = local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+	local_surface_tread_elapsed = 0.0
+	_sync_local_run_avatar_controller_from_state(true)
 	_refresh_local_run_avatar_controller()
 
 func _build_local_run_avatar_controller() -> void:
@@ -1460,25 +1502,51 @@ func _build_local_run_avatar_controller() -> void:
 			return
 		local_run_avatar_controller.name = "LocalAvatar"
 		boat_root.add_child(local_run_avatar_controller)
-	local_run_avatar_controller.collision_layer = 0
-	local_run_avatar_controller.collision_mask = 0
-	var collision_shape := local_run_avatar_controller.get_node_or_null("CollisionShape3D") as CollisionShape3D
-	if collision_shape != null:
-		collision_shape.disabled = true
+	local_run_avatar_controller.motion_mode = CharacterBody3D.MOTION_MODE_GROUNDED
+	local_run_avatar_controller.floor_snap_length = RUN_AVATAR_FLOOR_SNAP_LENGTH
+	local_run_avatar_controller.safe_margin = 0.02
 	if local_run_avatar_controller.has_method("set_tool_visible"):
 		local_run_avatar_controller.call("set_tool_visible", false)
+	_set_local_run_avatar_collision_enabled(not _is_local_off_deck())
+	_sync_local_run_avatar_controller_from_state(true)
 	_refresh_local_run_avatar_controller()
+
+func _set_local_run_avatar_collision_enabled(enabled: bool) -> void:
+	if local_run_avatar_controller == null:
+		return
+	var effective_enabled := enabled and not local_water_entry_active and not local_overboard_transition_pending
+	local_run_avatar_controller.collision_layer = RUN_BLOCK_COLLISION_LAYER if effective_enabled else 0
+	local_run_avatar_controller.collision_mask = RUN_BLOCK_COLLISION_LAYER if effective_enabled else 0
+	var collision_shape := local_run_avatar_controller.get_node_or_null("CollisionShape3D") as CollisionShape3D
+	if collision_shape != null:
+		collision_shape.disabled = not effective_enabled
+
+func _sync_local_run_avatar_controller_from_state(force_snap: bool = false) -> void:
+	if local_run_avatar_controller == null:
+		return
+	if _is_local_off_deck():
+		local_run_avatar_controller.top_level = true
+		if force_snap or local_run_avatar_controller.global_position.distance_to(local_run_avatar_world_position) > 0.4:
+			local_run_avatar_controller.global_position = local_run_avatar_world_position
+	else:
+		local_run_avatar_controller.top_level = false
+		var target_position := _get_local_run_avatar_target() if not NetworkRuntime.get_peer_station_id(_get_local_peer_id()).is_empty() and _station_anchors_avatar(NetworkRuntime.get_peer_station_id(_get_local_peer_id())) else local_run_avatar_position
+		if force_snap or local_run_avatar_controller.position.distance_to(target_position) > 0.35:
+			local_run_avatar_controller.position = target_position
+	local_run_avatar_controller.velocity = local_run_avatar_velocity
 
 func _refresh_local_run_avatar_controller() -> void:
 	if local_run_avatar_controller == null:
 		return
 	var local_state := _get_local_run_avatar_state()
 	var station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	var overboard := _is_local_overboard()
+	var overboard := _is_local_off_deck()
 	var downed := _is_local_downed()
 	var display_name := str(NetworkRuntime.peer_snapshot.get(_get_local_peer_id(), {}).get("name", "You"))
 	var presentation_state := local_state.duplicate(true)
 	presentation_state["peer_id"] = _get_local_peer_id()
+	_set_local_run_avatar_collision_enabled(not overboard)
+	_sync_local_run_avatar_controller_from_state(false)
 	_configure_run_avatar_controller(local_run_avatar_controller, display_name, station_id, presentation_state, overboard, downed)
 
 func _configure_run_avatar_controller(
@@ -1526,6 +1594,7 @@ func _update_local_run_avatar_controller(delta: float) -> void:
 	var local_state := _get_local_run_avatar_state()
 	var station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
 	var overboard := _is_local_overboard()
+	var water_entry := _is_local_water_entry()
 	var downed := _is_local_downed()
 	var local_reaction := _get_reaction_visual(_get_local_peer_id())
 	var local_knockback := Vector3.ZERO
@@ -1538,26 +1607,35 @@ func _update_local_run_avatar_controller(delta: float) -> void:
 		var knockback: Vector3 = local_reaction.get("knockback_velocity", Vector3.ZERO)
 		local_knockback = boat_root.global_transform.basis.inverse() * knockback
 	var target_yaw := local_avatar_facing_y
-	if overboard:
-		var target_world_position: Vector3 = local_state.get("world_position", _get_local_avatar_world_position())
-		target_world_position.y += sin(connect_time_seconds * 2.8 + float(_get_local_peer_id())) * 0.05
+	if water_entry:
+		var target_world_position := local_run_avatar_world_position
+		_set_local_run_avatar_collision_enabled(false)
 		local_run_avatar_controller.top_level = true
-		local_run_avatar_controller.global_position = local_run_avatar_controller.global_position.lerp(target_world_position, minf(1.0, delta * 8.0))
+		local_run_avatar_controller.global_position = target_world_position
 		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
-		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, 0.12 + clampf(local_knockback.z * -0.03 * intensity, -0.18, 0.18), minf(1.0, delta * 10.0))
-		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, clampf(local_knockback.x * 0.04 * intensity, -0.18, 0.18), minf(1.0, delta * 10.0))
+		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, clampf(local_run_avatar_velocity.y * -0.05, -0.32, 0.22), minf(1.0, delta * 10.0))
+		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, 0.0, minf(1.0, delta * 10.0))
+	elif overboard:
+		var target_world_position: Vector3 = local_state.get("world_position", _get_local_avatar_world_position())
+		target_world_position.y += _get_local_surface_tread_height_offset()
+		var surface_tread_tilt := _get_local_surface_tread_tilt(target_yaw)
+		_set_local_run_avatar_collision_enabled(false)
+		local_run_avatar_controller.top_level = true
+		local_run_avatar_controller.global_position = local_run_avatar_controller.global_position.lerp(target_world_position, minf(1.0, delta * 6.8))
+		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
+		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, surface_tread_tilt.x + clampf(local_knockback.z * -0.03 * intensity, -0.18, 0.18), minf(1.0, delta * 9.0))
+		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, surface_tread_tilt.y + clampf(local_knockback.x * 0.04 * intensity, -0.18, 0.18), minf(1.0, delta * 9.0))
 	else:
-		var target_position := _get_local_run_avatar_target() if not station_id.is_empty() and _station_anchors_avatar(station_id) else local_run_avatar_position
-		target_position += local_knockback * 0.08 * intensity
-		target_position.y += sin(connect_time_seconds * 22.0 + float(_get_local_peer_id())) * 0.06 * intensity
+		_set_local_run_avatar_collision_enabled(true)
+		var target_position := local_run_avatar_position
+		if not station_id.is_empty() and _station_anchors_avatar(station_id):
+			target_position = _get_local_run_avatar_target()
+			local_run_avatar_controller.position = target_position
 		local_run_avatar_controller.top_level = false
-		if downed:
-			target_position.y = maxf(0.34, target_position.y - 0.38)
-		local_run_avatar_controller.scale.y = lerpf(local_run_avatar_controller.scale.y, 0.55 if downed else 1.0, minf(1.0, delta * 8.0))
-		local_run_avatar_controller.position = local_run_avatar_controller.position.lerp(target_position, minf(1.0, delta * 8.5))
+		local_run_avatar_controller.scale = local_run_avatar_controller.scale.lerp(Vector3.ONE, minf(1.0, delta * 8.0))
 		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
-		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, -0.42 if downed else clampf(local_knockback.z * -0.05 * intensity, -0.42, 0.42), minf(1.0, delta * 12.0))
-		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, 1.08 if downed else clampf(local_knockback.x * 0.055 * intensity, -0.48, 0.48), minf(1.0, delta * 12.0))
+		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, 0.0, minf(1.0, delta * 12.0))
+		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, 0.0, minf(1.0, delta * 12.0))
 	local_run_avatar_controller.velocity = local_run_avatar_velocity
 
 func _sanitize_local_run_avatar_position(deck_position: Vector3, fallback_position = null) -> Vector3:
@@ -1575,12 +1653,50 @@ func _get_local_run_avatar_state() -> Dictionary:
 func _is_local_overboard() -> bool:
 	return local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
 
+func _is_local_water_entry() -> bool:
+	return local_water_entry_active
+
+func _is_local_off_deck() -> bool:
+	return _is_local_overboard() or _is_local_water_entry()
+
 func _is_local_downed() -> bool:
 	return local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_DOWNED
 
+func _get_local_off_deck_blend() -> float:
+	return clampf(local_off_deck_entry_elapsed / RUN_OFF_DECK_BLEND_DURATION, 0.0, 1.0)
+
+func _is_local_surface_tread() -> bool:
+	return local_surface_tread_active and _is_local_overboard()
+
+func _get_local_surface_tread_height_offset() -> float:
+	if not _is_local_surface_tread():
+		return 0.0
+	var planar_speed := Vector2(local_run_avatar_velocity.x, local_run_avatar_velocity.z).length()
+	var speed_ratio := clampf(planar_speed / (RUN_SWIM_MOVE_SPEED * RUN_SWIM_BURST_MULTIPLIER), 0.0, 1.0)
+	var bob_amplitude := lerpf(RUN_SURFACE_TREAD_BOB_AMPLITUDE, RUN_SURFACE_TREAD_BOB_AMPLITUDE * 0.45, speed_ratio)
+	var bob := sin(connect_time_seconds * RUN_SURFACE_TREAD_BOB_SPEED + float(_get_local_peer_id()) * 0.73) * bob_amplitude
+	var settle_progress := clampf(local_surface_tread_elapsed / RUN_SURFACE_TREAD_SETTLE_DURATION, 0.0, 1.0)
+	var settle := lerpf(-0.15, 0.0, ease(settle_progress, -2.1)) + sin(settle_progress * PI) * 0.035
+	return bob + settle
+
+func _get_local_surface_tread_tilt(target_yaw: float) -> Vector2:
+	if not _is_local_surface_tread():
+		return Vector2.ZERO
+	var local_planar_velocity := Basis(Vector3.UP, -target_yaw) * Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z)
+	var planar_speed := Vector2(local_planar_velocity.x, local_planar_velocity.z).length()
+	var speed_ratio := clampf(planar_speed / (RUN_SWIM_MOVE_SPEED * RUN_SWIM_BURST_MULTIPLIER), 0.0, 1.0)
+	var bob_pitch := 0.05 + sin(connect_time_seconds * RUN_SURFACE_TREAD_BOB_SPEED + 0.4) * 0.02
+	var pitch := bob_pitch + clampf(-local_planar_velocity.z * 0.055, -RUN_SURFACE_TREAD_LEAN_MAX, RUN_SURFACE_TREAD_LEAN_MAX) * (0.45 + speed_ratio * 0.55)
+	var roll := clampf(local_planar_velocity.x * 0.075, -RUN_SURFACE_TREAD_LEAN_MAX, RUN_SURFACE_TREAD_LEAN_MAX) * (0.35 + speed_ratio * 0.65)
+	return Vector2(pitch, roll)
+
 func _get_local_avatar_world_position() -> Vector3:
+	if local_run_avatar_controller != null and (_is_local_off_deck() or local_overboard_transition_pending):
+		return local_run_avatar_controller.global_position
 	if _is_local_overboard():
 		return local_run_avatar_world_position
+	if local_run_avatar_controller != null:
+		return local_run_avatar_controller.global_position
 	return boat_root.to_global(local_run_avatar_position)
 
 func _clamp_local_swim_world_position(world_position: Vector3) -> Vector3:
@@ -1592,6 +1708,9 @@ func _clamp_local_swim_world_position(world_position: Vector3) -> Vector3:
 	var sanitized_position := boat_position + offset
 	sanitized_position.y = NetworkRuntime.RUN_OVERBOARD_WATER_HEIGHT
 	return sanitized_position
+
+func _get_boat_world_linear_velocity() -> Vector3:
+	return boat_visual_velocity
 
 func _get_local_recovery_target() -> Dictionary:
 	var local_state := _get_local_run_avatar_state()
@@ -1613,8 +1732,13 @@ func _get_local_recovery_target() -> Dictionary:
 		return normalized
 	return {}
 
+func _get_local_direct_reboard_target() -> Dictionary:
+	if not _is_local_overboard():
+		return {}
+	return NetworkRuntime.get_direct_overboard_reboard_target(local_run_avatar_world_position)
+
 func _get_local_rally_target() -> Dictionary:
-	if _is_local_overboard() or _is_local_downed():
+	if _is_local_off_deck() or _is_local_downed():
 		return {}
 	var best_target: Dictionary = {}
 	var best_distance := INF
@@ -2160,7 +2284,7 @@ func _sync_selected_station_with_tool() -> void:
 		selected_station_index = maxi(0, NetworkRuntime.get_claimable_station_ids().find("grapple"))
 
 func _build_run_toolbelt_text(active_tool_id: String = "", local_station_id: String = "") -> String:
-	var base_text := "4-slot item belt. LMB uses item. F works stations. Hold Space to brace."
+	var base_text := "4-slot item belt. LMB uses item. F works stations. Space jumps/climbs. B braces."
 	if active_tool_id.is_empty():
 		return base_text
 	return "%s Item ready: %s." % [base_text, _get_run_tool_label(active_tool_id)]
@@ -2351,7 +2475,7 @@ func _build_station_prompt_compact(selected_station_id: String, local_station_id
 	if local_downed:
 		return "DOWNED | Hold still and wait for a rally."
 	if local_overboard:
-		return "OVERBOARD | Swim for the ladder marker and press F."
+		return "OVERBOARD | Reach a ladder or nearby hull edge, then press Space or F to climb."
 	if not local_station_id.is_empty():
 		return "%s HELD | %s" % [
 			NetworkRuntime.get_station_label(local_station_id),
@@ -2386,7 +2510,7 @@ func _refresh_hud() -> void:
 	var local_peer_id := _get_local_peer_id()
 	var local_avatar_state := _get_local_run_avatar_state()
 	var local_mode := str(local_avatar_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
-	var local_overboard := local_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+	var local_overboard := local_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD or local_water_entry_active
 	var local_downed := local_mode == NetworkRuntime.RUN_AVATAR_MODE_DOWNED
 	var local_station_id := NetworkRuntime.get_peer_station_id(local_peer_id)
 	var selected_station_id := _get_selected_station_id()
@@ -2608,7 +2732,7 @@ func _refresh_hud() -> void:
 		var item_label := "None"
 		if not active_tool_id.is_empty():
 			item_label = _get_run_tool_label(active_tool_id)
-		status_label.text = "%s | Heading %s %03d | Item %s\nQ/E stations | F claim/use | LMB item | Space brace | I inventory" % [
+		status_label.text = "%s | Heading %s %03d | Item %s\nQ/E stations | F claim/use | Space jump/climb | B brace | I inventory" % [
 			phase.capitalize(),
 			compass_cardinal,
 			int(round(compass_heading_degrees)),
@@ -2666,7 +2790,7 @@ func _build_interaction_text(selected_station_id: String, local_station_id: Stri
 	elif local_station_id == "grapple":
 		lines.append("Use your equipped grapple item here to recover nearby wreck salvage, rescue cargo, or bonus caches once the helm has slowed the boat.")
 	else:
-		lines.append("Brace anywhere with Space, or use your equipped hammer item near damaged hull sections.")
+		lines.append("Brace anywhere with B, or use your equipped hammer item near damaged hull sections.")
 
 	lines.append("Unbraced wreck grapples add hull breaches that slow the boat until repaired.")
 	lines.append("Repairs now spend shared patch kits, so decide whether to patch now or save them for extraction.")
@@ -2827,6 +2951,19 @@ func _make_runtime_block_visual(block: Dictionary, detached_visual: bool) -> Nod
 	mesh_instance.mesh = mesh
 	block_node.add_child(mesh_instance)
 
+	if not detached_visual:
+		var static_body := StaticBody3D.new()
+		static_body.name = "CollisionBody"
+		static_body.collision_layer = RUN_BLOCK_COLLISION_LAYER
+		static_body.collision_mask = RUN_BLOCK_COLLISION_LAYER
+		var collision_shape := CollisionShape3D.new()
+		collision_shape.name = "CollisionShape3D"
+		var box_shape := BoxShape3D.new()
+		box_shape.size = Vector3.ONE * NetworkRuntime.RUNTIME_BLOCK_SPACING
+		collision_shape.shape = box_shape
+		static_body.add_child(collision_shape)
+		block_node.add_child(static_body)
+
 	var facing_marker := MeshInstance3D.new()
 	facing_marker.name = "Marker"
 	var marker_mesh := BoxMesh.new()
@@ -2925,7 +3062,7 @@ func _refresh_station_visuals() -> void:
 	var local_peer_id := _get_local_peer_id()
 	var selected_station_id := _get_selected_station_id()
 	var local_station_id := NetworkRuntime.get_peer_station_id(local_peer_id)
-	var local_overboard := _is_local_overboard()
+	var local_overboard := _is_local_off_deck()
 	var local_downed := _is_local_downed()
 
 	for station_id in NetworkRuntime.get_station_ids():
@@ -2980,7 +3117,7 @@ func _refresh_station_visuals() -> void:
 func _refresh_recovery_visuals() -> void:
 	if recovery_visuals.is_empty():
 		return
-	var local_overboard := _is_local_overboard()
+	var local_overboard := _is_local_off_deck()
 	var active_target := _get_local_recovery_target()
 	var local_world_position := _get_local_avatar_world_position()
 	for target_variant in NetworkRuntime.get_run_recovery_points():
@@ -3403,7 +3540,7 @@ func _prime_run_hud_event_state() -> void:
 	last_hud_overboard_count = int(NetworkRuntime.run_state.get("overboard_count", 0))
 	last_hud_downed_count = int(NetworkRuntime.run_state.get("crew_downed_count", 0))
 	last_hud_phase = str(NetworkRuntime.run_state.get("phase", "running"))
-	last_local_overboard = _is_local_overboard()
+	last_local_overboard = _is_local_off_deck()
 	last_local_downed = _is_local_downed()
 
 func _push_event_callout(text: String, color: Color, duration: float = 1.9) -> void:
@@ -3562,12 +3699,57 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 	if _is_local_downed():
 		local_run_avatar_velocity = Vector3.ZERO
 		local_run_avatar_world_position = _get_local_avatar_world_position()
+		local_run_avatar_grounded = true
+		local_water_entry_active = false
+		local_water_entry_elapsed = 0.0
+		local_overboard_transition_pending = false
+		local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION
+		local_surface_tread_active = false
+		local_surface_tread_elapsed = 0.0
+		if local_run_avatar_controller != null and not _is_local_off_deck():
+			local_run_avatar_controller.velocity = Vector3.ZERO
+		return
+	if _is_local_water_entry():
+		local_off_deck_entry_elapsed = minf(RUN_OFF_DECK_BLEND_DURATION, local_off_deck_entry_elapsed + delta)
+		local_water_entry_elapsed += delta
+		local_run_avatar_velocity.y -= RUN_WATER_ENTRY_GRAVITY * delta
+		var surface_height := NetworkRuntime.RUN_OVERBOARD_WATER_HEIGHT
+		var height_above_surface := maxf(0.0, local_run_avatar_world_position.y - surface_height)
+		var surface_blend := clampf(1.0 - (height_above_surface / RUN_WATER_ENTRY_SURFACE_BLEND_HEIGHT), 0.0, 1.0)
+		if surface_blend > 0.0:
+			var drag_strength := surface_blend * delta * 4.8
+			local_run_avatar_velocity.x = lerpf(local_run_avatar_velocity.x, 0.0, drag_strength)
+			local_run_avatar_velocity.z = lerpf(local_run_avatar_velocity.z, 0.0, drag_strength)
+			if local_run_avatar_velocity.y < -1.6:
+				local_run_avatar_velocity.y = lerpf(local_run_avatar_velocity.y, -1.6, drag_strength)
+		local_run_avatar_world_position += local_run_avatar_velocity * delta
+		if local_run_avatar_controller != null:
+			local_run_avatar_controller.top_level = true
+			local_run_avatar_controller.global_position = local_run_avatar_world_position
+			local_run_avatar_controller.velocity = local_run_avatar_velocity
+		if local_run_avatar_world_position.y <= surface_height or local_water_entry_elapsed >= RUN_WATER_ENTRY_MAX_DURATION:
+			local_run_avatar_world_position.y = surface_height
+			local_water_entry_active = false
+			local_overboard_transition_pending = true
+			_set_local_run_avatar_collision_enabled(false)
+			local_run_avatar_velocity.y = 0.0
+			NetworkRuntime.request_local_overboard_transition(
+				local_run_avatar_world_position,
+				local_run_avatar_velocity,
+				local_avatar_facing_y
+			)
 		return
 	var local_station_id := NetworkRuntime.get_peer_station_id(_get_local_peer_id())
-	if not _is_local_overboard() and not local_station_id.is_empty() and _station_anchors_avatar(local_station_id):
+	if not _is_local_off_deck() and not local_station_id.is_empty() and _station_anchors_avatar(local_station_id):
 		local_run_avatar_position = _get_local_run_avatar_target()
 		local_run_avatar_world_position = _get_local_avatar_world_position()
 		local_run_avatar_velocity = Vector3.ZERO
+		local_run_avatar_grounded = true
+		local_overboard_transition_pending = false
+		if local_run_avatar_controller != null:
+			local_run_avatar_controller.top_level = false
+			local_run_avatar_controller.position = local_run_avatar_position
+			local_run_avatar_controller.velocity = Vector3.ZERO
 		return
 
 	var input_vector := Vector2.ZERO
@@ -3598,22 +3780,38 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 	var recovering := float(local_reaction.get("recovery_time", 0.0)) > 0.0
 	var local_avatar_state := _get_local_run_avatar_state()
 	var burst_active := Input.is_key_pressed(KEY_SHIFT) and float(local_avatar_state.get("stamina", NetworkRuntime.AVATAR_MAX_STAMINA)) > 0.0
+	var jump_pressed := Input.is_physical_key_pressed(KEY_SPACE)
+	var jump_just_pressed := jump_pressed and not local_jump_latched
+	local_jump_latched = jump_pressed
 	if active_reaction:
 		move_direction_world = Vector3.ZERO
 	elif recovering:
 		move_direction_world *= 0.35
 
 	if _is_local_overboard():
-		var swim_speed := RUN_SWIM_MOVE_SPEED * (RUN_SWIM_BURST_MULTIPLIER if burst_active else 1.0)
-		if move_direction_world.length() > 0.001:
-			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_world.x * swim_speed, RUN_SWIM_ACCELERATION * delta)
-			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_world.z * swim_speed, RUN_SWIM_ACCELERATION * delta)
+		local_off_deck_entry_elapsed = minf(RUN_OFF_DECK_BLEND_DURATION, local_off_deck_entry_elapsed + delta)
+		if not local_surface_tread_active:
+			local_surface_tread_active = true
+			local_surface_tread_elapsed = 0.0
 		else:
-			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, RUN_SWIM_ACCELERATION * delta)
-			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, RUN_SWIM_ACCELERATION * delta)
+			local_surface_tread_elapsed += delta
+		var off_deck_blend := _get_local_off_deck_blend()
+		var swim_speed := RUN_SWIM_MOVE_SPEED * lerpf(0.72, 1.0, off_deck_blend) * (RUN_SWIM_BURST_MULTIPLIER if burst_active else 1.0)
+		var swim_acceleration := lerpf(RUN_SWIM_ACCELERATION * 0.55, RUN_SWIM_ACCELERATION, off_deck_blend)
+		if move_direction_world.length() > 0.001:
+			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_world.x * swim_speed, swim_acceleration * delta)
+			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_world.z * swim_speed, swim_acceleration * delta)
+		else:
+			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, swim_acceleration * delta * 1.2)
+			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, swim_acceleration * delta * 1.2)
 		local_run_avatar_world_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
 		local_run_avatar_world_position = _clamp_local_swim_world_position(local_run_avatar_world_position)
+		local_run_avatar_grounded = false
+		local_overboard_transition_pending = false
 		return
+	local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION
+	local_surface_tread_active = false
+	local_surface_tread_elapsed = 0.0
 
 	var move_direction_local := Vector3.ZERO
 	if move_direction_world.length() > 0.001:
@@ -3621,30 +3819,89 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 		move_direction_local.y = 0.0
 		move_direction_local = move_direction_local.normalized()
 
-	if move_direction_local.length() > 0.001:
-		var move_speed := RUN_AVATAR_MOVE_SPEED * (RUN_AVATAR_SPRINT_MULTIPLIER if burst_active else 1.0)
-		local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_local.x * move_speed, RUN_AVATAR_ACCELERATION * delta)
-		local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_local.z * move_speed, RUN_AVATAR_ACCELERATION * delta)
-	else:
-		local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, RUN_AVATAR_ACCELERATION * delta)
-		local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, RUN_AVATAR_ACCELERATION * delta)
+	if local_run_avatar_controller == null:
+		if move_direction_local.length() > 0.001:
+			var move_speed := RUN_AVATAR_MOVE_SPEED * (RUN_AVATAR_SPRINT_MULTIPLIER if burst_active else 1.0)
+			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, move_direction_local.x * move_speed, RUN_AVATAR_ACCELERATION * delta)
+			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, move_direction_local.z * move_speed, RUN_AVATAR_ACCELERATION * delta)
+		else:
+			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, RUN_AVATAR_ACCELERATION * delta)
+			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, RUN_AVATAR_ACCELERATION * delta)
+		var previous_position := local_run_avatar_position
+		local_run_avatar_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
+		local_run_avatar_position = _sanitize_local_run_avatar_position(local_run_avatar_position, previous_position)
+		local_run_avatar_world_position = _get_local_avatar_world_position()
+		local_run_avatar_grounded = true
+		return
 
-	var previous_position := local_run_avatar_position
-	local_run_avatar_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
-	local_run_avatar_position = _sanitize_local_run_avatar_position(local_run_avatar_position, previous_position)
-	local_run_avatar_world_position = _get_local_avatar_world_position()
+	var move_speed := RUN_AVATAR_MOVE_SPEED * (RUN_AVATAR_SPRINT_MULTIPLIER if burst_active else 1.0)
+	var acceleration := RUN_AVATAR_ACCELERATION if local_run_avatar_controller.is_on_floor() else RUN_AVATAR_AIR_ACCELERATION
+	var controller_velocity := local_run_avatar_controller.velocity
+	controller_velocity.x = move_toward(controller_velocity.x, move_direction_local.x * move_speed, acceleration * delta)
+	controller_velocity.z = move_toward(controller_velocity.z, move_direction_local.z * move_speed, acceleration * delta)
+	controller_velocity.y -= RUN_AVATAR_GRAVITY * delta
+	if jump_just_pressed and local_run_avatar_controller.is_on_floor() and not active_reaction and not recovering:
+		controller_velocity.y = RUN_AVATAR_JUMP_VELOCITY
+	local_run_avatar_controller.velocity = controller_velocity
+	local_run_avatar_controller.move_and_slide()
+	local_run_avatar_position = local_run_avatar_controller.position
+	local_run_avatar_world_position = local_run_avatar_controller.global_position
+	local_run_avatar_velocity = local_run_avatar_controller.velocity
+	local_run_avatar_grounded = local_run_avatar_controller.is_on_floor()
+	if local_run_avatar_grounded:
+		local_overboard_transition_pending = false
+	var support_projection := NetworkRuntime.get_run_avatar_support_projection(
+		local_run_avatar_position,
+		NetworkRuntime.RUN_OVERBOARD_EDGE_MARGIN
+	)
+	var support_lost := not bool(support_projection.get("valid", false))
+	var support_height := float(support_projection.get("deck_position", local_run_avatar_position).y)
+	var support_gap := float(support_projection.get("horizontal_distance", INF))
+	var should_begin_water_entry := false
+	if not local_overboard_transition_pending and not local_run_avatar_grounded:
+		if support_lost:
+			var cleared_edge := support_gap > RUN_AVATAR_EDGE_EXIT_GRACE_DISTANCE
+			var dropped_below_support := local_run_avatar_position.y <= support_height - RUN_AVATAR_SUPPORT_DROP_THRESHOLD
+			var near_water_surface := local_run_avatar_world_position.y <= NetworkRuntime.RUN_OVERBOARD_WATER_HEIGHT + RUN_AVATAR_OVERBOARD_ENTRY_BUFFER
+			should_begin_water_entry = cleared_edge or dropped_below_support or near_water_surface
+		elif local_run_avatar_controller.velocity.y <= 0.0 and (
+			local_run_avatar_position.y <= support_height - RUN_AVATAR_SUPPORT_DROP_THRESHOLD \
+			or local_run_avatar_world_position.y <= NetworkRuntime.RUN_OVERBOARD_WATER_HEIGHT + RUN_AVATAR_OVERBOARD_ENTRY_BUFFER
+		):
+			should_begin_water_entry = true
+	if should_begin_water_entry:
+		local_water_entry_active = true
+		local_water_entry_elapsed = 0.0
+		local_off_deck_entry_elapsed = 0.0
+		local_surface_tread_active = false
+		local_surface_tread_elapsed = 0.0
+		_set_local_run_avatar_collision_enabled(false)
+		local_run_avatar_world_position = local_run_avatar_controller.global_position
+		var boat_carry_velocity := _get_boat_world_linear_velocity()
+		local_run_avatar_velocity = (boat_root.global_transform.basis * local_run_avatar_velocity) + boat_carry_velocity
+		local_run_avatar_controller.top_level = true
+		local_run_avatar_controller.global_position = local_run_avatar_world_position
+		local_run_avatar_controller.velocity = local_run_avatar_velocity
 
 func _sync_local_run_avatar_state(delta: float) -> void:
 	run_avatar_sync_timer = maxf(0.0, run_avatar_sync_timer - delta)
 	if run_avatar_sync_timer > 0.0:
 		return
 	run_avatar_sync_timer = RUN_AVATAR_SYNC_INTERVAL
+	if (local_water_entry_active or local_overboard_transition_pending) and not _is_local_overboard():
+		return
+	var grounded := local_run_avatar_grounded
+	if not _is_local_off_deck() and local_run_avatar_controller != null:
+		local_run_avatar_position = local_run_avatar_controller.position
+		local_run_avatar_world_position = local_run_avatar_controller.global_position
+		local_run_avatar_velocity = local_run_avatar_controller.velocity
+		grounded = local_run_avatar_controller.is_on_floor()
 	NetworkRuntime.send_local_run_avatar_state(
 		local_run_avatar_position,
 		local_run_avatar_world_position,
-		Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z),
+		local_run_avatar_velocity,
 		local_avatar_facing_y,
-		not _is_local_overboard(),
+		grounded if not _is_local_overboard() else false,
 		local_run_avatar_mode
 	)
 
@@ -3690,7 +3947,7 @@ func _collect_input_state(delta: float) -> Dictionary:
 	return input_state
 
 func _collect_station_selection_input() -> void:
-	if _is_local_overboard() or _is_local_downed():
+	if _is_local_off_deck() or _is_local_downed():
 		station_prev_latched = Input.is_key_pressed(KEY_Q)
 		station_next_latched = Input.is_key_pressed(KEY_E)
 		return
@@ -3726,10 +3983,6 @@ func _collect_station_interaction_input(delta: float, input_state: Dictionary) -
 		interact_latched = interact_pressed
 		return
 	if interact_pressed and not interact_latched:
-		if _is_local_overboard():
-			input_state["request_recover"] = true
-			interact_latched = interact_pressed
-			return
 		if _is_local_downed():
 			interact_latched = interact_pressed
 			return
@@ -3744,11 +3997,18 @@ func _collect_station_interaction_input(delta: float, input_state: Dictionary) -
 
 func _collect_action_input(input_state: Dictionary) -> void:
 	var item_use_pressed := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-	if _is_local_overboard() or _is_local_downed():
+	if _is_local_off_deck() or _is_local_downed():
+		var recovery_target := _get_local_recovery_target()
+		var recovery_ready := bool(recovery_target.get("ready", false))
+		var direct_reboard_ready := not _get_local_direct_reboard_target().is_empty()
+		var recover_pressed := Input.is_key_pressed(KEY_F) or ((recovery_ready or direct_reboard_ready) and Input.is_physical_key_pressed(KEY_SPACE))
 		if _is_local_overboard() and item_use_pressed and not item_use_request_latched and _get_selected_run_tool_id() == "recover":
 			input_state["request_recover"] = true
+		elif _is_local_overboard() and recover_pressed and not recover_request_latched:
+			input_state["request_recover"] = true
+		recover_request_latched = recover_pressed
 		item_use_request_latched = item_use_pressed
-		brace_request_latched = Input.is_key_pressed(KEY_SPACE)
+		brace_request_latched = Input.is_key_pressed(RUN_BRACE_KEY)
 		grapple_request_latched = Input.is_key_pressed(KEY_G)
 		repair_request_latched = Input.is_key_pressed(KEY_R)
 		return
@@ -3771,7 +4031,7 @@ func _collect_action_input(input_state: Dictionary) -> void:
 				_show_local_action_blocked("Recovery gear is for overboard use")
 	item_use_request_latched = item_use_pressed
 
-	var brace_pressed := Input.is_key_pressed(KEY_SPACE)
+	var brace_pressed := Input.is_key_pressed(RUN_BRACE_KEY)
 	if brace_pressed and not brace_request_latched:
 		if _can_local_use_stamina_action(NetworkRuntime.AVATAR_BRACE_STAMINA_COST):
 			input_state["request_brace"] = true
@@ -3847,7 +4107,7 @@ func _apply_scripted_station_input(delta: float, input_state: Dictionary) -> voi
 				_scripted_move_local_avatar_toward(damage_target.get("local_position", local_run_avatar_position), delta)
 
 func _apply_autorun_role(delta: float, autorun_role: String, input_state: Dictionary) -> void:
-	if _is_local_overboard():
+	if _is_local_off_deck():
 		_apply_overboard_recovery_role(delta, input_state)
 		return
 	match autorun_role:
@@ -3869,7 +4129,7 @@ func _apply_autorun_role(delta: float, autorun_role: String, input_state: Dictio
 func _apply_autorun_demo(delta: float, input_state: Dictionary) -> void:
 	if str(NetworkRuntime.run_state.get("phase", "running")) != "running":
 		return
-	if _is_local_overboard():
+	if _is_local_off_deck():
 		_apply_overboard_recovery_role(delta, input_state)
 		return
 
@@ -4260,7 +4520,7 @@ func _find_most_damaged_runtime_block() -> Dictionary:
 	return worst_block
 
 func _request_station_if_needed(station_id: String, input_state: Dictionary, delta: float = 0.0) -> void:
-	if _is_local_overboard():
+	if _is_local_off_deck():
 		return
 	if not _get_claimable_station_ids().has(station_id):
 		return
@@ -4315,6 +4575,7 @@ func _should_autobrace() -> bool:
 	return false
 
 func _update_boat_visual(delta: float) -> void:
+	var previous_position := boat_root.global_position
 	var server_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var rotation_y: float = float(NetworkRuntime.boat_state.get("rotation_y", 0.0))
 	var sea_pose := _sample_boat_wave_pose(server_position, rotation_y)
@@ -4339,6 +4600,10 @@ func _update_boat_visual(delta: float) -> void:
 	boat_root.rotation.y = lerp_angle(boat_root.rotation.y, rotation_y, minf(1.0, delta * 8.0))
 	boat_root.rotation.x = lerpf(boat_root.rotation.x, target_pitch, minf(1.0, delta * 4.2))
 	boat_root.rotation.z = lerpf(boat_root.rotation.z, target_roll, minf(1.0, delta * 4.2))
+	if delta > 0.0:
+		boat_visual_velocity = (boat_root.global_position - previous_position) / delta
+	else:
+		boat_visual_velocity = Vector3.ZERO
 
 func _update_hazard_visuals() -> void:
 	for hazard in NetworkRuntime.hazard_state:
@@ -4573,19 +4838,25 @@ func _update_camera(delta: float) -> void:
 
 	var speed_ratio := clampf(absf(float(NetworkRuntime.boat_state.get("speed", 0.0))) / NetworkRuntime.BOAT_TOP_SPEED, 0.0, 1.0)
 	var pivot := _get_local_avatar_world_position() + Vector3(0.0, run_camera_look_height, 0.0)
-	var global_yaw := local_avatar_facing_y if _is_local_overboard() else boat_root.rotation.y + local_avatar_facing_y
+	var global_yaw := local_avatar_facing_y if _is_local_off_deck() else boat_root.rotation.y + local_avatar_facing_y
 	var yaw_basis := Basis(Vector3.UP, global_yaw)
 	var aim_basis := yaw_basis * Basis(Vector3.RIGHT, local_camera_pitch)
 	var forward := (aim_basis * Vector3.FORWARD).normalized()
 	var right := (yaw_basis * Vector3.RIGHT).normalized()
-	var desired_position := pivot - forward * (run_camera_distance + speed_ratio * 1.4)
+	var off_deck := _is_local_off_deck()
+	var off_deck_blend := _get_local_off_deck_blend() if off_deck else 1.0
+	var off_deck_distance_bonus := lerpf(0.85, 0.32, off_deck_blend) if off_deck else 0.0
+	var desired_position := pivot - forward * (run_camera_distance + speed_ratio * 1.4 + off_deck_distance_bonus)
 	desired_position += right * run_camera_side_offset
-	desired_position += Vector3.UP * (run_camera_height - (0.4 if _is_local_overboard() else 0.0))
+	var off_deck_camera_drop := lerpf(0.18, 0.44, off_deck_blend) if off_deck else 0.0
+	var off_deck_bob := sin(connect_time_seconds * 2.5 + float(_get_local_peer_id())) * 0.05 if off_deck else 0.0
+	desired_position += Vector3.UP * (run_camera_height - off_deck_camera_drop + off_deck_bob * 0.4)
 	desired_position += local_camera_jolt
-	var look_target := pivot + forward * (run_camera_look_ahead + speed_ratio * 0.8) + local_camera_jolt * 0.42
-	var blend := minf(1.0, delta * run_camera_lag)
+	var look_target := pivot + forward * (run_camera_look_ahead + speed_ratio * 0.8) + Vector3.UP * off_deck_bob + local_camera_jolt * 0.42
+	var camera_lag := lerpf(run_camera_lag * 0.5, run_camera_lag * 0.82, off_deck_blend) if off_deck else run_camera_lag
+	var blend := minf(1.0, delta * camera_lag)
 	camera.position = camera.position.lerp(desired_position, blend)
-	camera.fov = lerpf(camera.fov, 69.0 + speed_ratio * 7.0, blend)
+	camera.fov = lerpf(camera.fov, 69.0 + speed_ratio * 7.0 + (1.3 if off_deck else 0.0), blend)
 	camera.look_at(look_target, Vector3.UP)
 
 func _update_boat_material() -> void:
@@ -4765,7 +5036,11 @@ func _on_session_phase_changed(phase: String) -> void:
 		GameConfig.queue_scene_load(
 			HANGAR_SCENE,
 			"Returning To Dock",
-			"Securing the haul, logging the damage, and bringing the crew back into the build yard."
+			"Securing the haul, logging the damage, and bringing the crew back into the build yard.",
+			[
+				"Run closed. Returning the crew to dock.",
+				"Restoring shared blueprint, workshop stock, and yard state.",
+			]
 		)
 		get_tree().change_scene_to_file(LOADING_SCENE)
 
@@ -4787,17 +5062,45 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 		if local_run_avatar_world_position.distance_to(target_world_position) > 0.95:
 			local_run_avatar_world_position = target_world_position
 		local_run_avatar_velocity = local_state.get("velocity", local_run_avatar_velocity)
+		local_run_avatar_grounded = bool(local_state.get("grounded", local_run_avatar_grounded))
 		var synced_facing := float(local_state.get("facing_y", local_avatar_facing_y))
 		if previous_mode != local_run_avatar_mode:
 			if local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
 				local_avatar_facing_y = boat_root.rotation.y + synced_facing
+				local_overboard_transition_pending = false
+				local_off_deck_entry_elapsed = 0.0
+				local_surface_tread_active = true
+				local_surface_tread_elapsed = 0.0
 			elif previous_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
 				local_avatar_facing_y = synced_facing - boat_root.rotation.y
+				local_overboard_transition_pending = false
+				local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION
+				local_surface_tread_active = false
+				local_surface_tread_elapsed = 0.0
 			else:
 				local_avatar_facing_y = synced_facing
 		else:
 			local_avatar_facing_y = synced_facing
-	var local_overboard := _is_local_overboard()
+		if local_run_avatar_mode != NetworkRuntime.RUN_AVATAR_MODE_DECK:
+			local_water_entry_active = false
+			local_water_entry_elapsed = 0.0
+			local_overboard_transition_pending = false
+			if local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_DOWNED:
+				local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION
+				local_surface_tread_active = false
+				local_surface_tread_elapsed = 0.0
+			elif local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD and not local_surface_tread_active:
+				local_surface_tread_active = true
+				local_surface_tread_elapsed = 0.0
+		elif previous_mode != local_run_avatar_mode:
+			local_water_entry_active = false
+			local_water_entry_elapsed = 0.0
+			local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION
+			local_surface_tread_active = false
+			local_surface_tread_elapsed = 0.0
+		var force_controller_sync := previous_mode != local_run_avatar_mode and local_run_avatar_mode != NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD
+		_sync_local_run_avatar_controller_from_state(force_controller_sync)
+	var local_overboard := _is_local_off_deck()
 	if local_overboard and not last_local_overboard:
 		_push_event_callout("Overboard!", HUD_TEXT_DANGER, 2.4)
 		_spawn_splash_burst(_get_local_avatar_world_position(), 1.15, Color(0.92, 0.96, 1.0), Color(0.54, 0.76, 0.86))
@@ -4943,8 +5246,8 @@ func _build_objective_text() -> String:
 		return "Objective: Return to the hangar and review the loss."
 	if _is_local_downed():
 		return "Objective: Hold position until you self-recover, or let a nearby crewmate rally you."
-	if _is_local_overboard():
-		return "Objective: Swim to a ladder or stern line and press F to climb back aboard."
+	if _is_local_off_deck():
+		return "Objective: Swim to a ladder, stern line, or reachable hull edge, then press Space or F to climb back aboard."
 
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
 	var boat_speed: float = absf(float(NetworkRuntime.boat_state.get("speed", 0.0)))
@@ -5001,8 +5304,8 @@ func _build_onboarding_text(selected_station_id: String, local_station_id: Strin
 		return "Onboarding: Failed runs lose unbanked cargo. Rebuild and try a safer route."
 	if _is_local_downed():
 		return "Onboarding: You are downed. Stay clear of fresh impacts and wait out the timer, or have a nearby crewmate hold F to rally you faster."
-	if _is_local_overboard():
-		return "Onboarding: You went overboard. Swim to the nearest ladder marker, then press F to climb back onto the boat."
+	if _is_local_off_deck():
+		return "Onboarding: You went overboard. Swim to a ladder marker or the nearest reachable hull edge, then press Space or F to climb back onto the boat."
 
 	if local_station_id.is_empty():
 		var selected_label := "a station"
