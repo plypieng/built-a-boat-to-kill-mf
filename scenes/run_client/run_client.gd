@@ -4768,14 +4768,23 @@ func _draw_debug_draw_overlay() -> void:
 		var descriptor: Dictionary = descriptor_variant
 		var center: Vector3 = descriptor.get("world_center", Vector3.ZERO)
 		var chunk_size := float(descriptor.get("chunk_size_m", RunWorldGenerator.CHUNK_SIZE_M))
-		DebugDraw3D.draw_box(center, Quaternion.IDENTITY, Vector3(chunk_size, 0.4, chunk_size), Color(0.28, 0.72, 0.88, 0.08))
+		_debug_draw_call("draw_box", [center, Quaternion.IDENTITY, Vector3(chunk_size, 0.4, chunk_size), Color(0.28, 0.72, 0.88, 0.08)])
 	var extraction_site := _get_nearest_extraction_site(true)
 	if not extraction_site.is_empty():
 		var extraction_position: Vector3 = extraction_site.get("position", Vector3.ZERO)
 		var extraction_radius := float(extraction_site.get("radius", NetworkRuntime.EXTRACTION_RADIUS))
-		DebugDraw3D.draw_line(boat_position, extraction_position, EXTRACTION_READY_COLOR, 0.05)
-		DebugDraw3D.draw_sphere(extraction_position, extraction_radius, EXTRACTION_IDLE_COLOR, 0.05)
-	DebugDraw3D.draw_line(camera.global_position if camera != null else boat_position + Vector3.UP * 4.0, boat_position, Color(0.97, 0.83, 0.31), 0.05)
+		_debug_draw_call("draw_line", [boat_position, extraction_position, EXTRACTION_READY_COLOR, 0.05])
+		_debug_draw_call("draw_sphere", [extraction_position, extraction_radius, EXTRACTION_IDLE_COLOR, 0.05])
+	_debug_draw_call("draw_line", [camera.global_position if camera != null else boat_position + Vector3.UP * 4.0, boat_position, Color(0.97, 0.83, 0.31), 0.05])
+
+
+func _debug_draw_call(method: StringName, args: Array) -> void:
+	if not Engine.has_singleton("DebugDrawManager"):
+		return
+	var debug_draw_manager := Engine.get_singleton("DebugDrawManager")
+	if debug_draw_manager == null or not debug_draw_manager.has_method(method):
+		return
+	debug_draw_manager.callv(method, args)
 
 func _update_boat_material() -> void:
 	if hull_material == null:

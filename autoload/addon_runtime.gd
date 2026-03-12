@@ -72,7 +72,9 @@ func set_spatial_audio_effects_enabled(enabled: bool) -> void:
 
 
 func _apply_spatial_audio_effects() -> void:
-	SpatialAudioPlayer3D.set_global_effects_disabled(not spatial_audio_effects_enabled)
+	var spatial_audio_script := load("res://addons/spatial_audio_extended/spatial_audio_player_3d.gd")
+	if spatial_audio_script != null and spatial_audio_script.has_method("set_global_effects_disabled"):
+		spatial_audio_script.set_global_effects_disabled(not spatial_audio_effects_enabled)
 
 
 func describe_runtime_status() -> String:

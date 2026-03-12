@@ -2560,12 +2560,21 @@ func _draw_debug_draw_overlay() -> void:
 	if local_avatar_body == null or camera == null:
 		return
 	var build_range := NetworkRuntime.get_hangar_build_range()
-	DebugDraw3D.draw_sphere(local_avatar_body.global_position, build_range, Color(0.24, 0.82, 0.69, 0.12), 0.05)
-	DebugDraw3D.draw_line(local_avatar_body.global_position, _get_blueprint_focus_point(), Color(0.96, 0.80, 0.34), 0.05)
+	_debug_draw_call("draw_sphere", [local_avatar_body.global_position, build_range, Color(0.24, 0.82, 0.69, 0.12), 0.05])
+	_debug_draw_call("draw_line", [local_avatar_body.global_position, _get_blueprint_focus_point(), Color(0.96, 0.80, 0.34), 0.05])
 	if cursor_has_target:
 		var cursor_color := CURSOR_OK_COLOR if cursor_can_place else CURSOR_BLOCKED_COLOR
-		DebugDraw3D.draw_box(cursor_root.global_position, Quaternion.IDENTITY, Vector3.ONE * BLOCK_CELL_SIZE * 1.02, cursor_color)
-		DebugDraw3D.draw_line(camera.global_position, cursor_root.global_position, cursor_color, 0.05)
+		_debug_draw_call("draw_box", [cursor_root.global_position, Quaternion.IDENTITY, Vector3.ONE * BLOCK_CELL_SIZE * 1.02, cursor_color])
+		_debug_draw_call("draw_line", [camera.global_position, cursor_root.global_position, cursor_color, 0.05])
+
+
+func _debug_draw_call(method: StringName, args: Array) -> void:
+	if not Engine.has_singleton("DebugDrawManager"):
+		return
+	var debug_draw_manager := Engine.get_singleton("DebugDrawManager")
+	if debug_draw_manager == null or not debug_draw_manager.has_method(method):
+		return
+	debug_draw_manager.callv(method, args)
 
 func _get_blueprint_focus_point() -> Vector3:
 	var focus_blocks := _get_focus_block_ids()
