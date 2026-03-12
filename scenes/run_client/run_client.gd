@@ -1970,6 +1970,21 @@ func _build_recovery_visuals() -> void:
 		recovery_visuals[str(target.get("id", ""))] = {
 			"root": target_node,
 		}
+	var direct_reboard_node := RUN_RECOVERY_MARKER_SCENE.instantiate() as Node3D
+	if direct_reboard_node == null:
+		direct_reboard_node = Node3D.new()
+	direct_reboard_node.name = "HullEdgeMarker"
+	recovery_container.add_child(direct_reboard_node)
+	if direct_reboard_node.has_method("set_marker_text"):
+		direct_reboard_node.call("set_marker_text", "Hull Edge")
+	if direct_reboard_node.has_method("set_marker_color"):
+		direct_reboard_node.call("set_marker_color", HUD_TEXT_SUCCESS)
+	if direct_reboard_node.has_method("set_label_visible"):
+		direct_reboard_node.call("set_label_visible", false)
+	direct_reboard_node.visible = false
+	recovery_visuals["__direct_hull__"] = {
+		"root": direct_reboard_node,
+	}
 
 func _build_wreck_visual() -> void:
 	var ring_mesh_instance := MeshInstance3D.new()
@@ -3186,6 +3201,7 @@ func _refresh_recovery_visuals() -> void:
 		return
 	var local_overboard := _is_local_off_deck()
 	var active_target := _get_local_recovery_target()
+	var direct_reboard_target := _get_local_direct_reboard_target()
 	var local_world_position := _get_local_avatar_world_position()
 	for target_variant in NetworkRuntime.get_run_recovery_points():
 		var target: Dictionary = target_variant
@@ -3209,6 +3225,23 @@ func _refresh_recovery_visuals() -> void:
 			recovery_root.call("set_marker_color", recovery_color)
 		if recovery_root.has_method("set_label_visible"):
 			recovery_root.call("set_label_visible", show_label)
+	var direct_visual: Dictionary = recovery_visuals.get("__direct_hull__", {})
+	var direct_root := direct_visual.get("root") as Node3D
+	if direct_root != null:
+		if direct_reboard_target.is_empty() or not local_overboard:
+			direct_root.visible = false
+			if direct_root.has_method("set_label_visible"):
+				direct_root.call("set_label_visible", false)
+		else:
+			var direct_world_position: Vector3 = direct_reboard_target.get("world_position", local_world_position)
+			direct_root.visible = true
+			direct_root.position = boat_root.to_local(direct_world_position)
+			if direct_root.has_method("set_marker_text"):
+				direct_root.call("set_marker_text", "Hull Edge\nSpace / F Climb")
+			if direct_root.has_method("set_marker_color"):
+				direct_root.call("set_marker_color", HUD_TEXT_SUCCESS)
+			if direct_root.has_method("set_label_visible"):
+				direct_root.call("set_label_visible", true)
 
 func _refresh_crew_visuals() -> void:
 	if crew_container == null or not is_instance_valid(crew_container) or not crew_container.is_inside_tree():
