@@ -1704,6 +1704,16 @@ func _get_local_surface_tread_tilt(target_yaw: float) -> Vector2:
 	var roll := clampf(local_planar_velocity.x * 0.075, -RUN_SURFACE_TREAD_LEAN_MAX, RUN_SURFACE_TREAD_LEAN_MAX) * (0.35 + speed_ratio * 0.65)
 	return Vector2(pitch, roll)
 
+func _get_local_surface_camera_roll(target_yaw: float) -> float:
+	if not _is_local_surface_tread():
+		return 0.0
+	var local_planar_velocity := Basis(Vector3.UP, -target_yaw) * Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z)
+	var planar_speed := Vector2(local_planar_velocity.x, local_planar_velocity.z).length()
+	var speed_ratio := clampf(planar_speed / (RUN_SWIM_MOVE_SPEED * RUN_SWIM_BURST_MULTIPLIER), 0.0, 1.0)
+	var drift_roll := clampf(local_planar_velocity.x * -0.045, -0.09, 0.09) * (0.4 + speed_ratio * 0.6)
+	var bob_roll := sin(connect_time_seconds * RUN_SURFACE_TREAD_BOB_SPEED + 1.1) * 0.016
+	return drift_roll + bob_roll
+
 func _get_local_avatar_world_position() -> Vector3:
 	if local_run_avatar_controller != null and (_is_local_off_deck() or local_overboard_transition_pending):
 		return local_run_avatar_controller.global_position
@@ -4913,9 +4923,11 @@ func _update_camera(delta: float) -> void:
 	var look_target := pivot + forward * (run_camera_look_ahead + speed_ratio * 0.8) + Vector3.UP * off_deck_bob + local_camera_jolt * 0.42
 	var camera_lag := lerpf(run_camera_lag * 0.5, run_camera_lag * 0.82, off_deck_blend) if off_deck else run_camera_lag
 	var blend := minf(1.0, delta * camera_lag)
+	var camera_roll := _get_local_surface_camera_roll(global_yaw) if _is_local_overboard() else 0.0
+	var up_vector := Vector3.UP.rotated(forward, camera_roll)
 	camera.position = camera.position.lerp(desired_position, blend)
 	camera.fov = lerpf(camera.fov, 69.0 + speed_ratio * 7.0 + (1.3 if off_deck else 0.0), blend)
-	camera.look_at(look_target, Vector3.UP)
+	camera.look_at(look_target, up_vector)
 
 func _update_boat_material() -> void:
 	if hull_material == null:
