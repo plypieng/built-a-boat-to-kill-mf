@@ -8,6 +8,11 @@ const ExpeditionHudSkin = preload("res://scenes/shared/expedition_hud_skin.gd")
 const BoatBlockMaterials = preload("res://scenes/shared/boat_block_materials.gd")
 const HANGAR_PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/hangar_player_controller.tscn")
 const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
+const PHANTOM_CAMERA_HOST_SCRIPT := preload("res://addons/phantom_camera/scripts/phantom_camera_host/phantom_camera_host.gd")
+const PHANTOM_CAMERA_3D_SCRIPT := preload("res://addons/phantom_camera/scripts/phantom_camera/phantom_camera_3d.gd")
+const ACOUSTIC_BODY_SCRIPT := preload("res://addons/spatial_audio_extended/acoustic_body.gd")
+const WOOD_ACOUSTIC_MATERIAL := preload("res://addons/spatial_audio_extended/presets/materials/wood.tres")
+const CONCRETE_ACOUSTIC_MATERIAL := preload("res://addons/spatial_audio_extended/presets/materials/concrete.tres")
 const BLOCK_CELL_SIZE := 1.25
 const CURSOR_OK_COLOR := Color(0.34, 0.82, 0.58, 0.55)
 const CURSOR_OCCUPIED_COLOR := Color(0.92, 0.57, 0.22, 0.58)
@@ -116,6 +121,10 @@ var cursor_face_marker: MeshInstance3D
 var cursor_label: Label3D
 var block_visuals: Dictionary = {}
 var camera: Camera3D
+var phantom_runtime_camera: Camera3D
+var phantom_camera_host: Node
+var phantom_follow_camera: Node3D
+var phantom_overview_camera: Node3D
 var local_avatar_body: CharacterBody3D
 var remote_avatar_visuals: Dictionary = {}
 var local_avatar_facing_y := PI
@@ -220,6 +229,7 @@ func _process(delta: float) -> void:
 	_update_camera(delta)
 	_update_remote_avatar_visuals(delta)
 	_update_build_target_from_camera()
+	_draw_debug_draw_overlay()
 	_process_drag_building(delta)
 	_process_autobuild(delta)
 
@@ -383,6 +393,8 @@ func _build_world() -> void:
 	camera.current = true
 	camera.make_current()
 	camera.look_at(Vector3(0.0, 1.4, 0.0), Vector3.UP)
+	_ensure_acoustic_body(dock_body, CONCRETE_ACOUSTIC_MATERIAL)
+	_ensure_phantom_camera_rig()
 
 func _supports_mouse_capture() -> bool:
 	return DisplayServer.get_name() != "headless"
@@ -1004,6 +1016,7 @@ func _refresh_blueprint_visuals() -> void:
 		box_shape.size = Vector3.ONE * BLOCK_CELL_SIZE
 		collision_shape.shape = box_shape
 		static_body.add_child(collision_shape)
+		_ensure_acoustic_body(static_body, WOOD_ACOUSTIC_MATERIAL)
 		block_node.add_child(static_body)
 
 		block_visuals[int(block.get("id", 0))] = block_node
@@ -2447,9 +2460,6 @@ func _update_camera(delta: float) -> void:
 		return
 	if local_avatar_body == null:
 		return
-	if not camera.current:
-		camera.current = true
-		camera.make_current()
 	var avatar_position := local_avatar_body.global_position
 	var pivot := avatar_position + Vector3(0.0, chase_camera_look_height, 0.0)
 	var yaw_basis := Basis(Vector3.UP, local_avatar_facing_y)
@@ -2462,8 +2472,100 @@ func _update_camera(delta: float) -> void:
 	desired_position += local_camera_jolt
 	var look_target := pivot + forward * chase_camera_look_ahead
 	look_target += local_camera_jolt * 0.35
+	if AddonRuntime.runtime_camera_mode != AddonRuntime.CAMERA_MODE_LEGACY:
+		_update_phantom_camera_state(desired_position, look_target, Vector3.UP)
+		return
+	if phantom_runtime_camera != null:
+		phantom_runtime_camera.current = false
+	if not camera.current:
+		camera.current = true
+		camera.make_current()
 	camera.position = camera.position.lerp(desired_position, minf(1.0, delta * chase_camera_lag))
 	camera.look_at(look_target, Vector3.UP)
+
+
+func _ensure_phantom_camera_rig() -> void:
+	phantom_runtime_camera = get_node_or_null("AddonPhantomCamera") as Camera3D
+	if phantom_runtime_camera == null:
+		phantom_runtime_camera = Camera3D.new()
+		phantom_runtime_camera.name = "AddonPhantomCamera"
+		add_child(phantom_runtime_camera)
+	phantom_camera_host = phantom_runtime_camera.get_node_or_null("PhantomCameraHost")
+	if phantom_camera_host == null:
+		phantom_camera_host = Node.new()
+		phantom_camera_host.name = "PhantomCameraHost"
+		phantom_camera_host.set_script(PHANTOM_CAMERA_HOST_SCRIPT)
+		phantom_runtime_camera.add_child(phantom_camera_host)
+	phantom_follow_camera = get_node_or_null("AddonFollowPhantomCamera") as Node3D
+	if phantom_follow_camera == null:
+		phantom_follow_camera = Node3D.new()
+		phantom_follow_camera.name = "AddonFollowPhantomCamera"
+		phantom_follow_camera.top_level = true
+		phantom_follow_camera.set_script(PHANTOM_CAMERA_3D_SCRIPT)
+		add_child(phantom_follow_camera)
+	phantom_follow_camera.set("follow_mode", 0)
+	phantom_follow_camera.set("host_layers", 1)
+	phantom_overview_camera = get_node_or_null("AddonOverviewPhantomCamera") as Node3D
+	if phantom_overview_camera == null:
+		phantom_overview_camera = Node3D.new()
+		phantom_overview_camera.name = "AddonOverviewPhantomCamera"
+		phantom_overview_camera.top_level = true
+		phantom_overview_camera.set_script(PHANTOM_CAMERA_3D_SCRIPT)
+		add_child(phantom_overview_camera)
+	phantom_overview_camera.set("follow_mode", 0)
+	phantom_overview_camera.set("host_layers", 1)
+
+
+func _update_phantom_camera_state(desired_position: Vector3, look_target: Vector3, up_vector: Vector3) -> void:
+	_ensure_phantom_camera_rig()
+	if phantom_runtime_camera == null or phantom_follow_camera == null or phantom_overview_camera == null:
+		return
+	var focus_point := _get_blueprint_focus_point() + Vector3(0.0, 1.2, 0.0)
+	var focus_span := maxf(4.0, _get_blueprint_focus_span())
+	var overview_position := focus_point + Vector3(focus_span * 0.72, maxf(5.8, focus_span * 0.80), focus_span * 1.18)
+	phantom_follow_camera.global_transform = _make_look_transform(desired_position, look_target, up_vector)
+	phantom_overview_camera.global_transform = _make_look_transform(overview_position, focus_point, Vector3.UP)
+	if AddonRuntime.runtime_camera_mode == AddonRuntime.CAMERA_MODE_OVERVIEW:
+		phantom_follow_camera.set("priority", 5)
+		phantom_overview_camera.set("priority", 25)
+		phantom_runtime_camera.fov = 56.0
+	else:
+		phantom_follow_camera.set("priority", 25)
+		phantom_overview_camera.set("priority", 5)
+		phantom_runtime_camera.fov = 68.0
+	camera.current = false
+	if not phantom_runtime_camera.current:
+		phantom_runtime_camera.current = true
+		phantom_runtime_camera.make_current()
+
+
+func _make_look_transform(origin: Vector3, target: Vector3, up_vector: Vector3) -> Transform3D:
+	return Transform3D(Basis.IDENTITY, origin).looking_at(target, up_vector)
+
+
+func _ensure_acoustic_body(parent: Node, acoustic_material: Resource) -> void:
+	if parent == null or acoustic_material == null:
+		return
+	var acoustic_body := parent.get_node_or_null("AcousticBody")
+	if acoustic_body == null:
+		acoustic_body = ACOUSTIC_BODY_SCRIPT.new()
+		acoustic_body.name = "AcousticBody"
+		parent.add_child(acoustic_body)
+	acoustic_body.set("acoustic_material", acoustic_material)
+
+
+func _draw_debug_draw_overlay() -> void:
+	if not AddonRuntime.debug_draw_enabled:
+		return
+	if local_avatar_body == null or camera == null:
+		return
+	var build_range := NetworkRuntime.get_hangar_build_range()
+	DebugDraw3D.draw_sphere(local_avatar_body.global_position, build_range, Color(0.24, 0.82, 0.69, 0.12), 0.05)
+	DebugDraw3D.draw_line(local_avatar_body.global_position, _get_blueprint_focus_point(), Color(0.96, 0.80, 0.34), 0.05)
+	if cursor_has_target:
+		var cursor_color := CURSOR_OK_COLOR if cursor_can_place else CURSOR_BLOCKED_COLOR
+		DebugDraw3D.draw_box(cursor_root.global_position, Quaternion.IDENTITY, Vector3.ONE * BLOCK_CELL_SIZE * 1.02, cursor_color)
+		DebugDraw3D.draw_line(camera.global_position, cursor_root.global_position, cursor_color, 0.05)
 
 func _get_blueprint_focus_point() -> Vector3:
 	var focus_blocks := _get_focus_block_ids()
