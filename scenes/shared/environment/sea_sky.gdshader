@@ -53,10 +53,18 @@ void sky() {
 
 	float azimuth = atan(dir.x, dir.z);
 	float latitude = acos(clamp(dir.y, -1.0, 1.0));
-	vec2 cloud_uv = vec2(azimuth * 0.55, latitude * 2.4);
-	float cloud_noise = fbm(cloud_uv * vec2(2.4, 3.8) + vec2(0.0, TIME * 0.004));
-	float cloud_mask = smoothstep(0.36, 0.74, cloud_noise) * horizon;
-	base = mix(base, mix(base, sky_horizon_color, 0.35), cloud_mask * cloud_band_strength);
+	vec2 cloud_uv = vec2(azimuth * 0.62, latitude * 2.1);
+	float cloud_macro = fbm(cloud_uv * vec2(1.35, 2.2) + vec2(TIME * 0.002, TIME * 0.0015));
+	float cloud_detail = fbm(cloud_uv * vec2(4.6, 7.2) - vec2(TIME * 0.004, TIME * 0.0025));
+	float cloud_shape = cloud_macro * 0.72 + cloud_detail * 0.28;
+	float cloud_band = smoothstep(-0.08, 0.22, dir.y) * (1.0 - smoothstep(0.62, 0.96, dir.y));
+	float cloud_mask = smoothstep(0.42 - cloud_band_strength * 0.10, 0.66 - cloud_band_strength * 0.12, cloud_shape) * cloud_band;
+	float cloud_rim = smoothstep(0.58, 0.86, cloud_shape) * cloud_band;
+	vec3 cloud_shadow = mix(sky_top_color, ground_horizon_color, 0.46);
+	vec3 cloud_light = mix(sky_horizon_color, sun_aura_color, 0.18);
+	base = mix(base, cloud_shadow, cloud_mask * cloud_band_strength * 0.95);
+	base = mix(base, cloud_light, cloud_rim * cloud_band_strength * 0.42);
+	base = mix(base, sky_horizon_color, horizon * cloud_band_strength * 0.08);
 
 	float sun_dot = clamp(dot(dir, sun_dir), 0.0, 1.0);
 	float disc = smoothstep(cos(sun_disc_size), cos(sun_disc_size * 0.52), sun_dot);
