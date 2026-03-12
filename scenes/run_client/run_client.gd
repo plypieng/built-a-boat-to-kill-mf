@@ -3494,7 +3494,8 @@ func _make_runtime_block_visual(block: Dictionary, detached_visual: bool) -> Nod
 	var mesh_instance := MeshInstance3D.new()
 	mesh_instance.name = "Body"
 	var mesh := BoxMesh.new()
-	mesh.size = Vector3.ONE * NetworkRuntime.RUNTIME_BLOCK_SPACING
+	var block_size: Vector3 = block.get("size", Vector3.ONE * NetworkRuntime.RUNTIME_BLOCK_SPACING)
+	mesh.size = block_size
 	mesh_instance.mesh = mesh
 	block_node.add_child(mesh_instance)
 
@@ -3506,7 +3507,7 @@ func _make_runtime_block_visual(block: Dictionary, detached_visual: bool) -> Nod
 		var collision_shape := CollisionShape3D.new()
 		collision_shape.name = "CollisionShape3D"
 		var box_shape := BoxShape3D.new()
-		box_shape.size = Vector3.ONE * NetworkRuntime.RUNTIME_BLOCK_SPACING
+		box_shape.size = block_size
 		collision_shape.shape = box_shape
 		collision_body.add_child(collision_shape)
 		_ensure_acoustic_body(collision_body, WOOD_ACOUSTIC_MATERIAL)
@@ -3514,9 +3515,9 @@ func _make_runtime_block_visual(block: Dictionary, detached_visual: bool) -> Nod
 	var facing_marker := MeshInstance3D.new()
 	facing_marker.name = "Marker"
 	var marker_mesh := BoxMesh.new()
-	marker_mesh.size = Vector3(0.22, 0.14, 0.26) * NetworkRuntime.RUNTIME_BLOCK_SPACING
+	marker_mesh.size = Vector3(0.22, 0.14, 0.26) * minf(block_size.x, minf(block_size.y, block_size.z))
 	facing_marker.mesh = marker_mesh
-	facing_marker.position = Vector3(0.0, 0.0, -0.36 * NetworkRuntime.RUNTIME_BLOCK_SPACING)
+	facing_marker.position = Vector3(0.0, 0.0, -block_size.z * 0.36)
 	block_node.add_child(facing_marker)
 	_apply_runtime_block_visual_style(
 		block_node,

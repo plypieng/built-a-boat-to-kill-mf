@@ -4839,6 +4839,7 @@ func _get_runtime_block_navigation_data(block_state: Dictionary) -> Dictionary:
 	var block_id := int(block_state.get("id", 0))
 	var blueprint_block := _get_blueprint_block_by_id(block_id)
 	var block_type := str(block_state.get("type", blueprint_block.get("type", "structure")))
+	var block_def := get_builder_block_definition(block_type)
 	var rotation_steps := wrapi(int(block_state.get("rotation_steps", blueprint_block.get("rotation_steps", 0))), 0, 4)
 	var local_position: Vector3 = block_state.get("local_position", Vector3.ZERO)
 	if not block_state.has("local_position"):
@@ -4848,7 +4849,7 @@ func _get_runtime_block_navigation_data(block_state: Dictionary) -> Dictionary:
 		int(round(local_position.y / maxf(0.001, RUNTIME_BLOCK_SPACING))),
 		int(round(local_position.z / maxf(0.001, RUNTIME_BLOCK_SPACING))),
 	]))
-	var block_size := Vector3.ONE * RUNTIME_BLOCK_SPACING
+	var block_size: Vector3 = block_state.get("size", block_def.get("size", Vector3.ONE * RUNTIME_BLOCK_SPACING))
 	return {
 		"id": block_id,
 		"type": block_type,
