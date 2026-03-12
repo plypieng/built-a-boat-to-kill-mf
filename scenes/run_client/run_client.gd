@@ -58,6 +58,7 @@ const RUN_AVATAR_EDGE_EXIT_GRACE_DISTANCE := 0.42
 const RUN_WATER_ENTRY_RELAND_HORIZONTAL_GRACE := 0.34
 const RUN_WATER_ENTRY_RELAND_VERTICAL_GRACE := 0.52
 const RUN_WATER_ENTRY_GRAVITY := 20.0
+const RUN_REBOARD_SETTLE_DURATION := 0.32
 const RUN_WATER_ENTRY_MAX_DURATION := 1.35
 const RUN_WATER_ENTRY_SURFACE_BLEND_HEIGHT := 0.9
 const RUN_OFF_DECK_BLEND_DURATION := 1.05
@@ -254,6 +255,7 @@ var local_off_deck_entry_elapsed := RUN_OFF_DECK_BLEND_DURATION
 var local_surface_tread_active := false
 var local_surface_tread_elapsed := 0.0
 var local_surface_contact_feedback_timer := 0.0
+var local_reboard_settle_timer := 0.0
 var boat_visual_velocity := Vector3.ZERO
 var selected_run_tool_index := 0
 var inventory_panel_visible := false
@@ -317,6 +319,7 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	connect_time_seconds += delta
 	local_surface_contact_feedback_timer = maxf(0.0, local_surface_contact_feedback_timer - delta)
+	local_reboard_settle_timer = maxf(0.0, local_reboard_settle_timer - delta)
 	_tick_reaction_visuals(delta)
 	_update_sea_presentation(delta)
 	_update_sea_audio()
@@ -1642,13 +1645,14 @@ func _update_local_run_avatar_controller(delta: float) -> void:
 	else:
 		_set_local_run_avatar_collision_enabled(true)
 		var target_position := local_run_avatar_position
+		var reboard_settle_blend := _get_local_reboard_settle_blend()
 		if not station_id.is_empty() and _station_anchors_avatar(station_id):
 			target_position = _get_local_run_avatar_target()
 			local_run_avatar_controller.position = target_position
 		local_run_avatar_controller.top_level = false
 		local_run_avatar_controller.scale = local_run_avatar_controller.scale.lerp(Vector3.ONE, minf(1.0, delta * 8.0))
 		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
-		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, 0.0, minf(1.0, delta * 12.0))
+		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, 0.16 * reboard_settle_blend, minf(1.0, delta * 12.0))
 		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, 0.0, minf(1.0, delta * 12.0))
 	local_run_avatar_controller.velocity = local_run_avatar_velocity
 
@@ -1678,6 +1682,9 @@ func _is_local_downed() -> bool:
 
 func _get_local_off_deck_blend() -> float:
 	return clampf(local_off_deck_entry_elapsed / RUN_OFF_DECK_BLEND_DURATION, 0.0, 1.0)
+
+func _get_local_reboard_settle_blend() -> float:
+	return clampf(local_reboard_settle_timer / RUN_REBOARD_SETTLE_DURATION, 0.0, 1.0)
 
 func _is_local_surface_tread() -> bool:
 	return local_surface_tread_active and _is_local_overboard()
@@ -4948,14 +4955,16 @@ func _update_camera(delta: float) -> void:
 	var right := (yaw_basis * Vector3.RIGHT).normalized()
 	var off_deck := _is_local_off_deck()
 	var off_deck_blend := _get_local_off_deck_blend() if off_deck else 1.0
+	var reboard_settle_blend := _get_local_reboard_settle_blend()
 	var off_deck_distance_bonus := lerpf(0.85, 0.32, off_deck_blend) if off_deck else 0.0
 	var desired_position := pivot - forward * (run_camera_distance + speed_ratio * 1.4 + off_deck_distance_bonus)
 	desired_position += right * run_camera_side_offset
 	var off_deck_camera_drop := lerpf(0.18, 0.44, off_deck_blend) if off_deck else 0.0
 	var off_deck_bob := sin(connect_time_seconds * 2.5 + float(_get_local_peer_id())) * 0.05 if off_deck else 0.0
 	desired_position += Vector3.UP * (run_camera_height - off_deck_camera_drop + off_deck_bob * 0.4)
+	desired_position += Vector3.UP * (0.12 * reboard_settle_blend)
 	desired_position += local_camera_jolt
-	var look_target := pivot + forward * (run_camera_look_ahead + speed_ratio * 0.8) + Vector3.UP * off_deck_bob + local_camera_jolt * 0.42
+	var look_target := pivot + forward * (run_camera_look_ahead + speed_ratio * 0.8) + Vector3.UP * (off_deck_bob + reboard_settle_blend * 0.08) + local_camera_jolt * 0.42
 	var camera_lag := lerpf(run_camera_lag * 0.5, run_camera_lag * 0.82, off_deck_blend) if off_deck else run_camera_lag
 	var blend := minf(1.0, delta * camera_lag)
 	var camera_roll := _get_local_surface_camera_roll(global_yaw) if _is_local_overboard() else 0.0
@@ -5182,6 +5191,8 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 				local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION
 				local_surface_tread_active = false
 				local_surface_tread_elapsed = 0.0
+				local_reboard_settle_timer = RUN_REBOARD_SETTLE_DURATION
+				local_camera_jolt += Vector3(0.0, 0.05, -0.08)
 			else:
 				local_avatar_facing_y = synced_facing
 		else:
