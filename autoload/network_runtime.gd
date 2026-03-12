@@ -1024,6 +1024,7 @@ const RUN_OVERBOARD_TRANSITION_VALIDATE_EDGE_MARGIN := 0.10
 const RUN_OVERBOARD_TRANSITION_SURFACE_HEIGHT_BUFFER := 0.18
 const RUN_OVERBOARD_TRANSITION_WATER_BUFFER := 0.32
 const RUN_OVERBOARD_EDGE_MARGIN := 0.24
+const RUN_BOAT_VISUAL_BASE_HEIGHT := 0.36
 const RUN_OVERBOARD_MIN_STRENGTH := 0.54
 const AVATAR_MAX_HEALTH := 100.0
 const AVATAR_MAX_STAMINA := 100.0
@@ -4786,15 +4787,29 @@ func _clear_climb_state_fields(avatar_state: Dictionary) -> void:
 	avatar_state["climb_attach_world_position"] = avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO))
 	avatar_state["climb_normal"] = Vector3.ZERO
 
-func _run_local_to_world(local_position: Vector3) -> Vector3:
-	var rotation_y: float = float(boat_state.get("rotation_y", 0.0))
+
+func _get_runtime_boat_visual_position() -> Vector3:
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
-	return boat_position + local_position.rotated(Vector3.UP, rotation_y)
+	var draft_ratio := float(boat_state.get("draft_ratio", 0.72))
+	var ride_height_offset := -clampf((draft_ratio - 0.72) * 0.85, -0.04, 0.34)
+	var surface_offset := float(boat_state.get("water_surface_offset", 0.0))
+	var buoyancy_heave := float(boat_state.get("buoyancy_heave", 0.0))
+	return boat_position + Vector3(0.0, RUN_BOAT_VISUAL_BASE_HEIGHT + ride_height_offset + surface_offset + buoyancy_heave, 0.0)
+
+
+func _get_runtime_boat_visual_basis() -> Basis:
+	return Basis.from_euler(Vector3(
+		float(boat_state.get("buoyancy_pitch", 0.0)),
+		float(boat_state.get("rotation_y", 0.0)),
+		float(boat_state.get("buoyancy_roll", 0.0))
+	)).orthonormalized()
+
+func _run_local_to_world(local_position: Vector3) -> Vector3:
+	return _get_runtime_boat_visual_position() + (_get_runtime_boat_visual_basis() * local_position)
 
 func _run_world_to_local(world_position: Vector3) -> Vector3:
-	var rotation_y: float = float(boat_state.get("rotation_y", 0.0))
-	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
-	return (world_position - boat_position).rotated(Vector3.UP, -rotation_y)
+	var boat_basis := _get_runtime_boat_visual_basis()
+	return boat_basis.inverse() * (world_position - _get_runtime_boat_visual_position())
 
 func _get_blueprint_block_by_id(block_id: int) -> Dictionary:
 	for block_variant in Array(boat_blueprint.get("blocks", [])):
