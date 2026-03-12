@@ -20,6 +20,28 @@ boot_splash/show_image=false
 GameConfig="*res://autoload/game_config.gd"
 DockState="*res://autoload/dock_state.gd"
 NetworkRuntime="*res://autoload/network_runtime.gd"
+DevConsole="*res://addons/dev-console/dev-console.tscn"
+PhantomCameraManager="*res://addons/phantom_camera/scripts/managers/phantom_camera_manager.gd"
+AddonRuntime="*res://autoload/addon_runtime.gd"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg", "res://addons/shader_library/plugin.cfg", "res://addons/spatial_audio_extended/plugin.cfg", "res://addons/terrain_3d/plugin.cfg")
+
+[debug_draw_3d]
+
+settings/addon_root_folder="res://addons/debug_draw_3d"
+
+[dev_console]
+
+console_title_label="BuiltaBoat Console"
+console_use_default_commands=true
+console_use_command_history=true
+console_background_transparency=0.88
+
+[phantom_camera]
+
+tips/show_jitter_tips=false
 
 [display]
 
