@@ -253,6 +253,7 @@ var local_overboard_transition_pending := false
 var local_off_deck_entry_elapsed := RUN_OFF_DECK_BLEND_DURATION
 var local_surface_tread_active := false
 var local_surface_tread_elapsed := 0.0
+var local_surface_contact_feedback_timer := 0.0
 var boat_visual_velocity := Vector3.ZERO
 var selected_run_tool_index := 0
 var inventory_panel_visible := false
@@ -315,6 +316,7 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	connect_time_seconds += delta
+	local_surface_contact_feedback_timer = maxf(0.0, local_surface_contact_feedback_timer - delta)
 	_tick_reaction_visuals(delta)
 	_update_sea_presentation(delta)
 	_update_sea_audio()
@@ -1192,6 +1194,16 @@ func _spawn_splash_burst(world_position: Vector3, strength: float, ring_color: C
 		"duration": 0.9 + strength * 0.25,
 		"base_scale": 1.2 + strength * 2.0,
 	})
+
+func _emit_local_surface_contact_feedback(world_position: Vector3, strength: float = 1.0) -> void:
+	local_surface_contact_feedback_timer = 0.35
+	local_camera_jolt += Vector3(0.0, 0.06, -0.12) * clampf(strength, 0.6, 1.2)
+	_spawn_splash_burst(
+		world_position,
+		strength,
+		Color(0.92, 0.96, 1.0),
+		Color(0.54, 0.76, 0.86)
+	)
 
 func _update_splash_bursts(delta: float) -> void:
 	if splash_visuals.is_empty():
@@ -3778,6 +3790,7 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 			local_overboard_transition_pending = true
 			_set_local_run_avatar_collision_enabled(false)
 			local_run_avatar_velocity.y = 0.0
+			_emit_local_surface_contact_feedback(local_run_avatar_world_position, 1.05)
 			NetworkRuntime.request_local_overboard_transition(
 				local_run_avatar_world_position,
 				local_run_avatar_velocity,
@@ -5148,7 +5161,8 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 	var local_overboard := _is_local_off_deck()
 	if local_overboard and not last_local_overboard:
 		_push_event_callout("Overboard!", HUD_TEXT_DANGER, 2.4)
-		_spawn_splash_burst(_get_local_avatar_world_position(), 1.15, Color(0.92, 0.96, 1.0), Color(0.54, 0.76, 0.86))
+		if local_surface_contact_feedback_timer <= 0.0:
+			_spawn_splash_burst(_get_local_avatar_world_position(), 1.15, Color(0.92, 0.96, 1.0), Color(0.54, 0.76, 0.86))
 	elif not local_overboard and last_local_overboard:
 		_push_event_callout("Back On Deck", HUD_TEXT_SUCCESS, 2.1)
 		_spawn_splash_burst(_get_local_avatar_world_position(), 0.72, Color(0.80, 0.92, 0.98), Color(0.44, 0.68, 0.78))
