@@ -762,6 +762,37 @@ func _ensure_sea_fx() -> void:
 	wake_mist_particles = _ensure_sea_spray_particles("WakeMistParticles", Vector3(0.0, 0.02, 3.0), Vector3(0.0, 0.58, 0.88), Color(0.76, 0.88, 0.94, 0.56), 88, 1.30)
 	_ensure_wake_trail_renderer()
 
+
+func _ensure_wake_trail_renderer() -> void:
+	if wake_root == null:
+		return
+	wake_trail_renderer = wake_root.get_node_or_null("WakeTrailRenderer") as Node3D
+	if wake_trail_renderer != null:
+		return
+	wake_trail_renderer = TRAIL_RENDERER_SCRIPT.new()
+	wake_trail_renderer.name = "WakeTrailRenderer"
+	wake_trail_renderer.set("world_space", false)
+	wake_trail_renderer.set("alignment", 1)
+	wake_trail_renderer.set("texture_mode", 1)
+	wake_trail_renderer.set("lifetime", 1.6)
+	wake_trail_renderer.set("min_vertex_distance", 0.24)
+	var wake_curve := Curve.new()
+	wake_curve.add_point(Vector2(0.0, 0.34), 0.0, 0.0)
+	wake_curve.add_point(Vector2(0.42, 0.28), 0.0, 0.0)
+	wake_curve.add_point(Vector2(1.0, 0.04), 0.0, 0.0)
+	wake_trail_renderer.set("curve", wake_curve)
+	var wake_gradient := Gradient.new()
+	wake_gradient.add_point(0.0, Color(0.86, 0.95, 1.0, 0.42))
+	wake_gradient.add_point(1.0, Color(0.70, 0.82, 0.90, 0.0))
+	wake_trail_renderer.set("color_gradient", wake_gradient)
+	var wake_material := StandardMaterial3D.new()
+	wake_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	wake_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	wake_material.vertex_color_use_as_albedo = true
+	wake_material.disable_receive_shadows = true
+	wake_trail_renderer.set("material", wake_material)
+	wake_root.add_child(wake_trail_renderer)
+
 func _configure_open_sea_water_material(material: ShaderMaterial) -> void:
 	if material == null:
 		return
@@ -1674,6 +1705,8 @@ func _build_local_run_avatar_controller() -> void:
 		boat_root.add_child(local_run_avatar_controller)
 	local_run_avatar_controller.motion_mode = CharacterBody3D.MOTION_MODE_GROUNDED
 	local_run_avatar_controller.floor_snap_length = RUN_AVATAR_FLOOR_SNAP_LENGTH
+	local_run_avatar_controller.platform_floor_layers = RUN_BLOCK_COLLISION_LAYER
+	local_run_avatar_controller.platform_wall_layers = 0
 	local_run_avatar_controller.safe_margin = 0.02
 	if local_run_avatar_controller.has_method("set_tool_visible"):
 		local_run_avatar_controller.call("set_tool_visible", false)
@@ -1702,10 +1735,11 @@ func _sync_local_run_avatar_controller_from_state(force_snap: bool = false) -> v
 		if force_snap or local_run_avatar_controller.global_position.distance_to(local_run_avatar_world_position) > 0.4:
 			local_run_avatar_controller.global_position = local_run_avatar_world_position
 	else:
-		local_run_avatar_controller.top_level = false
+		local_run_avatar_controller.top_level = true
 		var target_position := _get_local_run_avatar_target() if not NetworkRuntime.get_peer_station_id(_get_local_peer_id()).is_empty() and _station_anchors_avatar(NetworkRuntime.get_peer_station_id(_get_local_peer_id())) else local_run_avatar_position
-		if force_snap or local_run_avatar_controller.position.distance_to(target_position) > 0.35:
-			local_run_avatar_controller.position = target_position
+		var target_world_position := boat_root.to_global(target_position)
+		if force_snap or local_run_avatar_controller.global_position.distance_to(target_world_position) > 0.35:
+			local_run_avatar_controller.global_position = target_world_position
 	local_run_avatar_controller.velocity = local_run_avatar_velocity
 
 func _refresh_local_run_avatar_controller() -> void:
@@ -1823,8 +1857,8 @@ func _update_local_run_avatar_controller(delta: float) -> void:
 		var reboard_settle_blend := _get_local_reboard_settle_blend()
 		if not station_id.is_empty() and _station_anchors_avatar(station_id):
 			target_position = _get_local_run_avatar_target()
-			local_run_avatar_controller.position = target_position
-		local_run_avatar_controller.top_level = false
+			local_run_avatar_controller.global_position = boat_root.to_global(target_position)
+		local_run_avatar_controller.top_level = true
 		local_run_avatar_controller.scale = local_run_avatar_controller.scale.lerp(Vector3.ONE, minf(1.0, delta * 8.0))
 		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
 		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, 0.16 * reboard_settle_blend, minf(1.0, delta * 12.0))
@@ -2008,13 +2042,13 @@ func _try_reacquire_local_deck_from_water_entry() -> bool:
 	local_run_avatar_position = deck_position
 	local_run_avatar_world_position = deck_world_position
 	local_run_avatar_grounded = true
-	var local_velocity := boat_root.global_transform.basis.inverse() * local_run_avatar_velocity
-	local_velocity.y = 0.0
-	local_run_avatar_velocity = local_velocity
+	var deck_velocity := local_run_avatar_velocity
+	deck_velocity.y = 0.0
+	local_run_avatar_velocity = deck_velocity
 	_set_local_run_avatar_collision_enabled(true)
-	local_run_avatar_controller.top_level = false
-	local_run_avatar_controller.position = deck_position
-	local_run_avatar_controller.velocity = local_velocity
+	local_run_avatar_controller.top_level = true
+	local_run_avatar_controller.global_position = deck_world_position
+	local_run_avatar_controller.velocity = deck_velocity
 	return true
 
 func _clamp_local_position_to_climb_surface(surface: Dictionary, local_position: Vector3) -> Vector3:
@@ -2098,8 +2132,8 @@ func _try_top_out_local_climb(surface: Dictionary) -> bool:
 	_reset_local_run_transition_state(deck_position, deck_world_position)
 	_set_local_run_avatar_collision_enabled(true)
 	if local_run_avatar_controller != null:
-		local_run_avatar_controller.top_level = false
-		local_run_avatar_controller.position = deck_position
+		local_run_avatar_controller.top_level = true
+		local_run_avatar_controller.global_position = deck_world_position
 		local_run_avatar_controller.velocity = Vector3.ZERO
 	NetworkRuntime.send_local_run_avatar_state(
 		local_run_avatar_position,
@@ -4242,7 +4276,7 @@ func _get_run_avatar_motion_state(avatar_state: Dictionary, overboard: bool, dow
 func _process_local_run_avatar_movement(delta: float) -> void:
 	if _is_local_downed():
 		local_run_avatar_velocity = Vector3.ZERO
-		local_run_avatar_world_position = _get_local_avatar_world_position()
+		local_run_avatar_world_position = boat_root.to_global(local_run_avatar_position)
 		local_run_avatar_grounded = true
 		local_water_entry_active = false
 		local_water_entry_elapsed = 0.0
@@ -4298,8 +4332,8 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 		local_overboard_transition_pending = false
 		_reset_local_run_transition_state(local_run_avatar_position, local_run_avatar_world_position)
 		if local_run_avatar_controller != null:
-			local_run_avatar_controller.top_level = false
-			local_run_avatar_controller.position = local_run_avatar_position
+			local_run_avatar_controller.top_level = true
+			local_run_avatar_controller.global_position = boat_root.to_global(local_run_avatar_position)
 			local_run_avatar_controller.velocity = Vector3.ZERO
 		return
 
@@ -4456,19 +4490,26 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 	var move_speed := RUN_AVATAR_MOVE_SPEED * (RUN_AVATAR_SPRINT_MULTIPLIER if burst_active else 1.0)
 	local_run_avatar_controller.motion_mode = CharacterBody3D.MOTION_MODE_GROUNDED
 	var acceleration := RUN_AVATAR_ACCELERATION if local_run_avatar_controller.is_on_floor() else RUN_AVATAR_AIR_ACCELERATION
+	var boat_basis := boat_root.global_transform.basis.orthonormalized()
 	var controller_velocity := local_run_avatar_controller.velocity
-	controller_velocity.x = move_toward(controller_velocity.x, move_direction_local.x * move_speed, acceleration * delta)
-	controller_velocity.z = move_toward(controller_velocity.z, move_direction_local.z * move_speed, acceleration * delta)
+	var controller_local_velocity := boat_basis.inverse() * controller_velocity
+	controller_local_velocity.x = move_toward(controller_local_velocity.x, move_direction_local.x * move_speed, acceleration * delta)
+	controller_local_velocity.z = move_toward(controller_local_velocity.z, move_direction_local.z * move_speed, acceleration * delta)
+	var planar_velocity_world := (boat_basis.x * controller_local_velocity.x) + (boat_basis.z * controller_local_velocity.z)
+	controller_velocity.x = planar_velocity_world.x
+	controller_velocity.z = planar_velocity_world.z
 	controller_velocity.y -= RUN_AVATAR_GRAVITY * delta
 	if jump_just_pressed and local_run_avatar_controller.is_on_floor() and not active_reaction and not recovering:
 		controller_velocity.y = RUN_AVATAR_JUMP_VELOCITY
 	local_run_avatar_controller.velocity = controller_velocity
 	local_run_avatar_controller.move_and_slide()
-	local_run_avatar_position = local_run_avatar_controller.position
 	local_run_avatar_world_position = local_run_avatar_controller.global_position
+	var previous_deck_position := local_run_avatar_position
+	local_run_avatar_position = boat_root.to_local(local_run_avatar_world_position)
 	local_run_avatar_velocity = local_run_avatar_controller.velocity
 	local_run_avatar_grounded = local_run_avatar_controller.is_on_floor()
 	if local_run_avatar_grounded:
+		local_run_avatar_position = _sanitize_local_run_avatar_position(local_run_avatar_position, previous_deck_position)
 		local_overboard_transition_pending = false
 		_reset_local_run_transition_state(local_run_avatar_position, local_run_avatar_world_position)
 		return
@@ -4514,8 +4555,11 @@ func _sync_local_run_avatar_state(delta: float) -> void:
 		return
 	var grounded := local_run_avatar_grounded
 	if not _is_local_off_deck() and local_run_avatar_controller != null:
-		local_run_avatar_position = local_run_avatar_controller.position
 		local_run_avatar_world_position = local_run_avatar_controller.global_position
+		local_run_avatar_position = _sanitize_local_run_avatar_position(
+			boat_root.to_local(local_run_avatar_world_position),
+			local_run_avatar_position
+		)
 		local_run_avatar_velocity = local_run_avatar_controller.velocity
 		grounded = local_run_avatar_controller.is_on_floor()
 		NetworkRuntime.send_local_run_avatar_state(
