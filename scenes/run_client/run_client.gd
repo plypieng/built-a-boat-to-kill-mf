@@ -21,6 +21,14 @@ const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const ExpeditionHudSkin = preload("res://scenes/shared/expedition_hud_skin.gd")
 const BoatBlockMaterials = preload("res://scenes/shared/boat_block_materials.gd")
+const PHANTOM_CAMERA_HOST_SCRIPT := preload("res://addons/phantom_camera/scripts/phantom_camera_host/phantom_camera_host.gd")
+const PHANTOM_CAMERA_3D_SCRIPT := preload("res://addons/phantom_camera/scripts/phantom_camera/phantom_camera_3d.gd")
+const SPATIAL_AUDIO_PLAYER_3D_SCRIPT := preload("res://addons/spatial_audio_extended/spatial_audio_player_3d.gd")
+const ACOUSTIC_BODY_SCRIPT := preload("res://addons/spatial_audio_extended/acoustic_body.gd")
+const WOOD_ACOUSTIC_MATERIAL := preload("res://addons/spatial_audio_extended/presets/materials/wood.tres")
+const METAL_ACOUSTIC_MATERIAL := preload("res://addons/spatial_audio_extended/presets/materials/metal.tres")
+const TRAIL_RENDERER_SCRIPT := preload("res://addons/TrailRenderer/Runtime/GD/trail_renderer.gd")
+const TERRAIN_PREVIEW_SCENE := preload("res://scenes/tools/terrain3d_preview.tscn")
 const OpenSeaWaterShader = preload("res://shaders/open_sea_water.gdshader")
 const OpenSeaAbyssShader = preload("res://shaders/open_sea_abyss.gdshader")
 const OpenSeaWakeShader = preload("res://shaders/open_sea_wake.gdshader")
@@ -163,6 +171,10 @@ var distress_site_container: Node3D
 var resupply_site_container: Node3D
 var extraction_site_container: Node3D
 var camera: Camera3D
+var phantom_runtime_camera: Camera3D
+var phantom_camera_host: Node
+var phantom_follow_camera: Node3D
+var phantom_overview_camera: Node3D
 var result_layer: CanvasLayer
 var result_panel: PanelContainer
 var result_title_label: Label
@@ -235,9 +247,9 @@ var stage_clock_icon: TextureRect
 var objective_icon: TextureRect
 var inspect_panel_icon: TextureRect
 var result_panel_icon: TextureRect
-var wind_audio_player: AudioStreamPlayer
-var hull_audio_player: AudioStreamPlayer
-var storm_audio_player: AudioStreamPlayer
+var wind_audio_player: AudioStreamPlayer3D
+var hull_audio_player: AudioStreamPlayer3D
+var storm_audio_player: AudioStreamPlayer3D
 var wind_audio_playback: AudioStreamGeneratorPlayback
 var hull_audio_playback: AudioStreamGeneratorPlayback
 var storm_audio_playback: AudioStreamGeneratorPlayback
@@ -252,6 +264,9 @@ var sea_water_wave_texture: NoiseTexture2D
 var sea_water_normal_texture: NoiseTexture2D
 var sea_water_normal_texture_secondary: NoiseTexture2D
 var sea_sky_material: ProceduralSkyMaterial
+var debug_overlay_visuals: Dictionary = {}
+var wake_trail_renderer: Node3D
+var terrain_preview_root: Node3D
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -303,6 +318,8 @@ func _process(delta: float) -> void:
 	_update_squall_visuals()
 	_update_extraction_visual(delta)
 	_update_camera(delta)
+	_update_terrain_preview()
+	_draw_debug_draw_overlay()
 	_update_event_callout(delta)
 
 func _physics_process(delta: float) -> void:
@@ -425,6 +442,8 @@ func _build_world() -> void:
 		add_child(camera)
 	camera.current = true
 	camera.look_at(Vector3(0.0, 0.6, 0.0), Vector3.UP)
+	_ensure_phantom_camera_rig()
+	_ensure_terrain_preview()
 
 func _load_optional_texture(path: String) -> Texture2D:
 	var absolute_path := ProjectSettings.globalize_path(path)
@@ -681,6 +700,7 @@ func _ensure_sea_fx() -> void:
 	bow_spray_left_particles = _ensure_sea_spray_particles("BowSprayLeftParticles", Vector3(-0.92, 0.18, -2.56), Vector3(-0.22, 0.92, -0.72), Color(0.84, 0.93, 0.97, 0.84))
 	bow_spray_right_particles = _ensure_sea_spray_particles("BowSprayRightParticles", Vector3(0.92, 0.18, -2.56), Vector3(0.22, 0.92, -0.72), Color(0.84, 0.93, 0.97, 0.84))
 	wake_mist_particles = _ensure_sea_spray_particles("WakeMistParticles", Vector3(0.0, 0.02, 3.0), Vector3(0.0, 0.58, 0.88), Color(0.76, 0.88, 0.94, 0.56), 88, 1.30)
+	_ensure_wake_trail_renderer()
 
 func _configure_open_sea_water_material(material: ShaderMaterial) -> void:
 	if material == null:
@@ -843,14 +863,16 @@ func _ensure_procedural_audio() -> void:
 	if storm_audio_player != null:
 		storm_audio_playback = storm_audio_player.get_stream_playback() as AudioStreamGeneratorPlayback
 
-func _ensure_audio_layer(node_name: String, volume_db: float) -> AudioStreamPlayer:
-	var player := get_node_or_null(node_name) as AudioStreamPlayer
+func _ensure_audio_layer(node_name: String, volume_db: float) -> AudioStreamPlayer3D:
+	var parent: Node = boat_root if node_name != "StormRoarAudio" and boat_root != null else self
+	var player := parent.get_node_or_null(node_name) as AudioStreamPlayer3D
 	if player == null:
-		player = AudioStreamPlayer.new()
+		player = SPATIAL_AUDIO_PLAYER_3D_SCRIPT.new()
 		player.name = node_name
 		player.autoplay = false
-		add_child(player)
+		parent.add_child(player)
 	player.volume_db = volume_db
+	_configure_spatial_audio_player(player, node_name)
 	var generator := player.stream as AudioStreamGenerator
 	if generator == null:
 		generator = AudioStreamGenerator.new()
@@ -860,6 +882,33 @@ func _ensure_audio_layer(node_name: String, volume_db: float) -> AudioStreamPlay
 	if not player.playing:
 		player.play()
 	return player
+
+
+func _configure_spatial_audio_player(player: AudioStreamPlayer3D, node_name: String) -> void:
+	if player == null:
+		return
+	player.max_distance = 140.0 if node_name == "StormRoarAudio" else 42.0
+	player.unit_size = 8.0 if node_name == "SeaWindAudio" else 5.0
+	player.attenuation_filter_cutoff_hz = 18000.0
+	player.emission_angle_enabled = false
+	if node_name == "StormRoarAudio":
+		player.position = Vector3(0.0, 18.0, -34.0)
+		player.set("audio_occlusion", false)
+		player.set("room_size_reverb", false)
+		player.set("enable_air_absorption", true)
+	elif node_name == "HullGroanAudio":
+		player.position = Vector3(0.0, 1.2, 0.2)
+		player.set("audio_occlusion", true)
+		player.set("room_size_reverb", true)
+		player.set("surface_absorption", true)
+		player.set("ignore_floor", true)
+		player.set("ray_distribution", 1)
+		player.set("fibonacci_ray_count", 12)
+	else:
+		player.position = Vector3(0.0, 2.8, -0.6)
+		player.set("audio_occlusion", false)
+		player.set("room_size_reverb", false)
+		player.set("enable_air_absorption", true)
 
 func _wave_synth(t: float, base_a: float, base_b: float, mod_a: float, mod_b: float, mix_amount: float = 0.5) -> float:
 	return sin(TAU * base_a * t + sin(TAU * mod_a * t) * mix_amount) * 0.58 + sin(TAU * base_b * t + cos(TAU * mod_b * t) * mix_amount * 0.7) * 0.42
@@ -1103,6 +1152,15 @@ func _update_sea_audio() -> void:
 	wind_audio_time = _fill_audio_layer(wind_audio_playback, "wind", wind_audio_time, 0.022 + speed_ratio * 0.035 + storm_strength * 0.055 + overboard_boost, storm_strength)
 	hull_audio_time = _fill_audio_layer(hull_audio_playback, "hull", hull_audio_time, 0.010 + speed_ratio * 0.020 + hull_motion * 0.024 + storm_strength * 0.012, hull_motion)
 	storm_audio_time = _fill_audio_layer(storm_audio_playback, "storm", storm_audio_time, storm_strength * 0.072 + (0.024 if _boat_inside_any_squall() else 0.0), storm_strength)
+	if wind_audio_player != null:
+		wind_audio_player.position = Vector3(0.0, 2.8, -0.6)
+	if hull_audio_player != null:
+		hull_audio_player.position = Vector3(0.0, 1.18, 0.2)
+	if storm_audio_player != null and camera != null:
+		storm_audio_player.global_position = camera.global_position + Vector3(sin(connect_time_seconds * 0.21) * 12.0, 18.0, -34.0)
+	if wake_trail_renderer != null:
+		wake_trail_renderer.position = Vector3(0.0, WATER_SURFACE_Y + 0.06, 2.92)
+		wake_trail_renderer.set("is_emitting", speed_ratio > 0.06)
 
 func _refresh_horizon_storm_wall() -> void:
 	if storm_wall_container == null:
@@ -2827,6 +2885,19 @@ func _make_runtime_block_visual(block: Dictionary, detached_visual: bool) -> Nod
 	mesh_instance.mesh = mesh
 	block_node.add_child(mesh_instance)
 
+	if not detached_visual:
+		var static_body := StaticBody3D.new()
+		static_body.name = "CollisionBody"
+		static_body.collision_layer = RUN_BLOCK_COLLISION_LAYER
+		static_body.collision_mask = RUN_BLOCK_COLLISION_LAYER
+		var collision_shape := CollisionShape3D.new()
+		collision_shape.name = "CollisionShape3D"
+		var box_shape := BoxShape3D.new()
+		box_shape.size = Vector3.ONE * NetworkRuntime.RUNTIME_BLOCK_SPACING
+		collision_shape.shape = box_shape
+		static_body.add_child(collision_shape)
+		_ensure_acoustic_body(static_body, WOOD_ACOUSTIC_MATERIAL)
+		block_node.add_child(static_body)
 	var facing_marker := MeshInstance3D.new()
 	facing_marker.name = "Marker"
 	var marker_mesh := BoxMesh.new()
@@ -4584,9 +4655,127 @@ func _update_camera(delta: float) -> void:
 	desired_position += local_camera_jolt
 	var look_target := pivot + forward * (run_camera_look_ahead + speed_ratio * 0.8) + local_camera_jolt * 0.42
 	var blend := minf(1.0, delta * run_camera_lag)
+	if AddonRuntime.runtime_camera_mode != AddonRuntime.CAMERA_MODE_LEGACY:
+		_update_phantom_camera_state(desired_position, look_target, Vector3.UP, 69.0 + speed_ratio * 7.0)
+		return
+	if phantom_runtime_camera != null:
+		phantom_runtime_camera.current = false
+	if not camera.current:
+		camera.current = true
+		camera.make_current()
 	camera.position = camera.position.lerp(desired_position, blend)
 	camera.fov = lerpf(camera.fov, 69.0 + speed_ratio * 7.0, blend)
 	camera.look_at(look_target, Vector3.UP)
+
+
+func _ensure_phantom_camera_rig() -> void:
+	phantom_runtime_camera = get_node_or_null("AddonPhantomCamera") as Camera3D
+	if phantom_runtime_camera == null:
+		phantom_runtime_camera = Camera3D.new()
+		phantom_runtime_camera.name = "AddonPhantomCamera"
+		add_child(phantom_runtime_camera)
+	phantom_camera_host = phantom_runtime_camera.get_node_or_null("PhantomCameraHost")
+	if phantom_camera_host == null:
+		phantom_camera_host = Node.new()
+		phantom_camera_host.name = "PhantomCameraHost"
+		phantom_camera_host.set_script(PHANTOM_CAMERA_HOST_SCRIPT)
+		phantom_runtime_camera.add_child(phantom_camera_host)
+	phantom_follow_camera = get_node_or_null("AddonFollowPhantomCamera") as Node3D
+	if phantom_follow_camera == null:
+		phantom_follow_camera = Node3D.new()
+		phantom_follow_camera.name = "AddonFollowPhantomCamera"
+		phantom_follow_camera.top_level = true
+		phantom_follow_camera.set_script(PHANTOM_CAMERA_3D_SCRIPT)
+		add_child(phantom_follow_camera)
+	phantom_follow_camera.set("follow_mode", 0)
+	phantom_follow_camera.set("host_layers", 1)
+	phantom_overview_camera = get_node_or_null("AddonOverviewPhantomCamera") as Node3D
+	if phantom_overview_camera == null:
+		phantom_overview_camera = Node3D.new()
+		phantom_overview_camera.name = "AddonOverviewPhantomCamera"
+		phantom_overview_camera.top_level = true
+		phantom_overview_camera.set_script(PHANTOM_CAMERA_3D_SCRIPT)
+		add_child(phantom_overview_camera)
+	phantom_overview_camera.set("follow_mode", 0)
+	phantom_overview_camera.set("host_layers", 1)
+
+
+func _update_phantom_camera_state(desired_position: Vector3, look_target: Vector3, up_vector: Vector3, target_fov: float) -> void:
+	_ensure_phantom_camera_rig()
+	if phantom_runtime_camera == null or phantom_follow_camera == null or phantom_overview_camera == null:
+		return
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	var target_site := _get_nearest_extraction_site(true)
+	var overview_focus := boat_position
+	if not target_site.is_empty():
+		overview_focus = boat_position.lerp(target_site.get("position", boat_position), 0.42)
+	var overview_position := overview_focus + Vector3(18.0, 24.0, 18.0)
+	phantom_follow_camera.global_transform = _make_look_transform(desired_position, look_target, up_vector)
+	phantom_overview_camera.global_transform = _make_look_transform(overview_position, overview_focus, Vector3.UP)
+	if AddonRuntime.runtime_camera_mode == AddonRuntime.CAMERA_MODE_OVERVIEW:
+		phantom_follow_camera.set("priority", 5)
+		phantom_overview_camera.set("priority", 25)
+		phantom_runtime_camera.fov = 58.0
+	else:
+		phantom_follow_camera.set("priority", 25)
+		phantom_overview_camera.set("priority", 5)
+		phantom_runtime_camera.fov = target_fov
+	camera.current = false
+	if not phantom_runtime_camera.current:
+		phantom_runtime_camera.current = true
+		phantom_runtime_camera.make_current()
+
+
+func _make_look_transform(origin: Vector3, target: Vector3, up_vector: Vector3) -> Transform3D:
+	return Transform3D(Basis.IDENTITY, origin).looking_at(target, up_vector)
+
+
+func _ensure_acoustic_body(parent: Node, acoustic_material: Resource) -> void:
+	if parent == null or acoustic_material == null:
+		return
+	var acoustic_body := parent.get_node_or_null("AcousticBody")
+	if acoustic_body == null:
+		acoustic_body = ACOUSTIC_BODY_SCRIPT.new()
+		acoustic_body.name = "AcousticBody"
+		parent.add_child(acoustic_body)
+	acoustic_body.set("acoustic_material", acoustic_material)
+
+
+func _ensure_terrain_preview() -> void:
+	terrain_preview_root = get_node_or_null("TerrainPreview") as Node3D
+	if terrain_preview_root != null:
+		return
+	terrain_preview_root = TERRAIN_PREVIEW_SCENE.instantiate() as Node3D
+	if terrain_preview_root == null:
+		return
+	terrain_preview_root.name = "TerrainPreview"
+	terrain_preview_root.position = Vector3(WATER_SURFACE_SIZE * 0.34, WATER_SURFACE_Y - 1.4, -WATER_SURFACE_SIZE * 0.28)
+	terrain_preview_root.visible = AddonRuntime.terrain_preview_enabled
+	add_child(terrain_preview_root)
+
+
+func _update_terrain_preview() -> void:
+	if terrain_preview_root == null:
+		return
+	terrain_preview_root.visible = AddonRuntime.terrain_preview_enabled
+
+
+func _draw_debug_draw_overlay() -> void:
+	if not AddonRuntime.debug_draw_enabled or boat_root == null:
+		return
+	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
+	for descriptor_variant in _get_active_chunk_descriptors():
+		var descriptor: Dictionary = descriptor_variant
+		var center: Vector3 = descriptor.get("world_center", Vector3.ZERO)
+		var chunk_size := float(descriptor.get("chunk_size_m", RunWorldGenerator.CHUNK_SIZE_M))
+		DebugDraw3D.draw_box(center, Quaternion.IDENTITY, Vector3(chunk_size, 0.4, chunk_size), Color(0.28, 0.72, 0.88, 0.08))
+	var extraction_site := _get_nearest_extraction_site(true)
+	if not extraction_site.is_empty():
+		var extraction_position: Vector3 = extraction_site.get("position", Vector3.ZERO)
+		var extraction_radius := float(extraction_site.get("radius", NetworkRuntime.EXTRACTION_RADIUS))
+		DebugDraw3D.draw_line(boat_position, extraction_position, EXTRACTION_READY_COLOR, 0.05)
+		DebugDraw3D.draw_sphere(extraction_position, extraction_radius, EXTRACTION_IDLE_COLOR, 0.05)
+	DebugDraw3D.draw_line(camera.global_position if camera != null else boat_position + Vector3.UP * 4.0, boat_position, Color(0.97, 0.83, 0.31), 0.05)
 
 func _update_boat_material() -> void:
 	if hull_material == null:

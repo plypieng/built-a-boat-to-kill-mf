@@ -1,0 +1,15 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scenes/tools/terrain3d_preview.gd" id="1_script"]
+
+[sub_resource type="Terrain3DMaterial" id="1_material"]
+show_checkered = true
+
+[sub_resource type="Terrain3DAssets" id="2_assets"]
+
+[node name="Terrain3DPreview" type="Terrain3D"]
+script = ExtResource("1_script")
+material = SubResource("1_material")
+assets = SubResource("2_assets")
+mesh_lods = 8
+cast_shadow = 0

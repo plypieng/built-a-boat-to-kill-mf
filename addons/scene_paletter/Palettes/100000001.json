@@ -1,0 +1,21 @@
+{
+  "Paths": [
+    "res://scenes/run_client/chunks/open_ocean_chunk_visual.tscn",
+    "res://scenes/run_client/chunks/reef_chunk_visual.tscn",
+    "res://scenes/run_client/chunks/fog_bank_chunk_visual.tscn",
+    "res://scenes/run_client/chunks/storm_belt_chunk_visual.tscn",
+    "res://scenes/run_client/chunks/graveyard_chunk_visual.tscn",
+    "res://scenes/run_client/chunks/drift_buoy_prop.tscn",
+    "res://scenes/run_client/chunks/reef_spire_prop.tscn",
+    "res://scenes/run_client/chunks/graveyard_spar_prop.tscn",
+    "res://scenes/run_client/sites/salvage_site_marker.tscn",
+    "res://scenes/run_client/sites/distress_site_marker.tscn",
+    "res://scenes/run_client/sites/resupply_site_marker.tscn",
+    "res://scenes/run_client/sites/extraction_outpost_marker.tscn",
+    "res://scenes/hangar/hangar_environment.tscn",
+    "res://scenes/run_client/run_environment.tscn",
+    "res://scenes/tools/terrain3d_preview.tscn"
+  ],
+  "Name": "BuiltaBoat World Kit",
+  "Position": 0
+}
