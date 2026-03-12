@@ -1012,12 +1012,12 @@ const RUN_OVERBOARD_RECOVERY_RANGE := 1.15
 const RUN_OVERBOARD_DIRECT_REBOARD_RANGE := 0.72
 const RUN_OVERBOARD_DIRECT_REBOARD_MAX_HEIGHT := 1.42
 const RUN_OVERBOARD_DIRECT_REBOARD_WORLD_DISTANCE := 1.9
-const RUN_OVERBOARD_DIRECT_REBOARD_EDGE_MARGIN := 0.16
+const RUN_OVERBOARD_DIRECT_REBOARD_EDGE_MARGIN := 0.28
 const RUN_OVERBOARD_EMERGENCY_REBOARD_RANGE := 1.1
 const RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_HEIGHT := 1.8
 const RUN_OVERBOARD_EMERGENCY_REBOARD_WORLD_DISTANCE := 2.45
 const RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_SPEED := 2.1
-const RUN_OVERBOARD_EMERGENCY_REBOARD_EDGE_MARGIN := 0.24
+const RUN_OVERBOARD_EMERGENCY_REBOARD_EDGE_MARGIN := 0.42
 const RUN_OVERBOARD_TRANSITION_VALIDATE_EDGE_MARGIN := 0.10
 const RUN_OVERBOARD_TRANSITION_SURFACE_HEIGHT_BUFFER := 0.18
 const RUN_OVERBOARD_TRANSITION_WATER_BUFFER := 0.32
@@ -4751,30 +4751,43 @@ func _get_surface_access_edge(surface: Dictionary, local_position: Vector3, proj
 	var max_x := local_center.x + half_size_x
 	var min_z := local_center.z - half_size_z
 	var max_z := local_center.z + half_size_z
-	if bool(surface.get("edge_neg_x_open", false)) and absf(projected_position.x - min_x) <= 0.05 and local_position.x <= min_x + edge_margin:
-		candidates.append({
-			"side": "port edge",
-			"distance": absf(local_position.x - min_x),
-			"edge_position": Vector3(min_x, deck_y, clampf(projected_position.z, min_z, max_z)),
-		})
-	if bool(surface.get("edge_pos_x_open", false)) and absf(projected_position.x - max_x) <= 0.05 and local_position.x >= max_x - edge_margin:
-		candidates.append({
-			"side": "starboard edge",
-			"distance": absf(local_position.x - max_x),
-			"edge_position": Vector3(max_x, deck_y, clampf(projected_position.z, min_z, max_z)),
-		})
-	if bool(surface.get("edge_neg_z_open", false)) and absf(projected_position.z - min_z) <= 0.05 and local_position.z <= min_z + edge_margin:
-		candidates.append({
-			"side": "stern edge",
-			"distance": absf(local_position.z - min_z),
-			"edge_position": Vector3(clampf(projected_position.x, min_x, max_x), deck_y, min_z),
-		})
-	if bool(surface.get("edge_pos_z_open", false)) and absf(projected_position.z - max_z) <= 0.05 and local_position.z >= max_z - edge_margin:
-		candidates.append({
-			"side": "bow edge",
-			"distance": absf(local_position.z - max_z),
-			"edge_position": Vector3(clampf(projected_position.x, min_x, max_x), deck_y, max_z),
-		})
+	var max_edge_distance := edge_margin * 1.35
+	if bool(surface.get("edge_neg_x_open", false)) and local_position.x <= min_x + edge_margin:
+		var edge_neg_x_point := Vector3(min_x, deck_y, clampf(local_position.z, min_z, max_z))
+		var edge_neg_x_distance := Vector2(local_position.x, local_position.z).distance_to(Vector2(edge_neg_x_point.x, edge_neg_x_point.z))
+		if edge_neg_x_distance <= max_edge_distance:
+			candidates.append({
+				"side": "port edge",
+				"distance": edge_neg_x_distance,
+				"edge_position": edge_neg_x_point,
+			})
+	if bool(surface.get("edge_pos_x_open", false)) and local_position.x >= max_x - edge_margin:
+		var edge_pos_x_point := Vector3(max_x, deck_y, clampf(local_position.z, min_z, max_z))
+		var edge_pos_x_distance := Vector2(local_position.x, local_position.z).distance_to(Vector2(edge_pos_x_point.x, edge_pos_x_point.z))
+		if edge_pos_x_distance <= max_edge_distance:
+			candidates.append({
+				"side": "starboard edge",
+				"distance": edge_pos_x_distance,
+				"edge_position": edge_pos_x_point,
+			})
+	if bool(surface.get("edge_neg_z_open", false)) and local_position.z <= min_z + edge_margin:
+		var edge_neg_z_point := Vector3(clampf(local_position.x, min_x, max_x), deck_y, min_z)
+		var edge_neg_z_distance := Vector2(local_position.x, local_position.z).distance_to(Vector2(edge_neg_z_point.x, edge_neg_z_point.z))
+		if edge_neg_z_distance <= max_edge_distance:
+			candidates.append({
+				"side": "stern edge",
+				"distance": edge_neg_z_distance,
+				"edge_position": edge_neg_z_point,
+			})
+	if bool(surface.get("edge_pos_z_open", false)) and local_position.z >= max_z - edge_margin:
+		var edge_pos_z_point := Vector3(clampf(local_position.x, min_x, max_x), deck_y, max_z)
+		var edge_pos_z_distance := Vector2(local_position.x, local_position.z).distance_to(Vector2(edge_pos_z_point.x, edge_pos_z_point.z))
+		if edge_pos_z_distance <= max_edge_distance:
+			candidates.append({
+				"side": "bow edge",
+				"distance": edge_pos_z_distance,
+				"edge_position": edge_pos_z_point,
+			})
 	if candidates.is_empty():
 		return {}
 	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:

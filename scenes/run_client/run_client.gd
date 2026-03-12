@@ -1546,6 +1546,9 @@ func _set_local_run_avatar_collision_enabled(enabled: bool) -> void:
 	if collision_shape != null:
 		collision_shape.disabled = not effective_enabled
 
+func _should_enable_local_avatar_collision() -> bool:
+	return not local_water_entry_active and not local_overboard_transition_pending
+
 func _sync_local_run_avatar_controller_from_state(force_snap: bool = false) -> void:
 	if local_run_avatar_controller == null:
 		return
@@ -1570,7 +1573,7 @@ func _refresh_local_run_avatar_controller() -> void:
 	var display_name := str(NetworkRuntime.peer_snapshot.get(_get_local_peer_id(), {}).get("name", "You"))
 	var presentation_state := local_state.duplicate(true)
 	presentation_state["peer_id"] = _get_local_peer_id()
-	_set_local_run_avatar_collision_enabled(not overboard)
+	_set_local_run_avatar_collision_enabled(_should_enable_local_avatar_collision())
 	_sync_local_run_avatar_controller_from_state(false)
 	_configure_run_avatar_controller(local_run_avatar_controller, display_name, station_id, presentation_state, overboard, downed)
 
@@ -1641,12 +1644,12 @@ func _update_local_run_avatar_controller(delta: float) -> void:
 		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, clampf(local_run_avatar_velocity.y * -0.05, -0.32, 0.22), minf(1.0, delta * 10.0))
 		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, 0.0, minf(1.0, delta * 10.0))
 	elif overboard:
-		var target_world_position: Vector3 = local_state.get("world_position", _get_local_avatar_world_position())
+		var target_world_position := local_run_avatar_world_position
 		target_world_position.y += _get_local_surface_tread_height_offset()
 		var surface_tread_tilt := _get_local_surface_tread_tilt(target_yaw)
-		_set_local_run_avatar_collision_enabled(false)
+		_set_local_run_avatar_collision_enabled(true)
 		local_run_avatar_controller.top_level = true
-		local_run_avatar_controller.global_position = local_run_avatar_controller.global_position.lerp(target_world_position, minf(1.0, delta * 6.8))
+		local_run_avatar_controller.global_position = target_world_position
 		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
 		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, surface_tread_tilt.x + clampf(local_knockback.z * -0.03 * intensity, -0.18, 0.18), minf(1.0, delta * 9.0))
 		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, surface_tread_tilt.y + clampf(local_knockback.x * 0.04 * intensity, -0.18, 0.18), minf(1.0, delta * 9.0))
@@ -4122,8 +4125,21 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 		else:
 			local_run_avatar_velocity.x = move_toward(local_run_avatar_velocity.x, 0.0, swim_acceleration * delta * 1.2)
 			local_run_avatar_velocity.z = move_toward(local_run_avatar_velocity.z, 0.0, swim_acceleration * delta * 1.2)
-		local_run_avatar_world_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
+		if local_run_avatar_controller != null:
+			local_run_avatar_controller.motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
+			_set_local_run_avatar_collision_enabled(true)
+			local_run_avatar_controller.top_level = true
+			local_run_avatar_controller.velocity = Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z)
+			local_run_avatar_controller.move_and_slide()
+			local_run_avatar_velocity.x = local_run_avatar_controller.velocity.x
+			local_run_avatar_velocity.z = local_run_avatar_controller.velocity.z
+			local_run_avatar_world_position = local_run_avatar_controller.global_position
+		else:
+			local_run_avatar_world_position += Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z) * delta
 		local_run_avatar_world_position = _clamp_local_swim_world_position(local_run_avatar_world_position)
+		if local_run_avatar_controller != null:
+			local_run_avatar_controller.global_position = local_run_avatar_world_position
+			local_run_avatar_controller.velocity = Vector3(local_run_avatar_velocity.x, 0.0, local_run_avatar_velocity.z)
 		local_run_avatar_grounded = false
 		local_overboard_transition_pending = false
 		return
@@ -4153,6 +4169,7 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 		return
 
 	var move_speed := RUN_AVATAR_MOVE_SPEED * (RUN_AVATAR_SPRINT_MULTIPLIER if burst_active else 1.0)
+	local_run_avatar_controller.motion_mode = CharacterBody3D.MOTION_MODE_GROUNDED
 	var acceleration := RUN_AVATAR_ACCELERATION if local_run_avatar_controller.is_on_floor() else RUN_AVATAR_AIR_ACCELERATION
 	var controller_velocity := local_run_avatar_controller.velocity
 	controller_velocity.x = move_toward(controller_velocity.x, move_direction_local.x * move_speed, acceleration * delta)
