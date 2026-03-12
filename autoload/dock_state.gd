@@ -414,6 +414,12 @@ func reset_boat_blueprint() -> Dictionary:
 	save_boat_blueprint(reset_snapshot)
 	return get_boat_blueprint()
 
+func use_default_boat_blueprint_runtime() -> Dictionary:
+	boat_blueprint = _normalize_boat_blueprint(DEFAULT_BOAT_BLUEPRINT)
+	emit_signal("boat_blueprint_changed", get_boat_blueprint())
+	emit_signal("profile_changed", get_profile_snapshot())
+	return get_boat_blueprint()
+
 func _load_boat_blueprint() -> void:
 	boat_blueprint = _normalize_boat_blueprint(DEFAULT_BOAT_BLUEPRINT)
 	if not FileAccess.file_exists(BOAT_BLUEPRINT_SAVE_PATH):

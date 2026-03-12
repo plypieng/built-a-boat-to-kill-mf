@@ -30,7 +30,7 @@ grow_horizontal = 2
 grow_vertical = 2
 
 [node name="Panel" type="PanelContainer" parent="Center"]
-custom_minimum_size = Vector2(560, 220)
+custom_minimum_size = Vector2(560, 320)
 layout_mode = 2
 
 [node name="Margin" type="MarginContainer" parent="Center/Panel"]
@@ -60,6 +60,18 @@ layout_mode = 2
 modulate = Color(0.866667, 0.913725, 0.952941, 1)
 autowrap_mode = 3
 text = "Charting the sea, loading the weather, and hauling your boat into the next run."
+
+[node name="TraceLog" type="RichTextLabel" parent="Center/Panel/Margin/Layout"]
+custom_minimum_size = Vector2(0, 110)
+layout_mode = 2
+bbcode_enabled = false
+scroll_active = false
+fit_content = true
+selection_enabled = false
+context_menu_enabled = false
+shortcut_keys_enabled = false
+modulate = Color(0.780392, 0.839216, 0.886275, 1)
+text = "> Launch request queued.\n> Waiting for scene load."
 
 [node name="ProgressBar" type="ProgressBar" parent="Center/Panel/Margin/Layout"]
 custom_minimum_size = Vector2(0, 18)

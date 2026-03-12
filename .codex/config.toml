@@ -1,0 +1,5 @@
+[mcp_servers.godot]
+command = "/opt/homebrew/bin/npx"
+args = ["-y", "godot-mcp-server"]
+startup_timeout_sec = 45
+tool_timeout_sec = 120

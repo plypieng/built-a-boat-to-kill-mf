@@ -67,6 +67,8 @@ const RUN_WATER_ENTRY_RELAND_HORIZONTAL_GRACE := 0.34
 const RUN_WATER_ENTRY_RELAND_VERTICAL_GRACE := 0.52
 const RUN_WATER_ENTRY_GRAVITY := 20.0
 const RUN_REBOARD_SETTLE_DURATION := 0.32
+const RUN_REBOARD_OVERBOARD_GRACE_DURATION := 1.0
+const RUN_REBOARD_CLIMB_DURATION := 0.18
 const RUN_WATER_ENTRY_MAX_DURATION := 1.35
 const RUN_WATER_ENTRY_SURFACE_BLEND_HEIGHT := 0.9
 const RUN_OFF_DECK_BLEND_DURATION := 1.05
@@ -270,6 +272,11 @@ var local_surface_tread_active := false
 var local_surface_tread_elapsed := 0.0
 var local_surface_contact_feedback_timer := 0.0
 var local_reboard_settle_timer := 0.0
+var local_reboard_overboard_grace_timer := 0.0
+var local_reboard_climb_active := false
+var local_reboard_climb_elapsed := 0.0
+var local_reboard_climb_start_world_position := Vector3.ZERO
+var local_reboard_climb_target_world_position := Vector3.ZERO
 var debug_overlay_enabled := false
 var boat_visual_velocity := Vector3.ZERO
 var selected_run_tool_index := 0
@@ -338,6 +345,7 @@ func _process(delta: float) -> void:
 	connect_time_seconds += delta
 	local_surface_contact_feedback_timer = maxf(0.0, local_surface_contact_feedback_timer - delta)
 	local_reboard_settle_timer = maxf(0.0, local_reboard_settle_timer - delta)
+	local_reboard_overboard_grace_timer = maxf(0.0, local_reboard_overboard_grace_timer - delta)
 	_tick_reaction_visuals(delta)
 	_update_sea_presentation(delta)
 	_update_sea_audio()
@@ -888,6 +896,41 @@ func _ensure_contact_foam_plane(parent: Node3D, node_name: String, plane_size: V
 	_configure_contact_foam_material(material)
 	parent.add_child(plane_node)
 	return plane_node
+
+
+func _ensure_wake_trail_renderer() -> void:
+	if wake_root == null:
+		return
+	wake_trail_renderer = wake_root.get_node_or_null("WakeTrailRibbon") as Node3D
+	if wake_trail_renderer == null:
+		wake_trail_renderer = TRAIL_RENDERER_SCRIPT.new()
+		wake_trail_renderer.name = "WakeTrailRibbon"
+		wake_root.add_child(wake_trail_renderer)
+		var trail_material := StandardMaterial3D.new()
+		trail_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		trail_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		trail_material.vertex_color_use_as_albedo = true
+		trail_material.disable_receive_shadows = true
+		trail_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		wake_trail_renderer.set("material", trail_material)
+		var width_curve := Curve.new()
+		width_curve.add_point(Vector2(0.0, 0.34))
+		width_curve.add_point(Vector2(0.28, 0.52))
+		width_curve.add_point(Vector2(1.0, 0.02))
+		wake_trail_renderer.set("curve", width_curve)
+		var color_gradient := Gradient.new()
+		color_gradient.add_point(0.0, Color(0.92, 0.98, 1.0, 0.28))
+		color_gradient.add_point(0.35, Color(0.74, 0.88, 0.96, 0.16))
+		color_gradient.add_point(1.0, Color(0.58, 0.77, 0.90, 0.0))
+		wake_trail_renderer.set("color_gradient", color_gradient)
+		wake_trail_renderer.set("texture_mode", 0)
+		wake_trail_renderer.set("alignment", 2)
+		wake_trail_renderer.set("world_space", true)
+	wake_trail_renderer.position = Vector3(0.0, WATER_SURFACE_Y + 0.06, 2.92)
+	wake_trail_renderer.rotation_degrees = Vector3.ZERO
+	wake_trail_renderer.set("lifetime", 2.2)
+	wake_trail_renderer.set("min_vertex_distance", 0.42)
+	wake_trail_renderer.set("is_emitting", false)
 
 func _ensure_procedural_audio() -> void:
 	wind_audio_player = _ensure_audio_layer("SeaWindAudio", -20.0)
@@ -1596,7 +1639,7 @@ func _build_local_run_avatar_controller() -> void:
 func _set_local_run_avatar_collision_enabled(enabled: bool) -> void:
 	if local_run_avatar_controller == null:
 		return
-	var effective_enabled := enabled and not local_water_entry_active and not local_overboard_transition_pending
+	var effective_enabled := enabled and not local_water_entry_active and not local_overboard_transition_pending and not local_reboard_climb_active
 	local_run_avatar_controller.collision_layer = RUN_BLOCK_COLLISION_LAYER if effective_enabled else 0
 	local_run_avatar_controller.collision_mask = RUN_BLOCK_COLLISION_LAYER if effective_enabled else 0
 	var collision_shape := local_run_avatar_controller.get_node_or_null("CollisionShape3D") as CollisionShape3D
@@ -1604,10 +1647,16 @@ func _set_local_run_avatar_collision_enabled(enabled: bool) -> void:
 		collision_shape.disabled = not effective_enabled
 
 func _should_enable_local_avatar_collision() -> bool:
-	return not local_water_entry_active and not local_overboard_transition_pending
+	return not local_water_entry_active and not local_overboard_transition_pending and not local_reboard_climb_active
 
 func _sync_local_run_avatar_controller_from_state(force_snap: bool = false) -> void:
 	if local_run_avatar_controller == null:
+		return
+	if local_reboard_climb_active:
+		local_run_avatar_controller.top_level = true
+		if force_snap:
+			local_run_avatar_controller.global_position = local_run_avatar_world_position
+		local_run_avatar_controller.velocity = local_run_avatar_velocity
 		return
 	if _is_local_off_deck():
 		local_run_avatar_controller.top_level = true
@@ -1700,6 +1749,13 @@ func _update_local_run_avatar_controller(delta: float) -> void:
 		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
 		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, clampf(local_run_avatar_velocity.y * -0.05, -0.32, 0.22), minf(1.0, delta * 10.0))
 		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, 0.0, minf(1.0, delta * 10.0))
+	elif local_reboard_climb_active:
+		_set_local_run_avatar_collision_enabled(false)
+		local_run_avatar_controller.top_level = true
+		local_run_avatar_controller.global_position = local_run_avatar_world_position
+		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
+		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, 0.12, minf(1.0, delta * 10.0))
+		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, 0.0, minf(1.0, delta * 10.0))
 	elif overboard:
 		var target_world_position := local_run_avatar_world_position
 		var surface_tread_tilt := _get_local_surface_tread_tilt(target_yaw)
@@ -1790,6 +1846,8 @@ func _get_local_surface_camera_roll(target_yaw: float) -> float:
 	return drift_roll + bob_roll
 
 func _get_local_avatar_world_position() -> Vector3:
+	if local_reboard_climb_active and local_run_avatar_controller != null:
+		return local_run_avatar_controller.global_position
 	if local_run_avatar_controller != null and (_is_local_off_deck() or local_overboard_transition_pending):
 		return local_run_avatar_controller.global_position
 	if _is_local_overboard():
@@ -2094,6 +2152,48 @@ func _create_debug_overlay_marker(node_name: String, marker_text: String, color:
 		marker_node.call("set_label_visible", true)
 	return marker_node
 
+func _get_world_collision_debug_snapshot() -> Dictionary:
+	return Dictionary(NetworkRuntime.run_state.get("world_collision_debug", {}))
+
+func _get_world_collision_debug_color(snapshot: Dictionary) -> Color:
+	var missing_space_queries := int(snapshot.get("missing_space_queries", 0))
+	if missing_space_queries > 0:
+		return HUD_TEXT_WARNING
+	var boat_tick := int(NetworkRuntime.boat_state.get("tick", 0))
+	var last_collision_tick := int(snapshot.get("last_collision_tick", 0))
+	var last_damage := float(snapshot.get("last_damage", 0.0))
+	if last_collision_tick > 0 and boat_tick - last_collision_tick <= 24:
+		return HUD_TEXT_DANGER if last_damage >= 8.0 else HUD_TEXT_WARNING
+	if int(snapshot.get("resolved_hits", 0)) > 0:
+		return HUD_TEXT_SUCCESS
+	return HUD_TEXT_PRIMARY
+
+func _build_world_collision_debug_label(snapshot: Dictionary) -> String:
+	var last_label := str(snapshot.get("last_label", "")).strip_edges()
+	var last_zone := str(snapshot.get("last_zone", "")).strip_edges()
+	var collision_summary := "Idle"
+	if not last_label.is_empty():
+		collision_summary = last_label
+		if not last_zone.is_empty():
+			collision_summary += "/%s" % last_zone
+	elif not last_zone.is_empty():
+		collision_summary = last_zone
+	var braced_suffix := " braced" if bool(snapshot.get("last_braced", false)) else ""
+	return "World q:%d cast:%d ov:%d\nres:%d slide:%d miss:%d\n%s dmg %.1f safe %.2f\nmove %.2f slide %.2f%s" % [
+		int(snapshot.get("query_count", 0)),
+		int(snapshot.get("cast_query_hits", 0)),
+		int(snapshot.get("overlap_query_hits", 0)),
+		int(snapshot.get("resolved_hits", 0)),
+		int(snapshot.get("slide_resolutions", 0)),
+		int(snapshot.get("missing_space_queries", 0)),
+		collision_summary,
+		float(snapshot.get("last_damage", 0.0)),
+		float(snapshot.get("last_safe_fraction", 1.0)),
+		float(snapshot.get("last_motion_m", 0.0)),
+		float(snapshot.get("last_slide_m", 0.0)),
+		braced_suffix,
+	]
+
 func _build_debug_overlay_visuals() -> void:
 	if debug_overlay_container == null:
 		return
@@ -2112,6 +2212,10 @@ func _build_debug_overlay_visuals() -> void:
 		"emergency_reboard": {
 			"text": "Emergency Reboard",
 			"color": HUD_TEXT_WARNING,
+		},
+		"world_collision": {
+			"text": "World Collision",
+			"color": HUD_TEXT_PRIMARY,
 		},
 	}
 	for marker_id_variant in overlay_specs.keys():
@@ -2217,6 +2321,14 @@ func _refresh_debug_overlay_visuals() -> void:
 			float(emergency_reboard_target.get("vertical_gap", 0.0)),
 		],
 		HUD_TEXT_WARNING
+	)
+	var world_collision_snapshot := _get_world_collision_debug_snapshot()
+	_set_debug_marker_state(
+		"world_collision",
+		true,
+		boat_root.to_global(Vector3(0.0, 2.75, 0.0)),
+		_build_world_collision_debug_label(world_collision_snapshot),
+		_get_world_collision_debug_color(world_collision_snapshot)
 	)
 
 func _build_wreck_visual() -> void:
@@ -4085,6 +4197,28 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 		if local_run_avatar_controller != null and not _is_local_off_deck():
 			local_run_avatar_controller.velocity = Vector3.ZERO
 		return
+	if local_reboard_climb_active:
+		local_reboard_climb_elapsed = minf(RUN_REBOARD_CLIMB_DURATION, local_reboard_climb_elapsed + delta)
+		var climb_t := clampf(local_reboard_climb_elapsed / RUN_REBOARD_CLIMB_DURATION, 0.0, 1.0)
+		var eased_t := 1.0 - pow(1.0 - climb_t, 3.0)
+		local_run_avatar_world_position = local_reboard_climb_start_world_position.lerp(local_reboard_climb_target_world_position, eased_t)
+		local_run_avatar_velocity = Vector3.ZERO
+		local_run_avatar_grounded = false
+		if local_run_avatar_controller != null:
+			local_run_avatar_controller.top_level = true
+			local_run_avatar_controller.global_position = local_run_avatar_world_position
+			local_run_avatar_controller.velocity = Vector3.ZERO
+		if climb_t >= 1.0:
+			local_reboard_climb_active = false
+			local_reboard_climb_elapsed = 0.0
+			local_run_avatar_world_position = local_reboard_climb_target_world_position
+			if local_run_avatar_controller != null:
+				local_run_avatar_controller.top_level = false
+				local_run_avatar_controller.position = local_run_avatar_position
+				local_run_avatar_controller.velocity = Vector3.ZERO
+			local_run_avatar_velocity = Vector3.ZERO
+			local_run_avatar_grounded = true
+		return
 	if _is_local_water_entry():
 		local_off_deck_entry_elapsed = minf(RUN_OFF_DECK_BLEND_DURATION, local_off_deck_entry_elapsed + delta)
 		local_water_entry_elapsed += delta
@@ -4251,7 +4385,7 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 	var support_height := float(support_projection.get("deck_position", local_run_avatar_position).y)
 	var support_gap := float(support_projection.get("horizontal_distance", INF))
 	var should_begin_water_entry := false
-	if not local_overboard_transition_pending and not local_run_avatar_grounded:
+	if local_reboard_overboard_grace_timer <= 0.0 and not local_overboard_transition_pending and not local_run_avatar_grounded:
 		if support_lost:
 			var cleared_edge := support_gap > RUN_AVATAR_EDGE_EXIT_GRACE_DISTANCE
 			var dropped_below_support := local_run_avatar_position.y <= support_height - RUN_AVATAR_SUPPORT_DROP_THRESHOLD
@@ -4281,6 +4415,8 @@ func _sync_local_run_avatar_state(delta: float) -> void:
 	if run_avatar_sync_timer > 0.0:
 		return
 	run_avatar_sync_timer = RUN_AVATAR_SYNC_INTERVAL
+	if local_reboard_climb_active:
+		return
 	if (local_water_entry_active or local_overboard_transition_pending) and not _is_local_overboard():
 		return
 	var grounded := local_run_avatar_grounded
@@ -5572,9 +5708,10 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 		local_run_avatar_mode = str(local_state.get("mode", NetworkRuntime.RUN_AVATAR_MODE_DECK))
 		var target_position: Vector3 = local_state.get("deck_position", local_run_avatar_position)
 		var target_world_position: Vector3 = local_state.get("world_position", _get_local_avatar_world_position())
+		var begin_reboard_climb := previous_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD and local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_DECK
 		if local_run_avatar_position.distance_to(target_position) > 0.85:
 			local_run_avatar_position = target_position
-		if local_run_avatar_world_position.distance_to(target_world_position) > 0.95:
+		if not begin_reboard_climb and local_run_avatar_world_position.distance_to(target_world_position) > 0.95:
 			local_run_avatar_world_position = target_world_position
 		local_run_avatar_velocity = local_state.get("velocity", local_run_avatar_velocity)
 		local_run_avatar_grounded = bool(local_state.get("grounded", local_run_avatar_grounded))
@@ -5583,6 +5720,9 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 			if local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_OVERBOARD:
 				local_avatar_facing_y = boat_root.rotation.y + synced_facing
 				local_overboard_transition_pending = false
+				local_reboard_overboard_grace_timer = 0.0
+				local_reboard_climb_active = false
+				local_reboard_climb_elapsed = 0.0
 				local_off_deck_entry_elapsed = 0.0
 				local_surface_tread_active = true
 				local_surface_tread_elapsed = 0.0
@@ -5593,6 +5733,13 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 				local_surface_tread_active = false
 				local_surface_tread_elapsed = 0.0
 				local_reboard_settle_timer = RUN_REBOARD_SETTLE_DURATION
+				local_reboard_overboard_grace_timer = RUN_REBOARD_OVERBOARD_GRACE_DURATION
+				local_reboard_climb_active = true
+				local_reboard_climb_elapsed = 0.0
+				local_reboard_climb_start_world_position = local_run_avatar_controller.global_position if local_run_avatar_controller != null else local_run_avatar_world_position
+				local_reboard_climb_target_world_position = target_world_position
+				local_run_avatar_world_position = local_reboard_climb_start_world_position
+				local_run_avatar_velocity = Vector3.ZERO
 				local_camera_jolt += Vector3(0.0, 0.05, -0.08)
 			else:
 				local_avatar_facing_y = synced_facing
@@ -5602,6 +5749,8 @@ func _on_run_avatar_state_changed(snapshot: Dictionary) -> void:
 			local_water_entry_active = false
 			local_water_entry_elapsed = 0.0
 			local_overboard_transition_pending = false
+			local_reboard_climb_active = false
+			local_reboard_climb_elapsed = 0.0
 			if local_run_avatar_mode == NetworkRuntime.RUN_AVATAR_MODE_DOWNED:
 				local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION
 				local_surface_tread_active = false

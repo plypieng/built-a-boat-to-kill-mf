@@ -64,7 +64,7 @@ cp -R "${SERVER_SRC_DIR}/." "${OUT_DIR}/server/"
 
 cat > "${OUT_DIR}/HostAndPlay.bat" <<EOF
 @echo off
-set PORT=7000
+set PORT=27100
 if not "%~1"=="" set PORT=%~1
 start "" "%~dp0client\\${CLIENT_NAME}" --autohost --port=%PORT%
 EOF
@@ -73,14 +73,14 @@ cat > "${OUT_DIR}/JoinFriend.bat" <<EOF
 @echo off
 set HOST=127.0.0.1
 if not "%~1"=="" set HOST=%~1
-set PORT=7000
+set PORT=27100
 if not "%~2"=="" set PORT=%~2
 start "" "%~dp0client\\${CLIENT_NAME}" --host=%HOST% --port=%PORT%
 EOF
 
 cat > "${OUT_DIR}/StartDedicatedServer.bat" <<EOF
 @echo off
-set PORT=7000
+set PORT=27100
 if not "%~1"=="" set PORT=%~1
 set SEED=424242
 if not "%~2"=="" set SEED=%~2

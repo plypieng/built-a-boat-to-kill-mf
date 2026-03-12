@@ -118,10 +118,10 @@ const BUILDER_BOUNDS_MIN := Vector3i(-5, 0, -6)
 const BUILDER_BOUNDS_MAX := Vector3i(5, 4, 6)
 const HANGAR_BUILD_RANGE := 5.25
 const HANGAR_SPAWN_POINTS := [
-	Vector3(-3.6, 0.55, 6.8),
-	Vector3(-1.2, 0.55, 6.4),
-	Vector3(1.2, 0.55, 6.4),
-	Vector3(3.6, 0.55, 6.8),
+	Vector3(-2.2, 0.55, 5.3),
+	Vector3(-0.85, 0.55, 4.95),
+	Vector3(0.85, 0.55, 4.95),
+	Vector3(2.2, 0.55, 5.3),
 ]
 const RUN_DECK_SPAWN_POINTS := [
 	Vector3(0.0, 0.92, 1.35),
@@ -1003,6 +1003,7 @@ const RUN_AVATAR_MODE_DOWNED := "downed"
 const RUN_AVATAR_MOVE_SPEED := 4.9
 const RUN_SWIM_MOVE_SPEED := 2.6
 const RUN_AVATAR_STAND_HEIGHT := 0.52
+const RUN_AVATAR_COLLISION_RADIUS := 0.34
 const RUN_DECK_SURFACE_MARGIN := 0.08
 const RUN_DECK_SURFACE_SNAP_DISTANCE := 0.62
 const RUN_OVERBOARD_PROBE_DISTANCE := 1.05
@@ -1013,6 +1014,7 @@ const RUN_OVERBOARD_DIRECT_REBOARD_RANGE := 0.72
 const RUN_OVERBOARD_DIRECT_REBOARD_MAX_HEIGHT := 1.42
 const RUN_OVERBOARD_DIRECT_REBOARD_WORLD_DISTANCE := 1.9
 const RUN_OVERBOARD_DIRECT_REBOARD_EDGE_MARGIN := 0.28
+const RUN_OVERBOARD_REBOARD_INSET_MARGIN := 0.12
 const RUN_OVERBOARD_EMERGENCY_REBOARD_RANGE := 1.1
 const RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_HEIGHT := 1.8
 const RUN_OVERBOARD_EMERGENCY_REBOARD_WORLD_DISTANCE := 2.45
@@ -1045,6 +1047,7 @@ const AVATAR_OVERBOARD_ENTRY_DAMAGE := 12.0
 const AVATAR_OVERBOARD_ATTRITION_DELAY := 3.0
 const AVATAR_OVERBOARD_ATTRITION_INTERVAL := 2.5
 const AVATAR_OVERBOARD_ATTRITION_DAMAGE := 4.0
+const AVATAR_REBOARD_OVERBOARD_GRACE := 1.0
 const AVATAR_IMPACT_DAMAGE_UNBRACED := 8.0
 const AVATAR_IMPACT_DAMAGE_BRACED := 2.0
 const AVATAR_IMPACT_EXPOSED_BONUS := 8.0
@@ -1080,7 +1083,9 @@ const BOAT_DECELERATION := 10.0
 const BOAT_TOP_SPEED := 14.0
 const BOAT_TURN_SPEED := 1.9
 const BOAT_BROADCAST_INTERVAL := 0.05
+const SERVER_WORLD_GEOMETRY_COLLISION_LAYER := 2
 const BOAT_COLLISION_RADIUS := 1.8
+const BOAT_COLLISION_CONTACT_MARGIN := 0.24
 const BOAT_MAX_INTEGRITY := 100.0
 const BRACE_ACTIVE_SECONDS := 0.9
 const BRACE_COOLDOWN_SECONDS := 2.25
@@ -1106,6 +1111,13 @@ const BOAT_PITCH_SPRING := 8.4
 const BOAT_PITCH_DAMPING := 6.0
 const BOAT_ROLL_SPRING := 9.1
 const BOAT_ROLL_DAMPING := 6.4
+const BOAT_HIGH_DETAIL_BUOYANCY_SPEED_RATIO := 0.42
+const BOAT_HIGH_DETAIL_BUOYANCY_HAZARD_LEVEL := 0.5
+const BOAT_WORLD_QUERY_HEIGHT := 1.18
+const BOAT_WORLD_QUERY_MARGIN := 0.08
+const WORLD_GEOMETRY_COLLISION_DAMAGE_UNBRACED := 12.0
+const WORLD_GEOMETRY_COLLISION_DAMAGE_BRACED := 4.5
+const WORLD_GEOMETRY_SLIDE_FACTOR := 0.45
 const REPAIR_COOLDOWN_SECONDS := 1.35
 const REPAIR_HULL_RECOVERY := 12.0
 const REPAIR_SUPPLIES_START := 3
@@ -1159,6 +1171,9 @@ var _hangar_bump_pair_cooldowns: Dictionary = {}
 var _disconnect_broadcast_scheduled := false
 var _client_bootstrap_complete := false
 var _last_applied_local_result_run_instance_id := -1
+var _server_world_query_root: Node3D
+var _server_world_query_shape: BoxShape3D
+var _world_collision_debug: Dictionary = {}
 
 const OFFLINE_LOCAL_PEER_ID := 1
 
@@ -1169,6 +1184,40 @@ func _ready() -> void:
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 	shutdown()
+
+func register_server_world_query_root(root: Node3D) -> void:
+	_server_world_query_root = root
+
+func clear_server_world_query_root(root: Node3D = null) -> void:
+	if root == null or _server_world_query_root == root:
+		_server_world_query_root = null
+
+func get_world_collision_debug_snapshot() -> Dictionary:
+	return _world_collision_debug.duplicate(true)
+
+func _sync_world_collision_debug_into_run_state() -> void:
+	if run_state.is_empty():
+		return
+	run_state["world_collision_debug"] = _world_collision_debug.duplicate(true)
+
+func _reset_world_collision_debug() -> void:
+	_world_collision_debug = {
+		"query_count": 0,
+		"missing_space_queries": 0,
+		"cast_query_hits": 0,
+		"overlap_query_hits": 0,
+		"resolved_hits": 0,
+		"slide_resolutions": 0,
+		"last_label": "",
+		"last_zone": "",
+		"last_damage": 0.0,
+		"last_damage_scale": 1.0,
+		"last_motion_m": 0.0,
+		"last_slide_m": 0.0,
+		"last_safe_fraction": 1.0,
+		"last_collision_tick": 0,
+		"last_braced": false,
+	}
 
 func start_server(listen_port: int = GameConfig.DEFAULT_PORT, seed: int = GameConfig.DEFAULT_RUN_SEED) -> int:
 	shutdown()
@@ -1240,6 +1289,8 @@ func shutdown() -> void:
 	status_message = "Offline"
 	_client_bootstrap_complete = false
 	_disconnect_broadcast_scheduled = false
+	_server_world_query_root = null
+	_reset_world_collision_debug()
 	_reset_reaction_runtime()
 	_reset_run_runtime()
 	_ensure_offline_local_state()
@@ -1930,6 +1981,321 @@ func sample_boat_wave_pose(
 		"pitch": clampf(atan2(bow_sample - stern_sample, bow_distance + stern_distance), -0.24, 0.24),
 		"roll": clampf(atan2(starboard_sample - port_sample, side_distance * 2.0), -0.30, 0.30),
 	}
+
+func _use_high_detail_buoyancy_probes(world_position: Vector3, forward_speed: float) -> bool:
+	var descriptor := get_chunk_descriptor(get_world_chunk_coord(world_position))
+	var hazard_level := clampf(float(descriptor.get("hazard_level", 0.35)), 0.0, 1.0)
+	var speed_ratio := absf(forward_speed) / maxf(1.0, float(boat_state.get("base_top_speed", BOAT_TOP_SPEED)))
+	var load_bias := clampf(float(boat_state.get("draft_ratio", 0.72)) - 0.8, 0.0, 0.22)
+	return speed_ratio >= BOAT_HIGH_DETAIL_BUOYANCY_SPEED_RATIO \
+		or hazard_level >= BOAT_HIGH_DETAIL_BUOYANCY_HAZARD_LEVEL \
+		or load_bias >= 0.06
+
+func _build_boat_buoyancy_probes(hull_length: float, hull_beam: float, high_detail: bool) -> Array[Dictionary]:
+	var bow_distance := hull_length * 0.52
+	var stern_distance := hull_length * 0.42
+	var side_distance := hull_beam * 0.46
+	var probes: Array[Dictionary] = [
+		{"offset": Vector2(-side_distance, bow_distance), "weight": 1.0, "zone_x": -1.0, "zone_z": 1.0},
+		{"offset": Vector2(side_distance, bow_distance), "weight": 1.0, "zone_x": 1.0, "zone_z": 1.0},
+		{"offset": Vector2(-side_distance, -stern_distance), "weight": 1.0, "zone_x": -1.0, "zone_z": -1.0},
+		{"offset": Vector2(side_distance, -stern_distance), "weight": 1.0, "zone_x": 1.0, "zone_z": -1.0},
+	]
+	if not high_detail:
+		return probes
+	probes.append_array([
+		{"offset": Vector2(0.0, bow_distance * 0.72), "weight": 0.82, "zone_x": 0.0, "zone_z": 1.0},
+		{"offset": Vector2(0.0, -stern_distance * 0.78), "weight": 0.68, "zone_x": 0.0, "zone_z": -1.0},
+		{"offset": Vector2(-side_distance * 0.92, 0.0), "weight": 0.58, "zone_x": -1.0, "zone_z": 0.0},
+		{"offset": Vector2(side_distance * 0.92, 0.0), "weight": 0.58, "zone_x": 1.0, "zone_z": 0.0},
+	])
+	return probes
+
+func _resolve_boat_hazard_contact(boat_position: Vector3, hazard_position: Vector3, hazard_radius: float) -> Dictionary:
+	var rotation_y: float = float(boat_state.get("rotation_y", 0.0))
+	var impact_local := (hazard_position - boat_position).rotated(Vector3.UP, -rotation_y)
+	var hull_length := maxf(3.2, float(boat_state.get("hull_length", 4.4)))
+	var hull_beam := maxf(1.9, float(boat_state.get("hull_beam", 2.7)))
+	var bow_extent := hull_length * 0.58
+	var stern_extent := hull_length * 0.46
+	var side_extent := hull_beam * 0.52
+	var contact_local := Vector3(
+		clampf(impact_local.x, -side_extent, side_extent),
+		0.0,
+		clampf(impact_local.z, -bow_extent, stern_extent)
+	)
+	var planar_delta := Vector2(impact_local.x - contact_local.x, impact_local.z - contact_local.z)
+	var contact_range := hazard_radius + BOAT_COLLISION_CONTACT_MARGIN
+	if planar_delta.length() > contact_range:
+		return {"hit": false}
+
+	var normal_local := Vector3(planar_delta.x, 0.0, planar_delta.y)
+	if normal_local.length_squared() <= 0.0001:
+		var x_ratio := absf(impact_local.x) / maxf(0.001, side_extent)
+		var z_extent := bow_extent if impact_local.z <= 0.0 else stern_extent
+		var z_ratio := absf(impact_local.z) / maxf(0.001, z_extent)
+		if x_ratio > z_ratio:
+			var x_sign := signf(impact_local.x)
+			normal_local = Vector3(x_sign if not is_zero_approx(x_sign) else 1.0, 0.0, 0.0)
+		else:
+			normal_local = Vector3(0.0, 0.0, -1.0 if impact_local.z <= 0.0 else 1.0)
+
+	var bow_bias := clampf(-contact_local.z / maxf(0.001, bow_extent), 0.0, 1.0)
+	var stern_bias := clampf(contact_local.z / maxf(0.001, stern_extent), 0.0, 1.0)
+	var side_bias := clampf(absf(contact_local.x) / maxf(0.001, side_extent), 0.0, 1.0)
+	var speed_ratio := clampf(
+		absf(float(boat_state.get("speed", 0.0))) / maxf(1.0, float(boat_state.get("top_speed_limit", BOAT_TOP_SPEED))),
+		0.0,
+		1.0
+	)
+	var penetration_ratio := clampf(1.0 - planar_delta.length() / maxf(0.001, contact_range), 0.0, 1.0)
+	var contact_zone := "starboard"
+	var damage_multiplier := 1.0
+	var braced_speed_scale := 0.7
+	var unbraced_speed_scale := 0.4
+	if bow_bias >= 0.7 and side_bias <= 0.62:
+		contact_zone = "bow"
+		damage_multiplier = 1.06 + speed_ratio * 0.18 + penetration_ratio * 0.10
+		braced_speed_scale = 0.64
+		unbraced_speed_scale = 0.3
+	elif stern_bias >= 0.72 and side_bias <= 0.56:
+		contact_zone = "stern"
+		damage_multiplier = 0.84 + penetration_ratio * 0.08
+		braced_speed_scale = 0.8
+		unbraced_speed_scale = 0.5
+	elif contact_local.x < 0.0:
+		contact_zone = "port"
+		damage_multiplier = 0.94 + bow_bias * 0.08 + speed_ratio * 0.08
+		braced_speed_scale = 0.74
+		unbraced_speed_scale = 0.42
+	else:
+		damage_multiplier = 0.94 + bow_bias * 0.08 + speed_ratio * 0.08
+		braced_speed_scale = 0.74
+		unbraced_speed_scale = 0.42
+	return {
+		"hit": true,
+		"impact_local": contact_local,
+		"reaction_direction": normal_local.normalized().rotated(Vector3.UP, rotation_y),
+		"contact_zone": contact_zone,
+		"damage_multiplier": damage_multiplier,
+		"braced_speed_scale": braced_speed_scale,
+		"unbraced_speed_scale": unbraced_speed_scale,
+	}
+
+func _get_server_world_space_state():
+	if _server_world_query_root == null or not is_instance_valid(_server_world_query_root):
+		return null
+	var world_3d: World3D = _server_world_query_root.get_world_3d()
+	if world_3d == null:
+		return null
+	return world_3d.direct_space_state
+
+func _get_boat_world_query_shape() -> BoxShape3D:
+	if _server_world_query_shape == null:
+		_server_world_query_shape = BoxShape3D.new()
+	_server_world_query_shape.size = Vector3(
+		maxf(1.35, float(boat_state.get("hull_beam", 2.7)) * 0.82),
+		BOAT_WORLD_QUERY_HEIGHT,
+		maxf(2.8, float(boat_state.get("hull_length", 4.4)) * 0.88)
+	)
+	return _server_world_query_shape
+
+func _make_boat_world_shape_query(world_position: Vector3, rotation_y: float, motion: Vector3 = Vector3.ZERO) -> PhysicsShapeQueryParameters3D:
+	var query: PhysicsShapeQueryParameters3D = PhysicsShapeQueryParameters3D.new()
+	query.shape = _get_boat_world_query_shape()
+	query.transform = Transform3D(
+		Basis(Vector3.UP, rotation_y),
+		Vector3(
+			world_position.x,
+			SEA_SURFACE_Y + 0.58 + float(boat_state.get("water_surface_offset", 0.0)) + float(boat_state.get("buoyancy_heave", 0.0)) * 0.35,
+			world_position.z
+		)
+	)
+	query.motion = motion
+	query.collision_mask = SERVER_WORLD_GEOMETRY_COLLISION_LAYER
+	query.collide_with_bodies = true
+	query.collide_with_areas = false
+	query.margin = BOAT_WORLD_QUERY_MARGIN
+	return query
+
+func _get_server_world_collider_from_query_result(result: Dictionary) -> Node3D:
+	var collider_variant: Variant = result.get("collider", null)
+	if collider_variant is Node3D:
+		return collider_variant as Node3D
+	var collider_id := int(result.get("collider_id", 0))
+	if collider_id <= 0:
+		return null
+	var collider: Object = instance_from_id(collider_id)
+	return collider as Node3D if collider is Node3D else null
+
+func _resolve_world_geometry_motion(previous_position: Vector3, target_position: Vector3, rotation_y: float) -> Dictionary:
+	var space_state: PhysicsDirectSpaceState3D = _get_server_world_space_state()
+	_world_collision_debug["query_count"] = int(_world_collision_debug.get("query_count", 0)) + 1
+	_world_collision_debug["last_motion_m"] = previous_position.distance_to(target_position)
+	_world_collision_debug["last_slide_m"] = 0.0
+	_world_collision_debug["last_safe_fraction"] = 1.0
+	if space_state == null:
+		_world_collision_debug["missing_space_queries"] = int(_world_collision_debug.get("missing_space_queries", 0)) + 1
+		return {
+			"collided": false,
+			"resolved_position": target_position,
+		}
+
+	var motion: Vector3 = target_position - previous_position
+	var collided := false
+	var resolved_position: Vector3 = target_position
+	var rest_info: Dictionary = {}
+
+	if motion.length_squared() > 0.0001:
+		var cast_motion: PackedFloat32Array = space_state.cast_motion(_make_boat_world_shape_query(previous_position, rotation_y, motion))
+		if cast_motion.size() >= 1 and float(cast_motion[0]) < 0.999:
+			collided = true
+			var safe_fraction: float = clampf(float(cast_motion[0]) - 0.02, 0.0, 1.0)
+			_world_collision_debug["cast_query_hits"] = int(_world_collision_debug.get("cast_query_hits", 0)) + 1
+			_world_collision_debug["last_safe_fraction"] = safe_fraction
+			resolved_position = previous_position + motion * safe_fraction
+			rest_info = space_state.get_rest_info(_make_boat_world_shape_query(target_position, rotation_y))
+			if rest_info.is_empty():
+				var probe_position: Vector3 = resolved_position + motion.normalized() * 0.08
+				rest_info = space_state.get_rest_info(_make_boat_world_shape_query(probe_position, rotation_y))
+
+	if not collided:
+		var overlaps: Array = space_state.intersect_shape(_make_boat_world_shape_query(target_position, rotation_y), 4)
+		if overlaps.is_empty():
+			return {
+				"collided": false,
+				"resolved_position": target_position,
+			}
+		collided = true
+		_world_collision_debug["overlap_query_hits"] = int(_world_collision_debug.get("overlap_query_hits", 0)) + 1
+		resolved_position = previous_position
+		rest_info = space_state.get_rest_info(_make_boat_world_shape_query(target_position, rotation_y))
+
+	var normal: Vector3 = Vector3(rest_info.get("normal", Vector3.ZERO))
+	if normal.length_squared() <= 0.0001:
+		normal = (previous_position - target_position).normalized()
+
+	if motion.length_squared() > 0.0001 and normal.length_squared() > 0.0001:
+		var slide_motion: Vector3 = motion.slide(normal) * WORLD_GEOMETRY_SLIDE_FACTOR
+		if slide_motion.length_squared() > 0.0025:
+			var slide_cast: PackedFloat32Array = space_state.cast_motion(_make_boat_world_shape_query(resolved_position, rotation_y, slide_motion))
+			var slide_fraction := 1.0
+			if slide_cast.size() >= 1:
+				slide_fraction = clampf(float(slide_cast[0]) - 0.02, 0.0, 1.0)
+			var slide_position: Vector3 = resolved_position + slide_motion * slide_fraction
+			if space_state.intersect_shape(_make_boat_world_shape_query(slide_position, rotation_y), 1).is_empty():
+				_world_collision_debug["slide_resolutions"] = int(_world_collision_debug.get("slide_resolutions", 0)) + 1
+				_world_collision_debug["last_slide_m"] = resolved_position.distance_to(slide_position)
+				resolved_position = slide_position
+
+	var collider_body: Node3D = _get_server_world_collider_from_query_result(rest_info)
+	var collision_label := "World geometry"
+	var damage_scale := 1.0
+	var contact_radius := 1.35
+	if collider_body != null:
+		collision_label = str(collider_body.get_meta("collision_label", collision_label))
+		damage_scale = float(collider_body.get_meta("collision_damage_scale", 1.0))
+		contact_radius = maxf(0.8, float(collider_body.get_meta("contact_radius", contact_radius)))
+
+	var contact_point: Vector3 = Vector3(rest_info.get("point", target_position))
+	if rest_info.is_empty() and collider_body != null:
+		contact_point = collider_body.global_position
+	elif rest_info.is_empty():
+		contact_point = target_position
+
+	var contact: Dictionary = _resolve_boat_hazard_contact(target_position, contact_point, contact_radius)
+	if not bool(contact.get("hit", false)) and collider_body != null:
+		contact = _resolve_boat_hazard_contact(target_position, collider_body.global_position, contact_radius)
+	if not bool(contact.get("hit", false)):
+		var fallback_impact_local: Vector3 = (contact_point - target_position).rotated(Vector3.UP, -rotation_y)
+		contact = {
+			"hit": true,
+			"impact_local": fallback_impact_local,
+			"reaction_direction": normal,
+			"contact_zone": "hull",
+			"damage_multiplier": 1.0,
+			"braced_speed_scale": 0.74,
+			"unbraced_speed_scale": 0.42,
+		}
+
+	if Vector3(contact.get("reaction_direction", Vector3.ZERO)).length_squared() <= 0.0001:
+		contact["reaction_direction"] = normal
+
+	return {
+		"collided": true,
+		"resolved_position": resolved_position,
+		"collision_label": collision_label,
+		"damage_scale": damage_scale,
+		"impact_local": contact.get("impact_local", Vector3.ZERO),
+		"reaction_direction": contact.get("reaction_direction", normal),
+		"contact_zone": contact.get("contact_zone", "hull"),
+		"damage_multiplier": float(contact.get("damage_multiplier", 1.0)),
+		"braced_speed_scale": float(contact.get("braced_speed_scale", 0.74)),
+		"unbraced_speed_scale": float(contact.get("unbraced_speed_scale", 0.42)),
+	}
+
+func _process_world_geometry_collisions(previous_position: Vector3) -> bool:
+	var rotation_y: float = float(boat_state.get("rotation_y", 0.0))
+	var world_collision: Dictionary = _resolve_world_geometry_motion(previous_position, boat_state.get("position", previous_position), rotation_y)
+	_sync_world_collision_debug_into_run_state()
+	if not bool(world_collision.get("collided", false)):
+		return true
+
+	var was_braced := float(boat_state.get("brace_timer", 0.0)) > 0.0
+	var impact_local: Vector3 = Vector3(world_collision.get("impact_local", Vector3.ZERO))
+	var brace_multiplier: float = float(boat_state.get("brace_multiplier", 1.0)) * _get_local_brace_multiplier(impact_local)
+	var damage: float = (WORLD_GEOMETRY_COLLISION_DAMAGE_BRACED if was_braced else WORLD_GEOMETRY_COLLISION_DAMAGE_UNBRACED) \
+		* float(world_collision.get("damage_scale", 1.0)) \
+		* float(world_collision.get("damage_multiplier", 1.0))
+	if was_braced:
+		damage = maxf(1.5, damage / maxf(1.0, brace_multiplier))
+
+	var run_continues: bool = _apply_localized_block_damage(damage, impact_local, "world_collision")
+	boat_state["position"] = world_collision.get("resolved_position", previous_position)
+	boat_state["hull_integrity"] = maxf(0.0, float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) - damage)
+	boat_state["speed"] = float(boat_state.get("speed", 0.0)) * float(world_collision.get("braced_speed_scale", 0.74) if was_braced else world_collision.get("unbraced_speed_scale", 0.42))
+	boat_state["last_impact_damage"] = damage
+	boat_state["last_impact_braced"] = was_braced
+	boat_state["last_collision_zone"] = str(world_collision.get("contact_zone", "hull"))
+	boat_state["collision_count"] = int(boat_state.get("collision_count", 0)) + 1
+	boat_state["brace_timer"] = 0.0
+	if not was_braced:
+		boat_state["breach_stacks"] = mini(MAX_BREACH_STACKS, int(boat_state.get("breach_stacks", 0)) + 1)
+	_world_collision_debug["resolved_hits"] = int(_world_collision_debug.get("resolved_hits", 0)) + 1
+	_world_collision_debug["last_label"] = str(world_collision.get("collision_label", "world geometry"))
+	_world_collision_debug["last_zone"] = str(world_collision.get("contact_zone", "hull"))
+	_world_collision_debug["last_damage"] = damage
+	_world_collision_debug["last_damage_scale"] = float(world_collision.get("damage_scale", 1.0))
+	_world_collision_debug["last_collision_tick"] = int(boat_state.get("tick", 0))
+	_world_collision_debug["last_braced"] = was_braced
+	_sync_world_collision_debug_into_run_state()
+
+	_apply_propulsion_damage(
+		PROPULSION_DAMAGE_COLLISION_BRACED * 0.65 if was_braced else PROPULSION_DAMAGE_COLLISION_UNBRACED * 0.7,
+		0.14 if was_braced else 0.24,
+		PROPULSION_FAULT_STATE_LABORING
+	)
+	_apply_run_impact_reactions(
+		world_collision.get("reaction_direction", Vector3.BACK),
+		0.34 if was_braced else 0.68,
+		was_braced,
+		not was_braced
+	)
+	if _apply_avatar_impact_damage(was_braced, impact_local):
+		_refresh_crew_vitals_metrics()
+		_broadcast_run_avatar_state()
+
+	_broadcast_runtime_boat_state()
+	_broadcast_boat_state()
+	_set_status("%s %s scrape for %.1f damage." % [
+		"Braced" if was_braced else "Unbraced",
+		str(world_collision.get("collision_label", "world geometry")),
+		damage,
+	])
+	if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
+		_resolve_run_failure("Hull destroyed after striking %s." % str(world_collision.get("collision_label", "world geometry")).to_lower())
+		return false
+	return run_continues
 
 func _get_runtime_hull_dimensions_from_stats(stats: Dictionary) -> Dictionary:
 	var span_length := maxi(1, int(stats.get("span_length", 4)))
@@ -3769,30 +4135,50 @@ func _step_boat_buoyancy(delta: float, world_position: Vector3, rotation_y: floa
 	var boat_center_y := SEA_SURFACE_Y + surface_offset + rest_ride_height + heave
 	var forward := -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
 	var right := Vector3.RIGHT.rotated(Vector3.UP, rotation_y)
-	var bow_distance := hull_length * 0.52
-	var stern_distance := hull_length * 0.42
-	var side_distance := hull_beam * 0.46
-	var probe_offsets: Array[Vector2] = [
-		Vector2(-side_distance, bow_distance),
-		Vector2(side_distance, bow_distance),
-		Vector2(-side_distance, -stern_distance),
-		Vector2(side_distance, -stern_distance),
-	]
-	var probe_depths: Array[float] = []
-	for probe_offset in probe_offsets:
+	var probes := _build_boat_buoyancy_probes(hull_length, hull_beam, _use_high_detail_buoyancy_probes(world_position, forward_speed))
+	var average_depth_sum := 0.0
+	var average_weight_sum := 0.0
+	var bow_depth_sum := 0.0
+	var bow_weight_sum := 0.0
+	var stern_depth_sum := 0.0
+	var stern_weight_sum := 0.0
+	var port_depth_sum := 0.0
+	var port_weight_sum := 0.0
+	var starboard_depth_sum := 0.0
+	var starboard_weight_sum := 0.0
+	for probe in probes:
+		var probe_offset: Vector2 = probe.get("offset", Vector2.ZERO)
+		var probe_weight := maxf(0.1, float(probe.get("weight", 1.0)))
+		var zone_x := float(probe.get("zone_x", 0.0))
+		var zone_z := float(probe.get("zone_z", 0.0))
 		var probe_world_position: Vector3 = world_position + forward * probe_offset.y + right * probe_offset.x
 		var probe_surface_y: float = get_wave_surface_height(probe_world_position)
 		var probe_hull_y: float = boat_center_y + probe_offset.y * sin(pitch_angle) + probe_offset.x * sin(roll_angle) + probe_keel_offset
-		probe_depths.append(probe_surface_y - probe_hull_y)
+		var probe_depth := probe_surface_y - probe_hull_y
+		average_depth_sum += probe_depth * probe_weight
+		average_weight_sum += probe_weight
+		if zone_z > 0.0:
+			var bow_weight := probe_weight * zone_z
+			bow_depth_sum += probe_depth * bow_weight
+			bow_weight_sum += bow_weight
+		elif zone_z < 0.0:
+			var stern_weight := probe_weight * absf(zone_z)
+			stern_depth_sum += probe_depth * stern_weight
+			stern_weight_sum += stern_weight
+		if zone_x < 0.0:
+			var port_weight := probe_weight * absf(zone_x)
+			port_depth_sum += probe_depth * port_weight
+			port_weight_sum += port_weight
+		elif zone_x > 0.0:
+			var starboard_weight := probe_weight * zone_x
+			starboard_depth_sum += probe_depth * starboard_weight
+			starboard_weight_sum += starboard_weight
 
-	var average_depth := 0.0
-	for depth in probe_depths:
-		average_depth += depth
-	average_depth /= float(maxi(1, probe_depths.size()))
-	var bow_depth := (probe_depths[0] + probe_depths[1]) * 0.5
-	var stern_depth := (probe_depths[2] + probe_depths[3]) * 0.5
-	var port_depth := (probe_depths[0] + probe_depths[2]) * 0.5
-	var starboard_depth := (probe_depths[1] + probe_depths[3]) * 0.5
+	var average_depth := average_depth_sum / maxf(0.001, average_weight_sum)
+	var bow_depth := bow_depth_sum / maxf(0.001, bow_weight_sum)
+	var stern_depth := stern_depth_sum / maxf(0.001, stern_weight_sum)
+	var port_depth := port_depth_sum / maxf(0.001, port_weight_sum)
+	var starboard_depth := starboard_depth_sum / maxf(0.001, starboard_weight_sum)
 	var heave_spring := BOAT_HEAVE_SPRING + maxf(0.0, reserve_buoyancy) * 0.35 + roll_resistance * 1.8
 	var heave_damping := BOAT_HEAVE_DAMPING + roll_resistance * 1.6
 	heave_velocity += (average_depth - rest_probe_depth) * heave_spring * delta
@@ -3834,6 +4220,7 @@ func _step_boat_buoyancy(delta: float, world_position: Vector3, rotation_y: floa
 		"buoyancy_roll_velocity": roll_velocity,
 		"water_drag_multiplier": clampf(1.0 - sea_resistance, 0.86, 1.0),
 		"buoyancy_submersion": submersion_ratio,
+		"probe_count": probes.size(),
 	}
 
 func server_step_shared_boat(delta: float) -> void:
@@ -3879,6 +4266,7 @@ func server_step_shared_boat(delta: float) -> void:
 	boat_state["buoyancy_roll_velocity"] = float(buoyancy_step.get("buoyancy_roll_velocity", 0.0))
 	boat_state["water_drag_multiplier"] = float(buoyancy_step.get("water_drag_multiplier", 1.0))
 	boat_state["buoyancy_submersion"] = float(buoyancy_step.get("buoyancy_submersion", 0.0))
+	boat_state["buoyancy_probe_count"] = int(buoyancy_step.get("probe_count", 4))
 	var squall_drag_multiplier := _get_active_squall_drag_multiplier(boat_position_for_drag)
 	boat_state["squall_drag_multiplier"] = squall_drag_multiplier
 	var top_speed_limit := base_top_speed * maxf(0.45, 1.0 - float(breach_stacks) * BREACH_SPEED_PENALTY) * squall_drag_multiplier * float(boat_state.get("water_drag_multiplier", 1.0))
@@ -3922,7 +4310,8 @@ func server_step_shared_boat(delta: float) -> void:
 	rotation_y += float(propulsion_step.get("yaw_bias", 0.0)) * clampf(throttle, 0.0, 1.0) * delta
 
 	var forward: Vector3 = -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
-	var position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var previous_position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	var position: Vector3 = previous_position
 	position += forward * current_speed * delta
 
 	boat_state["position"] = position
@@ -3933,6 +4322,8 @@ func server_step_shared_boat(delta: float) -> void:
 	boat_state["actual_thrust"] = 0.0 if is_zero_approx(top_speed_limit) else target_speed / maxf(1.0, top_speed_limit)
 	boat_state["tick"] = int(boat_state.get("tick", 0)) + 1
 	boat_state["driver_peer_id"] = driver_peer_id
+	if not _process_world_geometry_collisions(previous_position):
+		return
 	_update_sinking_chunks(delta)
 	_update_active_chunk_streaming()
 	_process_extraction_reveals()
@@ -3979,6 +4370,7 @@ func _set_status(message: String) -> void:
 	print(message)
 
 func _emit_all_runtime_state() -> void:
+	_sync_world_collision_debug_into_run_state()
 	emit_signal("session_phase_changed", session_phase)
 	emit_signal("boat_blueprint_changed", boat_blueprint.duplicate(true))
 	emit_signal("progression_state_changed", progression_state.duplicate(true))
@@ -4070,6 +4462,7 @@ func _broadcast_loot_state() -> void:
 			client_receive_loot_state.rpc_id(int(peer_id), targets)
 
 func _broadcast_run_state() -> void:
+	_sync_world_collision_debug_into_run_state()
 	emit_signal("run_state_changed", run_state.duplicate(true))
 	if _has_network_server():
 		var state := run_state.duplicate(true)
@@ -4093,6 +4486,7 @@ func _send_bootstrap(peer_id: int) -> void:
 	client_receive_hazard_state.rpc_id(peer_id, hazard_state.duplicate(true))
 	client_receive_station_state.rpc_id(peer_id, station_state.duplicate(true))
 	client_receive_loot_state.rpc_id(peer_id, loot_state.duplicate(true))
+	_sync_world_collision_debug_into_run_state()
 	client_receive_run_state.rpc_id(peer_id, run_state.duplicate(true))
 	client_receive_hangar_avatar_state.rpc_id(peer_id, hangar_avatar_state.duplicate(true))
 	client_receive_run_avatar_state.rpc_id(peer_id, run_avatar_state.duplicate(true))
@@ -4350,6 +4744,7 @@ func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockb
 		avatar_state["facing_y"] = float(facing_y_override)
 	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
 	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+	avatar_state["recent_reboard_grace"] = 0.0
 	run_avatar_state[peer_id] = avatar_state
 	_apply_peer_health_damage(peer_id, AVATAR_OVERBOARD_ENTRY_DAMAGE, 1.0)
 	_refresh_run_avatar_runtime_fields(peer_id)
@@ -4382,6 +4777,8 @@ func _request_peer_overboard_transition(peer_id: int, world_position: Vector3, v
 		return
 	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
 	if avatar_state.is_empty() or _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
+		return
+	if float(avatar_state.get("recent_reboard_grace", 0.0)) > 0.0:
 		return
 	var deck_position: Vector3 = avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
 	var local_position := _run_world_to_local(world_position)
@@ -4446,6 +4843,7 @@ func _attempt_overboard_recovery(peer_id: int) -> void:
 		avatar_state["grounded"] = true
 		avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
 		avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+		avatar_state["recent_reboard_grace"] = AVATAR_REBOARD_OVERBOARD_GRACE
 		run_avatar_state[peer_id] = avatar_state
 		_refresh_run_avatar_runtime_fields(peer_id)
 		var direct_peer_reaction: Dictionary = reaction_state.get(peer_id, {})
@@ -4476,6 +4874,7 @@ func _attempt_overboard_recovery(peer_id: int) -> void:
 		avatar_state["grounded"] = true
 		avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
 		avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+		avatar_state["recent_reboard_grace"] = AVATAR_REBOARD_OVERBOARD_GRACE
 		run_avatar_state[peer_id] = avatar_state
 		_refresh_run_avatar_runtime_fields(peer_id)
 		var emergency_peer_reaction: Dictionary = reaction_state.get(peer_id, {})
@@ -4500,6 +4899,7 @@ func _attempt_overboard_recovery(peer_id: int) -> void:
 	avatar_state["grounded"] = true
 	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
 	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+	avatar_state["recent_reboard_grace"] = AVATAR_REBOARD_OVERBOARD_GRACE
 	run_avatar_state[peer_id] = avatar_state
 	_refresh_run_avatar_runtime_fields(peer_id)
 	var peer_reaction: Dictionary = reaction_state.get(peer_id, {})
@@ -4535,6 +4935,7 @@ func _try_auto_overboard_reboard(peer_id: int, avatar_state: Dictionary) -> bool
 	avatar_state["grounded"] = true
 	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
 	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+	avatar_state["recent_reboard_grace"] = AVATAR_REBOARD_OVERBOARD_GRACE
 	run_avatar_state[peer_id] = avatar_state
 	_refresh_run_avatar_runtime_fields(peer_id)
 	run_state["recoveries_completed"] = int(run_state.get("recoveries_completed", 0)) + 1
@@ -4690,6 +5091,7 @@ func _make_default_run_avatar_state(spawn_index: int) -> Dictionary:
 		"stamina_exhausted": false,
 		"overboard_attrition_delay": AVATAR_OVERBOARD_ATTRITION_DELAY,
 		"overboard_attrition_timer": AVATAR_OVERBOARD_ATTRITION_INTERVAL,
+		"recent_reboard_grace": 0.0,
 	}
 
 func _run_local_to_world(local_position: Vector3) -> Vector3:
@@ -4822,6 +5224,38 @@ func _get_surface_access_edge(surface: Dictionary, local_position: Vector3, proj
 	)
 	return candidates[0]
 
+func _get_reboard_inset_direction(side: String) -> Vector3:
+	match side:
+		"port edge":
+			return Vector3.RIGHT
+		"starboard edge":
+			return Vector3.LEFT
+		"stern edge":
+			return Vector3.FORWARD
+		"bow edge":
+			return Vector3.BACK
+		_:
+			return Vector3.ZERO
+
+func _get_surface_reboard_deck_position(surface: Dictionary, access_edge: Dictionary, fallback_position: Vector3) -> Vector3:
+	if surface.is_empty() or access_edge.is_empty():
+		return fallback_position
+	var local_center: Vector3 = surface.get("local_center", fallback_position)
+	var deck_y := float(surface.get("deck_y", fallback_position.y))
+	var half_size_x := float(surface.get("half_size_x", 0.4))
+	var half_size_z := float(surface.get("half_size_z", 0.4))
+	var inset := minf(
+		maxf(0.08, RUN_AVATAR_COLLISION_RADIUS + RUN_OVERBOARD_REBOARD_INSET_MARGIN),
+		maxf(0.08, minf(half_size_x, half_size_z) - 0.06)
+	)
+	var safe_margin := minf(inset, maxf(0.08, minf(half_size_x, half_size_z) - 0.06))
+	var edge_position: Vector3 = access_edge.get("edge_position", fallback_position)
+	var target_position := edge_position + _get_reboard_inset_direction(str(access_edge.get("side", ""))) * inset
+	target_position.x = clampf(target_position.x, local_center.x - half_size_x + safe_margin, local_center.x + half_size_x - safe_margin)
+	target_position.z = clampf(target_position.z, local_center.z - half_size_z + safe_margin, local_center.z + half_size_z - safe_margin)
+	target_position.y = deck_y
+	return target_position
+
 func _project_run_deck_position(deck_position: Vector3, max_snap_distance: float = RUN_DECK_SURFACE_SNAP_DISTANCE, force_nearest: bool = false) -> Dictionary:
 	var surfaces := get_run_walkable_surfaces()
 	if surfaces.is_empty():
@@ -4907,14 +5341,15 @@ func get_direct_overboard_reboard_target(world_position: Vector3) -> Dictionary:
 	var access_edge := _get_surface_access_edge(surface, local_position, deck_position, RUN_OVERBOARD_DIRECT_REBOARD_EDGE_MARGIN)
 	if access_edge.is_empty():
 		return {}
-	var vertical_gap := deck_position.y - local_position.y
+	var safe_deck_position := _get_surface_reboard_deck_position(surface, access_edge, deck_position)
+	var vertical_gap := safe_deck_position.y - local_position.y
 	if vertical_gap < 0.0 or vertical_gap > RUN_OVERBOARD_DIRECT_REBOARD_MAX_HEIGHT:
 		return {}
-	var board_world_position := _run_local_to_world(deck_position)
+	var board_world_position := _run_local_to_world(safe_deck_position)
 	if sanitized_world_position.distance_to(board_world_position) > RUN_OVERBOARD_DIRECT_REBOARD_WORLD_DISTANCE:
 		return {}
 	return {
-		"deck_position": deck_position,
+		"deck_position": safe_deck_position,
 		"world_position": board_world_position,
 		"horizontal_distance": float(projection.get("horizontal_distance", 0.0)),
 		"vertical_gap": vertical_gap,
@@ -4945,14 +5380,15 @@ func get_emergency_overboard_reboard_target(world_position: Vector3) -> Dictiona
 	var access_edge := _get_surface_access_edge(surface, local_position, deck_position, RUN_OVERBOARD_EMERGENCY_REBOARD_EDGE_MARGIN)
 	if access_edge.is_empty():
 		return {}
-	var vertical_gap := deck_position.y - local_position.y
+	var safe_deck_position := _get_surface_reboard_deck_position(surface, access_edge, deck_position)
+	var vertical_gap := safe_deck_position.y - local_position.y
 	if vertical_gap < 0.0 or vertical_gap > RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_HEIGHT:
 		return {}
-	var board_world_position := _run_local_to_world(deck_position)
+	var board_world_position := _run_local_to_world(safe_deck_position)
 	if sanitized_world_position.distance_to(board_world_position) > RUN_OVERBOARD_EMERGENCY_REBOARD_WORLD_DISTANCE:
 		return {}
 	return {
-		"deck_position": deck_position,
+		"deck_position": safe_deck_position,
 		"world_position": board_world_position,
 		"horizontal_distance": float(projection.get("horizontal_distance", 0.0)),
 		"vertical_gap": vertical_gap,
@@ -5012,6 +5448,7 @@ func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
 	avatar_state["max_stamina"] = max_stamina
 	avatar_state["stamina"] = clampf(float(avatar_state.get("stamina", max_stamina)), 0.0, max_stamina)
 	avatar_state["downed_timer"] = maxf(0.0, float(avatar_state.get("downed_timer", 0.0)))
+	avatar_state["recent_reboard_grace"] = maxf(0.0, float(avatar_state.get("recent_reboard_grace", 0.0)))
 	if bool(avatar_state.get("stamina_exhausted", false)) and float(avatar_state.get("stamina", max_stamina)) >= AVATAR_STAMINA_EXHAUSTED_RECOVERY_THRESHOLD:
 		avatar_state["stamina_exhausted"] = false
 	if avatar_mode == RUN_AVATAR_MODE_OVERBOARD:
@@ -5252,6 +5689,10 @@ func _process_run_avatar_vitals(delta: float) -> void:
 				avatar_changed = avatar_changed or state_changed
 				continue
 		else:
+			var reboard_grace := maxf(0.0, float(avatar_state.get("recent_reboard_grace", 0.0)) - delta)
+			if not is_equal_approx(reboard_grace, float(avatar_state.get("recent_reboard_grace", 0.0))):
+				avatar_state["recent_reboard_grace"] = reboard_grace
+				state_changed = true
 			var regen_delay := maxf(0.0, float(avatar_state.get("stamina_regen_delay", 0.0)) - delta)
 			if not is_equal_approx(regen_delay, float(avatar_state.get("stamina_regen_delay", 0.0))):
 				avatar_state["stamina_regen_delay"] = regen_delay
@@ -5586,6 +6027,7 @@ func _reset_run_runtime() -> void:
 	_peer_inputs = {}
 	_boat_broadcast_accumulator = 0.0
 	_run_state_broadcast_accumulator = 0.0
+	_reset_world_collision_debug()
 	_next_hazard_id = 1
 	_next_loot_id = 1
 	_next_runtime_chunk_id = 1
@@ -5641,6 +6083,7 @@ func _reset_run_runtime() -> void:
 		"buoyancy_roll_velocity": 0.0,
 		"water_drag_multiplier": 1.0,
 		"buoyancy_submersion": 0.0,
+		"buoyancy_probe_count": 4,
 		"freeboard_rating": float(blueprint_stats.get("freeboard_rating", 50.0)),
 		"top_heavy_penalty": float(blueprint_stats.get("top_heavy_penalty", 0.0)),
 		"hydrostatic_class": str(blueprint_stats.get("hydrostatic_class", "stable")),
@@ -5672,6 +6115,7 @@ func _reset_run_runtime() -> void:
 		"breach_stacks": 0,
 		"last_impact_damage": 0.0,
 		"last_impact_braced": false,
+		"last_collision_zone": "",
 		"collision_count": 0,
 		"cargo_capacity": cargo_capacity,
 		"brace_multiplier": brace_multiplier,
@@ -5774,6 +6218,7 @@ func _initialize_generated_run_state(repair_capacity: int, cargo_capacity: int, 
 		"reward_schematics": [],
 		"loot_lost_items": {},
 		"repair_debt_delta": {},
+		"world_collision_debug": _world_collision_debug.duplicate(true),
 		"result_title": "",
 		"result_message": "",
 		"failure_reason": "",
@@ -6747,6 +7192,7 @@ func _clear_run_state_for_hangar() -> void:
 		"reward_schematics": [],
 		"loot_lost_items": {},
 		"repair_debt_delta": {},
+		"world_collision_debug": _world_collision_debug.duplicate(true),
 		"result_title": "",
 		"result_message": "",
 		"failure_reason": "",
@@ -7822,15 +8268,20 @@ func _process_hazard_collisions() -> void:
 		var hazard: Dictionary = hazard_state[index]
 		var hazard_position: Vector3 = hazard.get("position", Vector3.ZERO)
 		var hazard_radius: float = float(hazard.get("radius", 1.25))
-		if boat_position.distance_to(hazard_position) > BOAT_COLLISION_RADIUS + hazard_radius:
+		if boat_position.distance_to(hazard_position) > BOAT_COLLISION_RADIUS + hazard_radius + BOAT_COLLISION_CONTACT_MARGIN:
+			continue
+		var contact := _resolve_boat_hazard_contact(boat_position, hazard_position, hazard_radius)
+		if not bool(contact.get("hit", false)):
 			continue
 
 		var was_braced := float(boat_state.get("brace_timer", 0.0)) > 0.0
-		var impact_local := (hazard_position - boat_position).rotated(Vector3.UP, -float(boat_state.get("rotation_y", 0.0)))
+		var impact_local: Vector3 = contact.get("impact_local", Vector3.ZERO)
 		var brace_multiplier: float = float(boat_state.get("brace_multiplier", 1.0)) * _get_local_brace_multiplier(impact_local)
-		var damage := COLLISION_DAMAGE_BRACED if was_braced else COLLISION_DAMAGE_UNBRACED
+		var damage := (COLLISION_DAMAGE_BRACED if was_braced else COLLISION_DAMAGE_UNBRACED) * float(contact.get("damage_multiplier", 1.0))
 		if was_braced:
 			damage = maxf(2.0, damage / maxf(1.0, brace_multiplier))
+		else:
+			damage = maxf(3.0, damage)
 		var run_continues := _apply_localized_block_damage(damage, impact_local, "collision")
 		_broadcast_runtime_boat_state()
 		if not run_continues:
@@ -7840,10 +8291,11 @@ func _process_hazard_collisions() -> void:
 			return
 		var breach_delta := 1 if was_braced else 2
 		boat_state["hull_integrity"] = maxf(0.0, float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) - damage)
-		boat_state["speed"] = float(boat_state.get("speed", 0.0)) * (0.72 if was_braced else 0.38)
+		boat_state["speed"] = float(boat_state.get("speed", 0.0)) * float(contact.get("braced_speed_scale", 0.72) if was_braced else contact.get("unbraced_speed_scale", 0.38))
 		boat_state["breach_stacks"] = mini(MAX_BREACH_STACKS, int(boat_state.get("breach_stacks", 0)) + breach_delta)
 		boat_state["last_impact_damage"] = damage
 		boat_state["last_impact_braced"] = was_braced
+		boat_state["last_collision_zone"] = str(contact.get("contact_zone", "hull"))
 		boat_state["collision_count"] = int(boat_state.get("collision_count", 0)) + 1
 		boat_state["brace_timer"] = 0.0
 		_apply_propulsion_damage(
@@ -7852,7 +8304,7 @@ func _process_hazard_collisions() -> void:
 			PROPULSION_FAULT_STATE_LABORING
 		)
 		_apply_run_impact_reactions(
-			(boat_position - hazard_position).normalized(),
+			contact.get("reaction_direction", (boat_position - hazard_position).normalized()),
 			0.42 if was_braced else 0.92,
 			was_braced,
 			not was_braced
@@ -7864,7 +8316,7 @@ func _process_hazard_collisions() -> void:
 		_respawn_hazard(index)
 		_broadcast_hazard_state()
 		_broadcast_boat_state()
-		_set_status("%s impact for %.1f damage." % ["Braced" if was_braced else "Unbraced", damage])
+		_set_status("%s %s impact for %.1f damage." % ["Braced" if was_braced else "Unbraced", str(contact.get("contact_zone", "hull")), damage])
 		if float(boat_state.get("hull_integrity", BOAT_MAX_INTEGRITY)) <= 0.0:
 			_resolve_run_failure("Hull destroyed in open water.")
 		return

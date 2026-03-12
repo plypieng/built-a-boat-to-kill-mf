@@ -1,7 +1,7 @@
 extends Node
 
 const DEFAULT_HOST := "127.0.0.1"
-const DEFAULT_PORT := 7000
+const DEFAULT_PORT := 27100
 const MAX_PLAYERS := 4
 const DEFAULT_PLAYER_NAME := "Captain"
 const DEFAULT_RUN_SEED := 424242
@@ -39,6 +39,7 @@ func parse_cmdline_overrides() -> Dictionary:
 		"autohangar_role": "",
 		"autoclaim_station": "",
 		"autocontinue_to_dock": false,
+		"editor_clean_blueprint": false,
 	}
 
 	for arg in OS.get_cmdline_user_args():
@@ -86,6 +87,8 @@ func parse_cmdline_overrides() -> Dictionary:
 			overrides["autoclaim_station"] = arg.trim_prefix("--autoclaim-station=").strip_edges().to_lower()
 		elif arg == "--autocontinue-to-dock":
 			overrides["autocontinue_to_dock"] = true
+		elif arg == "--editor-clean-blueprint":
+			overrides["editor_clean_blueprint"] = true
 
 	return overrides
 
@@ -109,11 +112,12 @@ func shutdown_hosted_server() -> void:
 	OS.kill(_hosted_server_pid)
 	_hosted_server_pid = -1
 
-func queue_scene_load(scene_path: String, title: String = "Loading", detail: String = "") -> void:
+func queue_scene_load(scene_path: String, title: String = "Loading", detail: String = "", trace: Array = []) -> void:
 	_pending_scene_load = {
 		"scene_path": scene_path,
 		"title": title,
 		"detail": detail,
+		"trace": trace.duplicate(true),
 	}
 
 func consume_scene_load() -> Dictionary:

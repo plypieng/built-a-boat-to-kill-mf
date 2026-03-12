@@ -11,6 +11,8 @@ var _parent_pid_guard_disabled := false
 
 func _ready() -> void:
 	var overrides := GameConfig.parse_cmdline_overrides()
+	if bool(overrides.get("editor_clean_blueprint", false)):
+		DockState.use_default_boat_blueprint_runtime()
 	var port := int(overrides["port"])
 	var seed := int(overrides["seed"])
 	_parent_pid = int(overrides.get("parent_pid", 0))

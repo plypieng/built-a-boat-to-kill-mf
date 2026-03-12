@@ -23,6 +23,7 @@ var host_retry_pending := false
 var host_retry_attempts := 0
 var hosted_server_pid := -1
 var hosted_lan_ip := "127.0.0.1"
+var expected_host_seed := -1
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -78,15 +79,17 @@ func _on_host_pressed() -> void:
 	host_start_in_progress = true
 	host_retry_pending = false
 	host_retry_attempts = 0
+	expected_host_seed = _generate_host_seed()
 	host_input.text = GameConfig.DEFAULT_HOST
 	hosted_lan_ip = _get_preferred_local_ip()
 	_refresh_host_help()
 	_refresh_buttons()
 	GameConfig.shutdown_hosted_server()
 
-	var launch_error := _launch_local_server(_get_port(), _generate_host_seed())
+	var launch_error := _launch_local_server(_get_port(), expected_host_seed)
 	if launch_error != OK:
 		host_start_in_progress = false
+		expected_host_seed = -1
 		_refresh_buttons()
 		GameConfig.clear_hosted_server_pid()
 		status_label.text = "Could not launch a local authoritative server from this build. Start the server manually and use Join By IP."
@@ -98,6 +101,7 @@ func _on_host_pressed() -> void:
 func _on_connect_pressed() -> void:
 	host_start_in_progress = false
 	host_retry_pending = false
+	expected_host_seed = -1
 	_refresh_buttons()
 	_attempt_connect()
 
@@ -152,6 +156,8 @@ func _make_godot_project_server_args(project_path: String, port: int, seed: int)
 		"--",
 	])
 	args.append_array(_make_server_runtime_args(port, seed))
+	if OS.get_executable_path().get_file().to_lower().contains("godot"):
+		args.append("--editor-clean-blueprint")
 	return args
 
 func _make_exported_host_server_args(port: int, seed: int) -> PackedStringArray:
@@ -267,12 +273,40 @@ func _on_status_changed(message: String) -> void:
 	status_label.text = message
 
 func _on_connection_ready() -> void:
+	if host_start_in_progress and expected_host_seed > 0 and NetworkRuntime.run_seed != expected_host_seed:
+		var expected_seed := expected_host_seed
+		var connected_seed := NetworkRuntime.run_seed
+		host_start_in_progress = false
+		host_retry_pending = false
+		host_retry_attempts = 0
+		expected_host_seed = -1
+		GameConfig.shutdown_hosted_server()
+		GameConfig.clear_hosted_server_pid()
+		NetworkRuntime.shutdown()
+		_refresh_buttons()
+		status_label.text = "Port %d answered with another server (seed %d, expected %d). Stop the stale host on that port, then try Host Game again." % [
+			_get_port(),
+			connected_seed,
+			expected_seed,
+		]
+		return
 	host_start_in_progress = false
 	host_retry_pending = false
+	host_retry_attempts = 0
+	expected_host_seed = -1
 	var target_scene := HANGAR_SCENE if NetworkRuntime.get_session_phase() == NetworkRuntime.SESSION_PHASE_HANGAR else RUN_CLIENT_SCENE
 	var title := "Entering Hangar" if target_scene == HANGAR_SCENE else "Launching Run"
 	var detail := "Loading the build yard and reconnecting your crew." if target_scene == HANGAR_SCENE else "Charting the sea, loading the weather, and hauling your boat into the next run."
-	GameConfig.queue_scene_load(target_scene, title, detail)
+	var trace := [
+		"Connection handshake completed.",
+		"Bootstrap received from %s:%d." % [NetworkRuntime.current_host, NetworkRuntime.current_port],
+	]
+	if target_scene == HANGAR_SCENE:
+		trace.append("Restoring shared hangar blueprint and crew presence.")
+	else:
+		trace.append("Server reports an active run. Rejoining the sea instance.")
+		trace.append("Restoring boat runtime state and stations.")
+	GameConfig.queue_scene_load(target_scene, title, detail, trace)
 	get_tree().change_scene_to_file(LOADING_SCENE)
 
 func _on_connect_interrupted() -> void:

@@ -36,6 +36,7 @@ const HANGAR_POINTER_REPEAT_DELAY := 0.22
 const HANGAR_POINTER_REPEAT_INTERVAL := 0.12
 const HANGAR_CURSOR_SWITCH_STICKINESS := 0.08
 const HANGAR_CURSOR_PULSE_DURATION := 0.12
+const HANGAR_LAUNCH_TIMEOUT_SECONDS := 6.0
 const PALETTE_CATEGORY_ORDER := [
 	"all",
 	"hull",
@@ -157,6 +158,8 @@ var hud_details_visible := false
 var inventory_panel_visible := false
 var selected_hangar_tool_index := 0
 var launch_transition_pending := false
+var launch_transition_timeout_remaining := 0.0
+var launch_transition_error_message := ""
 var hangar_camera_dragging := false
 var hangar_tool_mouse_down := false
 var hangar_tool_hold_time := 0.0
@@ -207,7 +210,11 @@ func _ready() -> void:
 		GameConfig.queue_scene_load(
 			RUN_CLIENT_SCENE,
 			"Launching Run",
-			"Charting the sea, loading the weather, and hauling your boat into the next run."
+			"Charting the sea, loading the weather, and hauling your boat into the next run.",
+			[
+				"Run phase already active. Rejoining the active sea instance.",
+				"Restoring boat runtime layout and crew state.",
+			]
 		)
 		get_tree().call_deferred("change_scene_to_file", LOADING_SCENE)
 		return
@@ -221,6 +228,12 @@ func _process(delta: float) -> void:
 	connect_time_seconds += delta
 	if hangar_hold_action_cooldown > 0.0:
 		hangar_hold_action_cooldown = maxf(0.0, hangar_hold_action_cooldown - delta)
+	if launch_transition_pending:
+		launch_transition_timeout_remaining = maxf(0.0, launch_transition_timeout_remaining - delta)
+		if launch_transition_timeout_remaining <= 0.0 and NetworkRuntime.get_session_phase() == NetworkRuntime.SESSION_PHASE_HANGAR:
+			launch_transition_pending = false
+			launch_transition_error_message = "Launch did not complete. Restart the host/server or reconnect, then try again."
+			_refresh_hud()
 	if cursor_action_pulse_time > 0.0:
 		cursor_action_pulse_time = maxf(0.0, cursor_action_pulse_time - delta)
 		_refresh_cursor_visual()
@@ -521,7 +534,7 @@ func _build_local_avatar() -> void:
 		local_avatar_body.global_position = local_state.get("position", Vector3.ZERO)
 		local_avatar_facing_y = float(local_state.get("facing_y", PI))
 	else:
-		local_avatar_body.global_position = Vector3(0.0, 0.55, 6.6)
+		local_avatar_body.global_position = Vector3(0.0, 0.55, 5.0)
 		local_avatar_facing_y = 0.0
 	_apply_autohangar_spawn_override()
 	local_avatar_body.rotation.y = local_avatar_facing_y
@@ -1265,6 +1278,8 @@ func _refresh_hud() -> void:
 	var status_body := NetworkRuntime.status_message
 	if launch_transition_pending:
 		status_body = "Preparing the run. Charting the sea and loading the next scene."
+	elif not launch_transition_error_message.is_empty() and NetworkRuntime.get_session_phase() == NetworkRuntime.SESSION_PHASE_HANGAR:
+		status_body = launch_transition_error_message
 	status_label.text = _build_dock_status_text(status_body)
 	launch_button.disabled = launch_transition_pending or NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR
 	launch_button.text = "Launching..." if launch_transition_pending else _build_launch_button_label(readiness_snapshot)
@@ -1891,7 +1906,10 @@ func _query_build_target_from_camera() -> Dictionary:
 	var viewport_rect := get_viewport().get_visible_rect()
 	var screen_target := viewport_rect.size * 0.5
 	if not hangar_camera_dragging and not _is_mouse_captured():
-		screen_target = get_viewport().get_mouse_position()
+		var mouse_position := get_viewport().get_mouse_position()
+		var hovered_control := get_viewport().gui_get_hovered_control()
+		if hovered_control == null and viewport_rect.has_point(mouse_position):
+			screen_target = mouse_position
 	var ray_origin := camera.project_ray_origin(screen_target)
 	var ray_direction := camera.project_ray_normal(screen_target)
 	var ray_length := NetworkRuntime.get_hangar_build_range() + chase_camera_distance + 10.0
@@ -2265,7 +2283,11 @@ func _remove_selected_block() -> bool:
 func _launch_run() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
+	if launch_transition_pending:
+		return
 	launch_transition_pending = true
+	launch_transition_timeout_remaining = HANGAR_LAUNCH_TIMEOUT_SECONDS
+	launch_transition_error_message = ""
 	_set_mouse_capture(false)
 	NetworkRuntime.request_launch_run()
 	_refresh_hud()
@@ -3101,6 +3123,8 @@ func _position_local_avatar_for_autobuild_cell(cell: Array) -> void:
 	_send_local_hangar_presence(local_avatar_body.global_position, Vector3.ZERO, true)
 
 func _on_status_changed(_message: String) -> void:
+	if str(NetworkRuntime.status_message).begins_with("Run launched by "):
+		launch_transition_error_message = ""
 	_refresh_hud()
 
 func _on_peer_snapshot_changed(_snapshot: Dictionary) -> void:
@@ -3125,15 +3149,25 @@ func _on_boat_blueprint_changed(_snapshot: Dictionary) -> void:
 
 func _on_session_phase_changed(phase: String) -> void:
 	if phase == NetworkRuntime.SESSION_PHASE_RUN:
+		launch_transition_pending = false
+		launch_transition_timeout_remaining = 0.0
+		launch_transition_error_message = ""
 		_set_mouse_capture(false)
 		GameConfig.queue_scene_load(
 			RUN_CLIENT_SCENE,
 			"Launching Run",
-			"Charting the sea, loading the weather, and hauling your boat into the next run."
+			"Charting the sea, loading the weather, and hauling your boat into the next run.",
+			[
+				"Launch request approved by the host.",
+				"Bootstrapping sea state, hazards, and runtime hull.",
+				"Preparing camera handoff from hangar to run.",
+			]
 		)
 		get_tree().change_scene_to_file(LOADING_SCENE)
 		return
 	launch_transition_pending = false
+	launch_transition_timeout_remaining = 0.0
+	launch_transition_error_message = ""
 	_set_mouse_capture(true)
 	_refresh_hud()
 
