@@ -2540,6 +2540,8 @@ func _build_station_prompt_compact(selected_station_id: String, local_station_id
 	if local_downed:
 		return "DOWNED | Hold still and wait for a rally."
 	if local_overboard:
+		if not _get_local_direct_reboard_target().is_empty():
+			return "OVERBOARD | Reachable hull edge. Press Space or F to climb aboard."
 		return "OVERBOARD | Reach a ladder or nearby hull edge, then press Space or F to climb."
 	if not local_station_id.is_empty():
 		return "%s HELD | %s" % [
@@ -5318,6 +5320,8 @@ func _build_objective_text() -> String:
 	if _is_local_downed():
 		return "Objective: Hold position until you self-recover, or let a nearby crewmate rally you."
 	if _is_local_off_deck():
+		if not _get_local_direct_reboard_target().is_empty():
+			return "Objective: Reach the nearby hull edge and press Space or F to climb back aboard."
 		return "Objective: Swim to a ladder, stern line, or reachable hull edge, then press Space or F to climb back aboard."
 
 	var boat_position: Vector3 = NetworkRuntime.boat_state.get("position", Vector3.ZERO)
