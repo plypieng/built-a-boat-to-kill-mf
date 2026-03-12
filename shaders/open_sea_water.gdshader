@@ -22,6 +22,11 @@ uniform float crest_tint_strength : hint_range(0.0, 1.0) = 0.22;
 uniform float trough_darkness : hint_range(0.0, 1.0) = 0.22;
 uniform float distance_haze : hint_range(0.0, 1.0) = 0.03;
 uniform float slope_shading_strength : hint_range(0.0, 1.0) = 0.12;
+uniform vec3 sun_direction = vec3(0.0, 0.72, 0.69);
+uniform vec3 sun_color : source_color = vec3(1.0, 0.94, 0.80);
+uniform float sun_glint_strength : hint_range(0.0, 2.0) = 0.72;
+uniform float sun_glint_focus : hint_range(8.0, 256.0) = 110.0;
+uniform float sun_horizon_fade : hint_range(0.0, 1.0) = 0.18;
 
 uniform sampler2D texture_normal;
 uniform sampler2D texture_normal2;
@@ -122,6 +127,11 @@ void fragment() {
 	vec3 water_body = mix(refracted_scene * base_color, base_color, 0.66 + depth_blend * 0.18);
 	vec3 reflected_color = mix(horizon_color.rgb, albedo2, 0.18 + slope * 0.16);
 	vec3 color = mix(water_body, reflected_color, clamp(fresnel * reflection_strength * 1.08, 0.0, 1.0));
+	vec3 light_dir = normalize(sun_direction);
+	vec3 reflection_dir = reflect(-light_dir, normalize(NORMAL));
+	float glint_alignment = pow(max(dot(normalize(VIEW), reflection_dir), 0.0), sun_glint_focus);
+	float glint_horizon = clamp(1.0 - sun_horizon_fade + max(light_dir.y, 0.0), 0.0, 1.0);
+	float sun_glint = glint_alignment * fresnel * sun_glint_strength * glint_horizon;
 
 	float z_depth = edge_depth(texture(DEPTH_TEXTURE, SCREEN_UV).x);
 	float z_pos = edge_depth(FRAGCOORD.z);
@@ -133,6 +143,7 @@ void fragment() {
 	color = mix(color, edge_color, edge_foam * 0.42);
 	color = mix(color, edge_color, whitecap * whitecap_strength);
 	color = mix(color, horizon_color.rgb, fresnel * 0.14 + distance_haze * (1.0 - depth_blend) * 0.16);
+	color += sun_color * sun_glint * 0.24;
 
 	ALBEDO = clamp(color, vec3(0.0), vec3(1.0));
 	METALLIC = metallic;

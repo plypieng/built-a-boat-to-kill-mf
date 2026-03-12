@@ -1,6 +1,7 @@
 extends Node
 
 const RunWorldGenerator = preload("res://systems/worldgen/run_world_generator.gd")
+const SeaVisualProfileLibrary = preload("res://scenes/shared/environment/sea_visual_profile_library.gd")
 
 signal mode_changed(mode_name: String)
 signal status_changed(message: String)
@@ -998,7 +999,8 @@ const REACTION_IMPACT_KNOCKBACK := 5.8
 const REACTION_HOOK_ACTIVE_SECONDS := 0.42
 const REACTION_HOOK_RECOVERY_SECONDS := 0.38
 const RUN_AVATAR_MODE_DECK := "deck"
-const RUN_AVATAR_MODE_OVERBOARD := "overboard"
+const RUN_AVATAR_MODE_SWIM := "swim"
+const RUN_AVATAR_MODE_CLIMB := "climb"
 const RUN_AVATAR_MODE_DOWNED := "downed"
 const RUN_AVATAR_MOVE_SPEED := 4.9
 const RUN_SWIM_MOVE_SPEED := 2.6
@@ -1032,19 +1034,24 @@ const AVATAR_HEALTH_REGEN_RATE := 6.0
 const AVATAR_HEALTH_REGEN_CAP := 60.0
 const AVATAR_STAMINA_REGEN_DELAY := 0.8
 const AVATAR_STAMINA_REGEN_DECK := 20.0
-const AVATAR_STAMINA_REGEN_OVERBOARD := 5.0
+const AVATAR_STAMINA_REGEN_SWIM := 5.0
 const AVATAR_STAMINA_EXHAUSTED_RECOVERY_THRESHOLD := 20.0
 const AVATAR_SPRINT_STAMINA_DRAIN := 16.0
 const AVATAR_SWIM_BURST_STAMINA_DRAIN := 22.0
 const AVATAR_BRACE_STAMINA_COST := 18.0
 const AVATAR_REPAIR_STAMINA_COST := 24.0
 const AVATAR_ASSIST_STAMINA_COST := 15.0
+const AVATAR_CLIMB_STAMINA_DRAIN := 19.0
 const AVATAR_DOWNED_SELF_RECOVERY_SECONDS := 6.0
 const AVATAR_ASSIST_RALLY_RANGE := 1.25
-const AVATAR_OVERBOARD_ENTRY_DAMAGE := 12.0
-const AVATAR_OVERBOARD_ATTRITION_DELAY := 3.0
-const AVATAR_OVERBOARD_ATTRITION_INTERVAL := 2.5
-const AVATAR_OVERBOARD_ATTRITION_DAMAGE := 4.0
+const AVATAR_OVERBOARD_ENTRY_DAMAGE_MAX := 12.0
+const AVATAR_OVERBOARD_ENTRY_DAMAGE_FREE_SPEED := 4.2
+const AVATAR_OVERBOARD_ENTRY_DAMAGE_SCALE := 3.0
+const RUN_CLIMB_ATTACH_WORLD_RANGE := 1.05
+const RUN_CLIMB_SURFACE_DEPTH_OFFSET := 0.38
+const RUN_CLIMB_SURFACE_VERTICAL_MARGIN := 0.08
+const RUN_CLIMB_LADDER_ATTACH_RANGE := 1.28
+const RUN_CLIMB_SURFACE_QUERY_CELL_SIZE := 2.4
 const AVATAR_IMPACT_DAMAGE_UNBRACED := 8.0
 const AVATAR_IMPACT_DAMAGE_BRACED := 2.0
 const AVATAR_IMPACT_EXPOSED_BONUS := 8.0
@@ -1100,12 +1107,22 @@ const RESCUE_SALVAGE_BONUS_MAX := 2
 const BREACH_SPEED_PENALTY := 0.16
 const MAX_BREACH_STACKS := 4
 const HULL_LEAK_DAMAGE_PER_BREACH := 0.55
-const BOAT_HEAVE_SPRING := 10.5
-const BOAT_HEAVE_DAMPING := 6.8
-const BOAT_PITCH_SPRING := 8.4
-const BOAT_PITCH_DAMPING := 6.0
-const BOAT_ROLL_SPRING := 9.1
-const BOAT_ROLL_DAMPING := 6.4
+const BOAT_HEAVE_SPRING := 11.8
+const BOAT_HEAVE_DAMPING := 5.6
+const BOAT_PITCH_SPRING := 9.2
+const BOAT_PITCH_DAMPING := 5.0
+const BOAT_ROLL_SPRING := 10.1
+const BOAT_ROLL_DAMPING := 5.2
+const BOAT_PROBE_WAVE_BLEND := 1.04
+const BOAT_PROBE_SURFACE_PITCH_BLEND := 1.22
+const BOAT_PROBE_SURFACE_ROLL_BLEND := 1.30
+const BOAT_PROBE_PITCH_RESPONSE := 0.76
+const BOAT_PROBE_ROLL_RESPONSE := 0.86
+const BOAT_YAW_WAVE_SPRING := 8.2
+const BOAT_YAW_WAVE_DAMPING := 2.4
+const BOAT_SWAY_WAVE_FORCE := 1.85
+const BOAT_SWAY_WAVE_DAMPING := 2.6
+const BOAT_SWAY_WAVE_MAX_SPEED := 1.35
 const REPAIR_COOLDOWN_SECONDS := 1.35
 const REPAIR_HULL_RECOVERY := 12.0
 const REPAIR_SUPPLIES_START := 3
@@ -1159,6 +1176,11 @@ var _hangar_bump_pair_cooldowns: Dictionary = {}
 var _disconnect_broadcast_scheduled := false
 var _client_bootstrap_complete := false
 var _last_applied_local_result_run_instance_id := -1
+var _run_navigation_surface_cache_key := ""
+var _run_walkable_surface_cache: Array = []
+var _run_climb_surface_cache: Array = []
+var _run_climb_surface_lookup: Dictionary = {}
+var _run_climb_surface_spatial_lookup: Dictionary = {}
 
 const OFFLINE_LOCAL_PEER_ID := 1
 
@@ -1253,16 +1275,21 @@ func get_mode_name() -> String:
 func get_session_phase() -> String:
 	return session_phase
 
-func get_local_peer_id() -> int:
+func _has_connected_multiplayer_peer() -> bool:
 	if multiplayer.multiplayer_peer == null:
+		return false
+	return multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
+
+func get_local_peer_id() -> int:
+	if not _has_connected_multiplayer_peer():
 		return OFFLINE_LOCAL_PEER_ID
 	return multiplayer.get_unique_id()
 
 func _has_runtime_authority() -> bool:
-	return multiplayer.multiplayer_peer == null or multiplayer.is_server()
+	return not _has_connected_multiplayer_peer() or multiplayer.is_server()
 
 func _has_network_server() -> bool:
-	return multiplayer.multiplayer_peer != null and multiplayer.is_server()
+	return _has_connected_multiplayer_peer() and multiplayer.is_server()
 
 func get_builder_bounds_min() -> Vector3i:
 	return BUILDER_BOUNDS_MIN
@@ -1768,102 +1795,7 @@ func get_propulsion_fault_label(fault_state: String) -> String:
 			return "Stable"
 
 func get_biome_sea_profile(biome_id: String) -> Dictionary:
-	match biome_id:
-		RunWorldGenerator.BIOME_REEF_WATERS:
-			return {
-				"wave_amp": 0.18,
-				"wave_speed": 0.92,
-				"chop_strength": 0.24,
-				"cross_weight": 0.28,
-				"background": Color(0.26, 0.58, 0.63),
-				"fog_density": 0.0,
-				"deep_color": Color(0.04, 0.20, 0.25),
-				"shallow_color": Color(0.12, 0.49, 0.46),
-				"foam_color": Color(0.76, 0.93, 0.88),
-				"horizon_color": Color(0.28, 0.54, 0.56),
-				"sun_energy": 0.95,
-				"sun_color": Color(0.96, 0.94, 0.85),
-				"sky_energy": 0.62,
-				"reflection_strength": 0.44,
-				"glint_strength": 0.26,
-				"clarity": 0.72,
-			}
-		RunWorldGenerator.BIOME_FOG_BANK:
-			return {
-				"wave_amp": 0.21,
-				"wave_speed": 0.84,
-				"chop_strength": 0.14,
-				"cross_weight": 0.24,
-				"background": Color(0.36, 0.42, 0.48),
-				"fog_density": 0.028,
-				"deep_color": Color(0.06, 0.11, 0.15),
-				"shallow_color": Color(0.11, 0.22, 0.28),
-				"foam_color": Color(0.76, 0.82, 0.88),
-				"horizon_color": Color(0.34, 0.40, 0.46),
-				"sun_energy": 0.56,
-				"sun_color": Color(0.82, 0.86, 0.90),
-				"sky_energy": 0.32,
-				"reflection_strength": 0.24,
-				"glint_strength": 0.14,
-				"clarity": 0.34,
-			}
-		RunWorldGenerator.BIOME_STORM_BELT:
-			return {
-				"wave_amp": 0.42,
-				"wave_speed": 1.18,
-				"chop_strength": 0.52,
-				"cross_weight": 0.44,
-				"background": Color(0.15, 0.19, 0.25),
-				"fog_density": 0.021,
-				"deep_color": Color(0.03, 0.08, 0.12),
-				"shallow_color": Color(0.06, 0.16, 0.21),
-				"foam_color": Color(0.86, 0.92, 0.97),
-				"horizon_color": Color(0.18, 0.25, 0.31),
-				"sun_energy": 0.36,
-				"sun_color": Color(0.60, 0.66, 0.76),
-				"sky_energy": 0.22,
-				"reflection_strength": 0.42,
-				"glint_strength": 0.40,
-				"clarity": 0.24,
-			}
-		RunWorldGenerator.BIOME_GRAVEYARD_WATERS:
-			return {
-				"wave_amp": 0.30,
-				"wave_speed": 0.98,
-				"chop_strength": 0.26,
-				"cross_weight": 0.31,
-				"background": Color(0.24, 0.29, 0.33),
-				"fog_density": 0.009,
-				"deep_color": Color(0.05, 0.10, 0.12),
-				"shallow_color": Color(0.08, 0.20, 0.20),
-				"foam_color": Color(0.72, 0.82, 0.84),
-				"horizon_color": Color(0.20, 0.26, 0.29),
-				"sun_energy": 0.52,
-				"sun_color": Color(0.78, 0.78, 0.72),
-				"sky_energy": 0.30,
-				"reflection_strength": 0.34,
-				"glint_strength": 0.18,
-				"clarity": 0.28,
-			}
-		_:
-			return {
-				"wave_amp": 0.28,
-				"wave_speed": 0.96,
-				"chop_strength": 0.18,
-				"cross_weight": 0.24,
-				"background": Color(0.23, 0.57, 0.73),
-				"fog_density": 0.002,
-				"deep_color": Color(0.02, 0.14, 0.25),
-				"shallow_color": Color(0.08, 0.39, 0.49),
-				"foam_color": Color(0.92, 0.97, 0.99),
-				"horizon_color": Color(0.47, 0.72, 0.82),
-				"sun_energy": 0.98,
-				"sun_color": Color(1.0, 0.94, 0.80),
-				"sky_energy": 0.76,
-				"reflection_strength": 0.70,
-				"glint_strength": 0.48,
-				"clarity": 0.82,
-			}
+	return SeaVisualProfileLibrary.get_profile(biome_id)
 
 func _sample_directional_wave(world_xz: Vector2, direction: Vector2, frequency: float, phase: float) -> float:
 	return sin(world_xz.dot(direction.normalized()) * frequency + phase)
@@ -1927,9 +1859,58 @@ func sample_boat_wave_pose(
 	return {
 		"height": center_height,
 		"surface_y": SEA_SURFACE_Y + center_height,
-		"pitch": clampf(atan2(bow_sample - stern_sample, bow_distance + stern_distance), -0.24, 0.24),
-		"roll": clampf(atan2(starboard_sample - port_sample, side_distance * 2.0), -0.30, 0.30),
+		"pitch": clampf(atan2(bow_sample - stern_sample, bow_distance + stern_distance), -0.30, 0.30),
+		"roll": clampf(atan2(starboard_sample - port_sample, side_distance * 2.0), -0.36, 0.36),
 	}
+
+func _build_buoyancy_probes_from_hydro_samples(hydro_samples: Array, total_weight: float, total_buoyancy: float) -> Array:
+	var probes: Array = []
+	if total_buoyancy <= 0.0:
+		return probes
+	var safe_total_weight := maxf(0.001, total_weight)
+	var safe_total_buoyancy := maxf(0.001, total_buoyancy)
+	for sample_variant in hydro_samples:
+		var sample: Dictionary = sample_variant
+		var sample_buoyancy := maxf(0.0, float(sample.get("buoyancy", 0.0)))
+		if sample_buoyancy <= 0.05:
+			continue
+		var sample_weight := maxf(0.0, float(sample.get("weight", 0.0)))
+		var buoyancy_center: Vector3 = sample.get("buoyancy_center", Vector3.ZERO)
+		var support_share := sample_buoyancy / safe_total_buoyancy
+		var load_share := sample_weight / safe_total_weight
+		probes.append({
+			"local_offset": Vector3(buoyancy_center.x, 0.0, buoyancy_center.z) * RUNTIME_BLOCK_SPACING,
+			"support_share": support_share,
+			"load_bias": clampf(load_share / maxf(0.0001, support_share), 0.55, 1.55),
+		})
+	return probes
+
+func _get_runtime_buoyancy_probes(hull_length: float, hull_beam: float) -> Array:
+	var probes: Array = Array(boat_state.get("buoyancy_probes", []))
+	if not probes.is_empty():
+		return probes
+	return [
+		{
+			"local_offset": Vector3(-hull_beam * 0.46, 0.0, hull_length * 0.52),
+			"support_share": 0.25,
+			"load_bias": 1.0,
+		},
+		{
+			"local_offset": Vector3(hull_beam * 0.46, 0.0, hull_length * 0.52),
+			"support_share": 0.25,
+			"load_bias": 1.0,
+		},
+		{
+			"local_offset": Vector3(-hull_beam * 0.46, 0.0, -hull_length * 0.42),
+			"support_share": 0.25,
+			"load_bias": 1.0,
+		},
+		{
+			"local_offset": Vector3(hull_beam * 0.46, 0.0, -hull_length * 0.42),
+			"support_share": 0.25,
+			"load_bias": 1.0,
+		},
+	]
 
 func _get_runtime_hull_dimensions_from_stats(stats: Dictionary) -> Dictionary:
 	var span_length := maxi(1, int(stats.get("span_length", 4)))
@@ -2450,6 +2431,7 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 		hydrostatic_class = "unstable"
 	elif reserve_buoyancy < 2.5 or freeboard_rating < 46.0 or roll_resistance < 46.0 or absf(trim_bias) > 0.18 or absf(heel_bias) > 0.18:
 		hydrostatic_class = "touchy"
+	var buoyancy_probes := _build_buoyancy_probes_from_hydro_samples(hydro_samples, total_weight, total_buoyancy)
 	var center_cell := _get_cells_weighted_center(all_cells)
 	var spawn_cell := _find_nearest_cell_to_center(core_cells if not core_cells.is_empty() else walkable_cells, center_cell)
 	var helm_anchor := _find_nearest_cell_to_center(
@@ -2751,6 +2733,7 @@ func _compute_boat_stats_for_blocks(blocks: Array) -> Dictionary:
 		"reserve_buoyancy": reserve_buoyancy,
 		"center_of_mass_cell": _vector3_to_cell_array(center_of_mass),
 		"center_of_buoyancy_cell": _vector3_to_cell_array(center_of_buoyancy),
+		"buoyancy_probes": buoyancy_probes,
 		"draft_ratio": draft_ratio,
 		"roll_resistance": roll_resistance,
 		"pitch_resistance": pitch_resistance,
@@ -2932,6 +2915,23 @@ func get_station_position(station_id: String) -> Vector3:
 
 func get_run_recovery_points() -> Array:
 	return Array(run_state.get("recovery_points", RUN_RECOVERY_POINTS)).duplicate(true)
+
+func get_run_ladder_points() -> Array:
+	return get_run_recovery_points()
+
+func get_run_climb_surfaces() -> Array:
+	_ensure_run_navigation_surface_cache()
+	return _run_climb_surface_cache
+
+func get_run_climb_surface(surface_id: String) -> Dictionary:
+	if surface_id.is_empty():
+		return {}
+	_ensure_run_navigation_surface_cache()
+	return Dictionary(_run_climb_surface_lookup.get(surface_id, {})).duplicate(true)
+
+func get_nearby_run_climb_surfaces(world_position: Vector3, include_ladders: bool = true) -> Array:
+	_ensure_run_navigation_surface_cache()
+	return _query_run_climb_surfaces_near_local(_run_world_to_local(world_position), include_ladders)
 
 func get_run_peer_repair_range(peer_id: int) -> float:
 	return float(_get_peer_repair_profile(peer_id).get("range", RUN_REPAIR_RANGE))
@@ -3262,72 +3262,85 @@ func request_donate_workshop_resource(resource_id: String, quantity: int) -> boo
 	return true
 
 func request_brace() -> void:
-	if multiplayer.is_server():
-		_begin_brace(multiplayer.get_unique_id())
+	if _has_runtime_authority():
+		_begin_brace(get_local_peer_id())
 		return
 
 	server_request_brace.rpc_id(1)
 
 func request_grapple() -> void:
-	if multiplayer.is_server():
-		_process_grapple(multiplayer.get_unique_id())
+	if _has_runtime_authority():
+		_process_grapple(get_local_peer_id())
 		return
 
 	server_request_grapple.rpc_id(1)
 
 func request_repair() -> void:
-	if multiplayer.is_server():
-		_process_repair(multiplayer.get_unique_id())
+	if _has_runtime_authority():
+		_process_repair(get_local_peer_id())
 		return
 
 	server_request_repair.rpc_id(1)
 
 func request_propulsion_primary() -> void:
-	if multiplayer.is_server():
-		_process_propulsion_primary(multiplayer.get_unique_id())
+	if _has_runtime_authority():
+		_process_propulsion_primary(get_local_peer_id())
 		return
 
 	server_request_propulsion_primary.rpc_id(1)
 
 func request_propulsion_secondary() -> void:
-	if multiplayer.is_server():
-		_process_propulsion_secondary(multiplayer.get_unique_id())
+	if _has_runtime_authority():
+		_process_propulsion_secondary(get_local_peer_id())
 		return
 
 	server_request_propulsion_secondary.rpc_id(1)
 
 func request_overboard_recovery() -> void:
-	if multiplayer.is_server():
-		_attempt_overboard_recovery(multiplayer.get_unique_id())
-		return
-
-	server_request_overboard_recovery.rpc_id(1)
+	return
 
 func request_assist_rally(target_peer_id: int) -> void:
 	if target_peer_id <= 0:
 		return
-	if multiplayer.is_server():
-		_attempt_assist_rally(multiplayer.get_unique_id(), target_peer_id)
+	if _has_runtime_authority():
+		_attempt_assist_rally(get_local_peer_id(), target_peer_id)
 		return
 
 	server_request_assist_rally.rpc_id(1, target_peer_id)
 
 func request_debug_overboard() -> void:
-	if multiplayer.is_server():
-		_force_peer_overboard_for_debug(multiplayer.get_unique_id())
+	if _has_runtime_authority():
+		_force_peer_overboard_for_debug(get_local_peer_id())
 		return
 
 	server_request_debug_overboard.rpc_id(1)
 
-func request_local_overboard_transition(world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
+func request_local_swim_transition(world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
 	if session_phase != SESSION_PHASE_RUN:
 		return
 	var sanitized_velocity := velocity.limit_length(6.8)
-	if multiplayer.is_server():
-		_request_peer_overboard_transition(multiplayer.get_unique_id(), world_position, sanitized_velocity, facing_y)
+	if _has_runtime_authority():
+		_request_peer_swim_transition(get_local_peer_id(), world_position, sanitized_velocity, facing_y)
 		return
 
-	server_request_local_overboard_transition.rpc_id(1, world_position, sanitized_velocity, facing_y)
+	server_request_local_swim_transition.rpc_id(1, world_position, sanitized_velocity, facing_y)
+
+func request_local_climb_attach(surface_id: String, world_position: Vector3, facing_y: float) -> void:
+	if session_phase != SESSION_PHASE_RUN or surface_id.is_empty():
+		return
+	if _has_runtime_authority():
+		_request_peer_climb_attach(get_local_peer_id(), surface_id, world_position, facing_y)
+		return
+	server_request_local_climb_attach.rpc_id(1, surface_id, world_position, facing_y)
+
+func request_local_climb_detach(world_position: Vector3, velocity: Vector3) -> void:
+	if session_phase != SESSION_PHASE_RUN:
+		return
+	var sanitized_velocity := velocity.limit_length(8.4)
+	if _has_runtime_authority():
+		_request_peer_climb_detach(get_local_peer_id(), world_position, sanitized_velocity)
+		return
+	server_request_local_climb_detach.rpc_id(1, world_position, sanitized_velocity)
 
 func request_place_blueprint_block(cell_value: Variant, block_type: String, rotation_steps: int) -> void:
 	var cell := _normalize_blueprint_cell(cell_value)
@@ -3493,16 +3506,16 @@ func send_local_hangar_avatar_presence(
 func send_local_run_avatar_state(deck_position: Vector3, world_position: Vector3, velocity: Vector3, facing_y: float, grounded: bool, avatar_mode: String = RUN_AVATAR_MODE_DECK) -> void:
 	if session_phase != SESSION_PHASE_RUN:
 		return
-	if multiplayer.is_server():
-		_receive_run_avatar_state(multiplayer.get_unique_id(), deck_position, world_position, velocity, facing_y, grounded, avatar_mode)
+	if _has_runtime_authority():
+		_receive_run_avatar_state(get_local_peer_id(), deck_position, world_position, velocity, facing_y, grounded, avatar_mode)
 		return
 	server_receive_run_avatar_state.rpc_id(1, deck_position, world_position, velocity, facing_y, grounded, avatar_mode)
 
 func send_local_boat_input(throttle: float, steer: float) -> void:
 	var clamped_throttle := clampf(throttle, -1.0, 1.0)
 	var clamped_steer := clampf(steer, -1.0, 1.0)
-	if multiplayer.is_server():
-		_receive_boat_input(multiplayer.get_unique_id(), clamped_throttle, clamped_steer)
+	if _has_runtime_authority():
+		_receive_boat_input(get_local_peer_id(), clamped_throttle, clamped_steer)
 		return
 
 	server_receive_boat_input.rpc_id(1, clamped_throttle, clamped_steer)
@@ -3766,60 +3779,162 @@ func _step_boat_buoyancy(delta: float, world_position: Vector3, rotation_y: floa
 	var pitch_velocity := float(boat_state.get("buoyancy_pitch_velocity", 0.0))
 	var roll_angle := float(boat_state.get("buoyancy_roll", 0.0))
 	var roll_velocity := float(boat_state.get("buoyancy_roll_velocity", 0.0))
+	var yaw_velocity := float(boat_state.get("buoyancy_yaw_velocity", 0.0))
+	var drift_velocity: Vector3 = boat_state.get("buoyancy_drift_velocity", Vector3.ZERO)
 	var boat_center_y := SEA_SURFACE_Y + surface_offset + rest_ride_height + heave
 	var forward := -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
 	var right := Vector3.RIGHT.rotated(Vector3.UP, rotation_y)
-	var bow_distance := hull_length * 0.52
-	var stern_distance := hull_length * 0.42
-	var side_distance := hull_beam * 0.46
-	var probe_offsets: Array[Vector2] = [
-		Vector2(-side_distance, bow_distance),
-		Vector2(side_distance, bow_distance),
-		Vector2(-side_distance, -stern_distance),
-		Vector2(side_distance, -stern_distance),
-	]
-	var probe_depths: Array[float] = []
-	for probe_offset in probe_offsets:
-		var probe_world_position: Vector3 = world_position + forward * probe_offset.y + right * probe_offset.x
-		var probe_surface_y: float = get_wave_surface_height(probe_world_position)
-		var probe_hull_y: float = boat_center_y + probe_offset.y * sin(pitch_angle) + probe_offset.x * sin(roll_angle) + probe_keel_offset
-		probe_depths.append(probe_surface_y - probe_hull_y)
-
-	var average_depth := 0.0
-	for depth in probe_depths:
-		average_depth += depth
-	average_depth /= float(maxi(1, probe_depths.size()))
-	var bow_depth := (probe_depths[0] + probe_depths[1]) * 0.5
-	var stern_depth := (probe_depths[2] + probe_depths[3]) * 0.5
-	var port_depth := (probe_depths[0] + probe_depths[2]) * 0.5
-	var starboard_depth := (probe_depths[1] + probe_depths[3]) * 0.5
-	var heave_spring := BOAT_HEAVE_SPRING + maxf(0.0, reserve_buoyancy) * 0.35 + roll_resistance * 1.8
-	var heave_damping := BOAT_HEAVE_DAMPING + roll_resistance * 1.6
-	heave_velocity += (average_depth - rest_probe_depth) * heave_spring * delta
+	var buoyancy_probes := _get_runtime_buoyancy_probes(hull_length, hull_beam)
+	var probe_support_total := 0.0
+	var average_depth_error := 0.0
+	var weighted_surface_y := 0.0
+	var pitch_support := 0.0
+	var roll_support := 0.0
+	var weighted_submersion := 0.0
+	var forward_surface_gradient := 0.0
+	var side_surface_gradient := 0.0
+	var diagonal_support_a := 0.0
+	var diagonal_support_b := 0.0
+	var front_surface_y := 0.0
+	var back_surface_y := 0.0
+	var starboard_surface_y := 0.0
+	var port_surface_y := 0.0
+	var front_weight := 0.0
+	var back_weight := 0.0
+	var starboard_weight := 0.0
+	var port_weight := 0.0
+	var center_surface_y := SEA_SURFACE_Y + surface_offset
+	for probe_variant in buoyancy_probes:
+		var probe: Dictionary = probe_variant
+		var local_offset: Vector3 = probe.get("local_offset", Vector3.ZERO)
+		var support_share := maxf(0.01, float(probe.get("support_share", 0.0)))
+		var load_bias := clampf(float(probe.get("load_bias", 1.0)), 0.55, 1.55)
+		var probe_world_position := world_position + forward * local_offset.z + right * local_offset.x
+		var probe_surface_y := get_wave_surface_height(probe_world_position)
+		var probe_hull_y := boat_center_y + local_offset.z * sin(pitch_angle) + local_offset.x * sin(roll_angle) + probe_keel_offset
+		var target_depth := rest_probe_depth * load_bias
+		var probe_depth := probe_surface_y - probe_hull_y
+		var probe_depth_error := probe_depth - target_depth
+		var surface_delta := probe_surface_y - center_surface_y
+		var normalized_x := local_offset.x / maxf(0.1, hull_beam * 0.5)
+		var normalized_z := local_offset.z / maxf(0.1, hull_length * 0.55)
+		probe_support_total += support_share
+		average_depth_error += probe_depth_error * support_share
+		weighted_surface_y += probe_surface_y * support_share
+		pitch_support += probe_depth_error * normalized_z * support_share
+		roll_support -= probe_depth_error * normalized_x * support_share
+		forward_surface_gradient += surface_delta * normalized_z * support_share
+		side_surface_gradient += surface_delta * normalized_x * support_share
+		if normalized_x * normalized_z >= 0.0:
+			diagonal_support_a += probe_depth_error * support_share
+		else:
+			diagonal_support_b += probe_depth_error * support_share
+		if normalized_z >= 0.0:
+			front_surface_y += probe_surface_y * support_share
+			front_weight += support_share
+		else:
+			back_surface_y += probe_surface_y * support_share
+			back_weight += support_share
+		if normalized_x >= 0.0:
+			starboard_surface_y += probe_surface_y * support_share
+			starboard_weight += support_share
+		else:
+			port_surface_y += probe_surface_y * support_share
+			port_weight += support_share
+		weighted_submersion += clampf(maxf(0.0, probe_depth) / maxf(0.01, target_depth), 0.0, 2.0) * support_share
+	if probe_support_total <= 0.0:
+		probe_support_total = 1.0
+	average_depth_error /= probe_support_total
+	forward_surface_gradient /= probe_support_total
+	side_surface_gradient /= probe_support_total
+	diagonal_support_a /= probe_support_total
+	diagonal_support_b /= probe_support_total
+	if front_weight <= 0.0:
+		front_weight = 1.0
+	if back_weight <= 0.0:
+		back_weight = 1.0
+	if starboard_weight <= 0.0:
+		starboard_weight = 1.0
+	if port_weight <= 0.0:
+		port_weight = 1.0
+	surface_offset = weighted_surface_y / probe_support_total - SEA_SURFACE_Y
+	var surface_pitch := clampf(
+		atan2(front_surface_y / front_weight - back_surface_y / back_weight, maxf(1.8, hull_length * 0.9)),
+		-0.34,
+		0.34
+	)
+	var surface_roll := clampf(
+		atan2(port_surface_y / port_weight - starboard_surface_y / starboard_weight, maxf(1.2, hull_beam * 0.82)),
+		-0.42,
+		0.42
+	)
+	var wave_energy := clampf(
+		1.0
+		+ absf(float(wave_pose.get("pitch", 0.0))) * 1.8
+		+ absf(float(wave_pose.get("roll", 0.0))) * 1.6
+		+ absf(surface_offset) * 0.7,
+		1.0,
+		1.65
+	)
+	var heave_spring := BOAT_HEAVE_SPRING + maxf(0.0, reserve_buoyancy) * 0.22 + roll_resistance * 0.9 + (wave_energy - 1.0) * 4.0
+	var heave_damping := BOAT_HEAVE_DAMPING + roll_resistance * 0.8
+	heave_velocity += average_depth_error * heave_spring * delta
 	heave_velocity -= heave_velocity * heave_damping * delta
-	heave_velocity = clampf(heave_velocity, -1.8, 1.8)
+	heave_velocity = clampf(heave_velocity, -2.2, 2.2)
 	heave += heave_velocity * delta
-	heave = clampf(heave, -0.42, 0.58)
+	heave = clampf(heave, -0.56, 0.72)
 
-	var pitch_wave_scale := lerpf(1.12, 0.45, pitch_resistance)
-	var roll_wave_scale := lerpf(1.18, 0.40, roll_resistance)
+	var pitch_wave_scale := lerpf(1.24, 0.62, pitch_resistance * 0.78) * wave_energy
+	var roll_wave_scale := lerpf(1.30, 0.68, roll_resistance * 0.78) * wave_energy
 	var hydro_pitch := clampf(trim_bias * 0.30, -0.22, 0.22)
 	var hydro_roll := -clampf(heel_bias * 0.38, -0.26, 0.26)
-	var pitch_target := float(wave_pose.get("pitch", 0.0)) * pitch_wave_scale + hydro_pitch + clampf((bow_depth - stern_depth) * 0.08, -0.14, 0.14)
-	var roll_target := -(float(wave_pose.get("roll", 0.0)) * roll_wave_scale) + hydro_roll - clampf((starboard_depth - port_depth) * 0.10, -0.18, 0.18)
-	pitch_velocity += (pitch_target - pitch_angle) * (BOAT_PITCH_SPRING + pitch_resistance * 2.1) * delta
-	pitch_velocity -= pitch_velocity * (BOAT_PITCH_DAMPING + pitch_resistance * 1.8) * delta
-	roll_velocity += (roll_target - roll_angle) * (BOAT_ROLL_SPRING + roll_resistance * 2.4) * delta
-	roll_velocity -= roll_velocity * (BOAT_ROLL_DAMPING + roll_resistance * 2.0) * delta
-	pitch_velocity = clampf(pitch_velocity, -0.9, 0.9)
-	roll_velocity = clampf(roll_velocity, -1.0, 1.0)
+	var pitch_target := (
+		float(wave_pose.get("pitch", 0.0)) * pitch_wave_scale * BOAT_PROBE_WAVE_BLEND
+		+ surface_pitch * BOAT_PROBE_SURFACE_PITCH_BLEND
+		+ hydro_pitch
+		+ clampf(pitch_support * BOAT_PROBE_PITCH_RESPONSE, -0.24, 0.24)
+	)
+	var roll_target := (
+		-(float(wave_pose.get("roll", 0.0)) * roll_wave_scale * BOAT_PROBE_WAVE_BLEND)
+		+ surface_roll * BOAT_PROBE_SURFACE_ROLL_BLEND
+		+ hydro_roll
+		+ clampf(roll_support * BOAT_PROBE_ROLL_RESPONSE, -0.30, 0.30)
+	)
+	pitch_target = clampf(pitch_target, -0.34, 0.34)
+	roll_target = clampf(roll_target, -0.42, 0.42)
+	pitch_velocity += (pitch_target - pitch_angle) * (BOAT_PITCH_SPRING + pitch_resistance * 0.8 + (wave_energy - 1.0) * 3.0) * delta
+	pitch_velocity -= pitch_velocity * (BOAT_PITCH_DAMPING + pitch_resistance * 0.95) * delta
+	roll_velocity += (roll_target - roll_angle) * (BOAT_ROLL_SPRING + roll_resistance * 0.9 + (wave_energy - 1.0) * 3.4) * delta
+	roll_velocity -= roll_velocity * (BOAT_ROLL_DAMPING + roll_resistance * 1.0) * delta
+	pitch_velocity = clampf(pitch_velocity, -1.36, 1.36)
+	roll_velocity = clampf(roll_velocity, -1.52, 1.52)
 	pitch_angle = clampf(pitch_angle + pitch_velocity * delta, -0.34, 0.34)
 	roll_angle = clampf(roll_angle + roll_velocity * delta, -0.42, 0.42)
-	var submersion_ratio := clampf(maxf(0.0, average_depth) / maxf(0.01, rest_probe_depth), 0.0, 1.8)
+	var speed_ratio := clampf(absf(forward_speed) / maxf(1.0, float(boat_state.get("base_top_speed", BOAT_TOP_SPEED))), 0.0, 1.0)
+	var yaw_wave_target := clampf(
+		(diagonal_support_a - diagonal_support_b) * 0.78
+		+ (forward_surface_gradient * side_surface_gradient) * 0.42
+		+ surface_roll * surface_pitch * 0.36,
+		-0.42,
+		0.42
+	)
+	yaw_velocity += yaw_wave_target * (1.0 - speed_ratio * 0.25) * (BOAT_YAW_WAVE_SPRING + (1.0 - roll_resistance) * 2.2 + (wave_energy - 1.0) * 3.0) * delta
+	yaw_velocity -= yaw_velocity * (BOAT_YAW_WAVE_DAMPING + speed_ratio * 0.8) * delta
+	yaw_velocity = clampf(yaw_velocity, -0.52, 0.52)
+	var world_wave_push := (
+		right * (-side_surface_gradient - surface_roll * 0.42)
+		+ forward * (-forward_surface_gradient - surface_pitch * 0.28)
+	) * BOAT_SWAY_WAVE_FORCE
+	drift_velocity += world_wave_push * delta
+	drift_velocity.y = 0.0
+	drift_velocity -= drift_velocity * (BOAT_SWAY_WAVE_DAMPING + speed_ratio * 0.9) * delta
+	drift_velocity = drift_velocity.limit_length(BOAT_SWAY_WAVE_MAX_SPEED)
+	var submersion_ratio := clampf(weighted_submersion / probe_support_total, 0.0, 1.8)
 	var sea_resistance := clampf(
 		maxf(0.0, submersion_ratio - 1.0) * 0.18
 		+ absf(pitch_angle) * 0.22
 		+ absf(roll_angle) * 0.24
+		+ absf(yaw_velocity) * 0.08
 		+ absf(forward_speed) / maxf(1.0, float(boat_state.get("base_top_speed", BOAT_TOP_SPEED))) * 0.05,
 		0.0,
 		0.14
@@ -3832,12 +3947,14 @@ func _step_boat_buoyancy(delta: float, world_position: Vector3, rotation_y: floa
 		"buoyancy_pitch_velocity": pitch_velocity,
 		"buoyancy_roll": roll_angle,
 		"buoyancy_roll_velocity": roll_velocity,
+		"buoyancy_yaw_velocity": yaw_velocity,
+		"buoyancy_drift_velocity": drift_velocity,
 		"water_drag_multiplier": clampf(1.0 - sea_resistance, 0.86, 1.0),
 		"buoyancy_submersion": submersion_ratio,
 	}
 
 func server_step_shared_boat(delta: float) -> void:
-	if not multiplayer.is_server():
+	if multiplayer.multiplayer_peer != null and not multiplayer.is_server():
 		return
 	_tick_reaction_state(delta)
 	if session_phase == SESSION_PHASE_HANGAR:
@@ -3877,6 +3994,8 @@ func server_step_shared_boat(delta: float) -> void:
 	boat_state["buoyancy_pitch_velocity"] = float(buoyancy_step.get("buoyancy_pitch_velocity", 0.0))
 	boat_state["buoyancy_roll"] = float(buoyancy_step.get("buoyancy_roll", 0.0))
 	boat_state["buoyancy_roll_velocity"] = float(buoyancy_step.get("buoyancy_roll_velocity", 0.0))
+	boat_state["buoyancy_yaw_velocity"] = float(buoyancy_step.get("buoyancy_yaw_velocity", 0.0))
+	boat_state["buoyancy_drift_velocity"] = buoyancy_step.get("buoyancy_drift_velocity", Vector3.ZERO)
 	boat_state["water_drag_multiplier"] = float(buoyancy_step.get("water_drag_multiplier", 1.0))
 	boat_state["buoyancy_submersion"] = float(buoyancy_step.get("buoyancy_submersion", 0.0))
 	var squall_drag_multiplier := _get_active_squall_drag_multiplier(boat_position_for_drag)
@@ -3920,9 +4039,11 @@ func server_step_shared_boat(delta: float) -> void:
 	var turn_authority_factor := clampf(float(boat_state.get("turn_authority", 50.0)) / 55.0, 0.45, 1.65)
 	rotation_y += steer * BOAT_TURN_SPEED * turn_factor * turn_authority_factor * float(propulsion_step.get("rudder_response", 1.0)) * delta
 	rotation_y += float(propulsion_step.get("yaw_bias", 0.0)) * clampf(throttle, 0.0, 1.0) * delta
+	rotation_y += float(boat_state.get("buoyancy_yaw_velocity", 0.0)) * delta
 
 	var forward: Vector3 = -Vector3.FORWARD.rotated(Vector3.UP, rotation_y)
 	var position: Vector3 = boat_state.get("position", Vector3.ZERO)
+	position += Vector3(boat_state.get("buoyancy_drift_velocity", Vector3.ZERO)) * delta
 	position += forward * current_speed * delta
 
 	boat_state["position"] = position
@@ -4105,6 +4226,7 @@ func _build_client_boat_state_snapshot() -> Dictionary:
 	snapshot.erase("runtime_blocks")
 	snapshot.erase("sinking_chunks")
 	snapshot.erase("runtime_chunks")
+	snapshot.erase("buoyancy_probes")
 	snapshot.erase("recent_damage_block_ids")
 	snapshot.erase("recent_detached_chunk_ids")
 	snapshot.erase("cargo_lost_to_sea")
@@ -4147,7 +4269,7 @@ func _build_client_sinking_chunks_snapshot() -> Array:
 	return sinking_chunks_snapshot
 
 func _broadcast_runtime_boat_state() -> void:
-	if not multiplayer.is_server() or session_phase != SESSION_PHASE_RUN:
+	if session_phase != SESSION_PHASE_RUN or not _has_network_server():
 		return
 
 	var runtime_snapshot := _build_client_runtime_boat_snapshot()
@@ -4155,7 +4277,7 @@ func _broadcast_runtime_boat_state() -> void:
 		client_receive_runtime_boat_state.rpc_id(int(peer_id), runtime_snapshot)
 
 func _tick_reaction_state(delta: float) -> void:
-	if not multiplayer.is_server():
+	if multiplayer.multiplayer_peer != null and not multiplayer.is_server():
 		return
 
 	var expired_peers: Array = []
@@ -4327,39 +4449,54 @@ func _try_knock_peer_overboard(peer_id: int, knockback_velocity: Vector3, streng
 	if bool(probe_result.get("valid", false)):
 		return
 	var overboard_local_position := overboard_probe
-	_set_peer_overboard(peer_id, overboard_local_position, knockback_velocity)
+	_set_peer_swim(peer_id, _run_local_to_world(overboard_local_position), knockback_velocity, null, true)
 
-func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockback_velocity: Vector3, facing_y_override = null) -> void:
+func _set_peer_swim(
+	peer_id: int,
+	world_position: Vector3,
+	swim_velocity: Vector3,
+	facing_y_override = null,
+	apply_entry_damage: bool = false,
+	count_incident: bool = true,
+	preserve_airborne_height: bool = false
+) -> void:
 	if not multiplayer.is_server():
 		return
 	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
 	if avatar_state.is_empty():
 		return
-	if _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
+	if _is_peer_downed(peer_id):
 		return
+	var was_off_deck := _is_peer_overboard(peer_id)
 	var current_station_id := get_peer_station_id(peer_id)
 	if not current_station_id.is_empty():
 		_release_station(peer_id, false)
-	var world_position := _run_local_to_world(overboard_local_position)
-	world_position.y = RUN_OVERBOARD_WATER_HEIGHT
-	avatar_state["mode"] = RUN_AVATAR_MODE_OVERBOARD
-	avatar_state["world_position"] = world_position
-	avatar_state["velocity"] = knockback_velocity.limit_length(6.8)
+	avatar_state["mode"] = RUN_AVATAR_MODE_SWIM
+	avatar_state["world_position"] = _sanitize_overboard_world_position(world_position, preserve_airborne_height)
+	avatar_state["velocity"] = swim_velocity.limit_length(6.8)
 	avatar_state["grounded"] = false
 	if facing_y_override != null:
 		avatar_state["facing_y"] = float(facing_y_override)
-	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
-	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+	_clear_climb_state_fields(avatar_state)
 	run_avatar_state[peer_id] = avatar_state
-	_apply_peer_health_damage(peer_id, AVATAR_OVERBOARD_ENTRY_DAMAGE, 1.0)
+	if apply_entry_damage and not was_off_deck:
+		var entry_speed := swim_velocity.length()
+		var entry_damage := clampf(
+			(entry_speed - AVATAR_OVERBOARD_ENTRY_DAMAGE_FREE_SPEED) * AVATAR_OVERBOARD_ENTRY_DAMAGE_SCALE,
+			0.0,
+			AVATAR_OVERBOARD_ENTRY_DAMAGE_MAX
+		)
+		if entry_damage > 0.0:
+			_apply_peer_health_damage(peer_id, entry_damage, 1.0)
 	_refresh_run_avatar_runtime_fields(peer_id)
 	var peer_reaction: Dictionary = reaction_state.get(peer_id, {})
 	if not peer_reaction.is_empty():
-		peer_reaction["type"] = "overboard"
+		peer_reaction["type"] = "swim"
 		peer_reaction["active_time"] = maxf(float(peer_reaction.get("active_time", 0.0)), 0.18)
 		peer_reaction["recovery_time"] = maxf(float(peer_reaction.get("recovery_time", 0.0)), 0.55)
 		reaction_state[peer_id] = peer_reaction
-	run_state["overboard_incidents"] = int(run_state.get("overboard_incidents", 0)) + 1
+	if count_incident and not was_off_deck:
+		run_state["overboard_incidents"] = int(run_state.get("overboard_incidents", 0)) + 1
 	_refresh_overboard_run_metrics()
 	_refresh_crew_vitals_metrics()
 	_peer_inputs[peer_id] = {
@@ -4371,9 +4508,10 @@ func _set_peer_overboard(peer_id: int, overboard_local_position: Vector3, knockb
 	_broadcast_reaction_state()
 	_broadcast_run_state()
 	_broadcast_boat_state()
-	_set_status("%s went overboard." % _get_peer_name(peer_id))
+	if count_incident and not was_off_deck:
+		_set_status("%s went overboard." % _get_peer_name(peer_id))
 
-func _request_peer_overboard_transition(peer_id: int, world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
+func _request_peer_swim_transition(peer_id: int, world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
 	if not multiplayer.is_server():
 		return
 	if session_phase != SESSION_PHASE_RUN:
@@ -4381,7 +4519,18 @@ func _request_peer_overboard_transition(peer_id: int, world_position: Vector3, v
 	if str(run_state.get("phase", "running")) != "running":
 		return
 	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
-	if avatar_state.is_empty() or _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
+	if avatar_state.is_empty() or _is_peer_downed(peer_id):
+		return
+	if _is_peer_swimming(peer_id) or _is_peer_climbing(peer_id):
+		_set_peer_swim(
+			peer_id,
+			world_position,
+			velocity,
+			facing_y,
+			false,
+			false,
+			world_position.y > RUN_OVERBOARD_WATER_HEIGHT + 0.02
+		)
 		return
 	var deck_position: Vector3 = avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
 	var local_position := _run_world_to_local(world_position)
@@ -4399,7 +4548,7 @@ func _request_peer_overboard_transition(peer_id: int, world_position: Vector3, v
 	if not support_valid:
 		local_position = _run_world_to_local(_sanitize_overboard_world_position(world_position))
 	local_position.y = support_position.y if support_valid else deck_position.y
-	_set_peer_overboard(peer_id, local_position, velocity, facing_y)
+	_set_peer_swim(peer_id, _run_local_to_world(local_position), velocity, facing_y, false, true, false)
 
 func _force_peer_overboard_for_debug(peer_id: int) -> void:
 	if not multiplayer.is_server():
@@ -4425,125 +4574,65 @@ func _force_peer_overboard_for_debug(peer_id: int) -> void:
 	var overboard_local_position := deck_position + chosen_direction * RUN_OVERBOARD_PROBE_DISTANCE
 	var knockback_velocity: Vector3 = _run_local_to_world(chosen_direction) - boat_state.get("position", Vector3.ZERO)
 	knockback_velocity.y = 0.0
-	_set_peer_overboard(peer_id, overboard_local_position, knockback_velocity.normalized() * 4.8)
+	_set_peer_swim(peer_id, _run_local_to_world(overboard_local_position), knockback_velocity.normalized() * 4.8, null, true)
 
 func _attempt_overboard_recovery(peer_id: int) -> void:
+	return
+
+func _try_auto_overboard_reboard(peer_id: int, avatar_state: Dictionary) -> bool:
+	return false
+
+func _request_peer_climb_attach(peer_id: int, surface_id: String, world_position: Vector3, facing_y: float) -> void:
+	if not multiplayer.is_server():
+		return
 	if session_phase != SESSION_PHASE_RUN:
 		return
 	if str(run_state.get("phase", "running")) != "running":
 		return
-	if not _is_peer_overboard(peer_id):
+	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
+	if avatar_state.is_empty() or _is_peer_downed(peer_id):
+		return
+	var avatar_mode := str(avatar_state.get("mode", RUN_AVATAR_MODE_DECK))
+	if avatar_mode != RUN_AVATAR_MODE_SWIM and avatar_mode != RUN_AVATAR_MODE_CLIMB:
+		return
+	var surface := get_run_climb_surface(surface_id)
+	if surface.is_empty():
+		surface = _get_best_run_climb_surface(world_position)
+		if surface.is_empty() or str(surface.get("id", "")) != surface_id:
+			return
+	var sanitized_world_position := _sanitize_climb_world_position(surface, world_position)
+	var attach_range := maxf(float(surface.get("attach_range", RUN_CLIMB_ATTACH_WORLD_RANGE)), RUN_CLIMB_ATTACH_WORLD_RANGE)
+	if sanitized_world_position.distance_to(world_position) > attach_range + 0.45:
+		return
+	if str(surface.get("type", "")) == "hull":
+		var block_state := _get_runtime_block_state_by_id(int(surface.get("block_id", 0)))
+		if block_state.is_empty() or bool(block_state.get("destroyed", false)) or bool(block_state.get("detached", false)):
+			return
+	avatar_state["mode"] = RUN_AVATAR_MODE_CLIMB
+	avatar_state["world_position"] = sanitized_world_position
+	avatar_state["velocity"] = Vector3.ZERO
+	avatar_state["grounded"] = false
+	avatar_state["facing_y"] = facing_y
+	avatar_state["climb_surface_id"] = str(surface.get("id", ""))
+	avatar_state["climb_surface_type"] = str(surface.get("type", ""))
+	avatar_state["climb_attach_world_position"] = sanitized_world_position
+	avatar_state["climb_normal"] = Vector3(surface.get("normal", Vector3.ZERO))
+	run_avatar_state[peer_id] = avatar_state
+	_refresh_run_avatar_runtime_fields(peer_id)
+	_refresh_overboard_run_metrics()
+	_refresh_crew_vitals_metrics()
+	_broadcast_run_avatar_state()
+	_broadcast_run_state()
+
+func _request_peer_climb_detach(peer_id: int, world_position: Vector3, velocity: Vector3) -> void:
+	if not multiplayer.is_server():
 		return
 	var avatar_state: Dictionary = run_avatar_state.get(peer_id, {})
 	if avatar_state.is_empty():
 		return
-	var world_position: Vector3 = avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO))
-	var direct_reboard_target := get_direct_overboard_reboard_target(world_position)
-	if not direct_reboard_target.is_empty():
-		avatar_state["mode"] = RUN_AVATAR_MODE_DECK
-		avatar_state["deck_position"] = direct_reboard_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
-		avatar_state["velocity"] = Vector3.ZERO
-		avatar_state["grounded"] = true
-		avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
-		avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
-		run_avatar_state[peer_id] = avatar_state
-		_refresh_run_avatar_runtime_fields(peer_id)
-		var direct_peer_reaction: Dictionary = reaction_state.get(peer_id, {})
-		if not direct_peer_reaction.is_empty():
-			direct_peer_reaction["type"] = "recovering"
-			direct_peer_reaction["active_time"] = 0.0
-			direct_peer_reaction["recovery_time"] = maxf(float(direct_peer_reaction.get("recovery_time", 0.0)), 0.18)
-			reaction_state[peer_id] = direct_peer_reaction
-		run_state["recoveries_completed"] = int(run_state.get("recoveries_completed", 0)) + 1
-		_refresh_overboard_run_metrics()
-		_broadcast_run_avatar_state()
-		_broadcast_reaction_state()
-		_broadcast_run_state()
-		_set_status("%s hauled back aboard over the %s." % [
-			_get_peer_name(peer_id),
-			str(direct_reboard_target.get("label", "gunwale")),
-		])
+	if str(avatar_state.get("mode", RUN_AVATAR_MODE_DECK)) != RUN_AVATAR_MODE_CLIMB:
 		return
-	var recovery_target := _get_best_overboard_recovery_target(world_position)
-	if recovery_target.is_empty() or not bool(recovery_target.get("ready", false)):
-		var emergency_reboard_target := get_emergency_overboard_reboard_target(world_position)
-		if emergency_reboard_target.is_empty():
-			_set_status("%s needs to reach a ladder before climbing back aboard." % _get_peer_name(peer_id))
-			return
-		avatar_state["mode"] = RUN_AVATAR_MODE_DECK
-		avatar_state["deck_position"] = emergency_reboard_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
-		avatar_state["velocity"] = Vector3.ZERO
-		avatar_state["grounded"] = true
-		avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
-		avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
-		run_avatar_state[peer_id] = avatar_state
-		_refresh_run_avatar_runtime_fields(peer_id)
-		var emergency_peer_reaction: Dictionary = reaction_state.get(peer_id, {})
-		if not emergency_peer_reaction.is_empty():
-			emergency_peer_reaction["type"] = "recovering"
-			emergency_peer_reaction["active_time"] = 0.0
-			emergency_peer_reaction["recovery_time"] = maxf(float(emergency_peer_reaction.get("recovery_time", 0.0)), 0.26)
-			reaction_state[peer_id] = emergency_peer_reaction
-		run_state["recoveries_completed"] = int(run_state.get("recoveries_completed", 0)) + 1
-		_refresh_overboard_run_metrics()
-		_broadcast_run_avatar_state()
-		_broadcast_reaction_state()
-		_broadcast_run_state()
-		_set_status("%s scrambled back aboard with an %s." % [
-			_get_peer_name(peer_id),
-			str(emergency_reboard_target.get("label", "emergency climb")),
-		])
-		return
-	avatar_state["mode"] = RUN_AVATAR_MODE_DECK
-	avatar_state["deck_position"] = get_nearest_run_avatar_deck_position(recovery_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
-	avatar_state["velocity"] = Vector3.ZERO
-	avatar_state["grounded"] = true
-	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
-	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
-	run_avatar_state[peer_id] = avatar_state
-	_refresh_run_avatar_runtime_fields(peer_id)
-	var peer_reaction: Dictionary = reaction_state.get(peer_id, {})
-	if not peer_reaction.is_empty():
-		peer_reaction["type"] = "recovering"
-		peer_reaction["active_time"] = 0.0
-		peer_reaction["recovery_time"] = maxf(float(peer_reaction.get("recovery_time", 0.0)), 0.22)
-		reaction_state[peer_id] = peer_reaction
-	run_state["recoveries_completed"] = int(run_state.get("recoveries_completed", 0)) + 1
-	_refresh_overboard_run_metrics()
-	_broadcast_run_avatar_state()
-	_broadcast_reaction_state()
-	_broadcast_run_state()
-	_set_status("%s climbed back aboard via the %s." % [
-		_get_peer_name(peer_id),
-		str(recovery_target.get("label", "recovery line")),
-	])
-
-func _try_auto_overboard_reboard(peer_id: int, avatar_state: Dictionary) -> bool:
-	if not multiplayer.is_server():
-		return false
-	if str(avatar_state.get("mode", RUN_AVATAR_MODE_DECK)) != RUN_AVATAR_MODE_OVERBOARD:
-		return false
-	var world_position: Vector3 = avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO))
-	var reboard_target := get_direct_overboard_reboard_target(world_position)
-	if reboard_target.is_empty():
-		reboard_target = get_emergency_overboard_reboard_target(world_position)
-	if reboard_target.is_empty():
-		return false
-	avatar_state["mode"] = RUN_AVATAR_MODE_DECK
-	avatar_state["deck_position"] = reboard_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
-	avatar_state["velocity"] = Vector3.ZERO
-	avatar_state["grounded"] = true
-	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
-	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
-	run_avatar_state[peer_id] = avatar_state
-	_refresh_run_avatar_runtime_fields(peer_id)
-	run_state["recoveries_completed"] = int(run_state.get("recoveries_completed", 0)) + 1
-	_refresh_overboard_run_metrics()
-	_set_status("%s climbed aboard from %s." % [
-		_get_peer_name(peer_id),
-		str(reboard_target.get("label", "hull edge")),
-	])
-	return true
+	_set_peer_swim(peer_id, world_position, velocity, float(avatar_state.get("facing_y", 0.0)), false, false, true)
 
 func _attempt_assist_rally(source_peer_id: int, target_peer_id: int) -> void:
 	if session_phase != SESSION_PHASE_RUN:
@@ -4677,9 +4766,10 @@ func _make_default_run_avatar_state(spawn_index: int) -> Dictionary:
 		"velocity": Vector3.ZERO,
 		"facing_y": PI,
 		"grounded": true,
-		"recovery_target_id": "",
-		"recovery_target_label": "",
-		"recovery_ready": false,
+		"climb_surface_id": "",
+		"climb_surface_type": "",
+		"climb_attach_world_position": world_position,
+		"climb_normal": Vector3.ZERO,
 		"health": AVATAR_MAX_HEALTH,
 		"max_health": AVATAR_MAX_HEALTH,
 		"stamina": AVATAR_MAX_STAMINA,
@@ -4688,9 +4778,13 @@ func _make_default_run_avatar_state(spawn_index: int) -> Dictionary:
 		"last_damage_time": 0.0,
 		"stamina_regen_delay": 0.0,
 		"stamina_exhausted": false,
-		"overboard_attrition_delay": AVATAR_OVERBOARD_ATTRITION_DELAY,
-		"overboard_attrition_timer": AVATAR_OVERBOARD_ATTRITION_INTERVAL,
 	}
+
+func _clear_climb_state_fields(avatar_state: Dictionary) -> void:
+	avatar_state["climb_surface_id"] = ""
+	avatar_state["climb_surface_type"] = ""
+	avatar_state["climb_attach_world_position"] = avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO))
+	avatar_state["climb_normal"] = Vector3.ZERO
 
 func _run_local_to_world(local_position: Vector3) -> Vector3:
 	var rotation_y: float = float(boat_state.get("rotation_y", 0.0))
@@ -4734,7 +4828,126 @@ func _get_runtime_block_navigation_data(block_state: Dictionary) -> Dictionary:
 		"size": block_size,
 	}
 
+func _get_runtime_block_state_by_id(block_id: int) -> Dictionary:
+	if block_id <= 0:
+		return {}
+	for block_variant in Array(boat_state.get("runtime_blocks", [])):
+		var block_state: Dictionary = block_variant
+		if int(block_state.get("id", 0)) == block_id:
+			return block_state
+	return {}
+
 func get_run_walkable_surfaces() -> Array:
+	_ensure_run_navigation_surface_cache()
+	return _run_walkable_surface_cache
+
+func _get_run_navigation_surface_cache_key() -> String:
+	var signature_parts := PackedStringArray()
+	for ladder_variant in get_run_ladder_points():
+		var ladder: Dictionary = ladder_variant
+		var water_position: Vector3 = ladder.get("water_position", Vector3.ZERO)
+		var deck_position: Vector3 = ladder.get("deck_position", Vector3.ZERO)
+		signature_parts.append("ladder:%s:%.3f:%.3f:%.3f:%.3f:%.3f:%.3f" % [
+			str(ladder.get("id", "ladder")),
+			water_position.x,
+			water_position.y,
+			water_position.z,
+			deck_position.x,
+			deck_position.y,
+			deck_position.z,
+		])
+	for block_variant in Array(boat_state.get("runtime_blocks", [])):
+		var block_state: Dictionary = block_variant
+		var local_position: Vector3 = block_state.get("local_position", Vector3.ZERO)
+		signature_parts.append("%d:%s:%d:%d:%d:%.3f:%.3f:%.3f" % [
+			int(block_state.get("id", 0)),
+			str(block_state.get("type", "structure")),
+			wrapi(int(block_state.get("rotation_steps", 0)), 0, 4),
+			1 if bool(block_state.get("destroyed", false)) else 0,
+			1 if bool(block_state.get("detached", false)) else 0,
+			local_position.x,
+			local_position.y,
+			local_position.z,
+		])
+	return "|".join(signature_parts)
+
+func _ensure_run_navigation_surface_cache() -> void:
+	var next_cache_key := _get_run_navigation_surface_cache_key()
+	if next_cache_key == _run_navigation_surface_cache_key:
+		return
+	_run_navigation_surface_cache_key = next_cache_key
+	_run_walkable_surface_cache = _compute_run_walkable_surfaces()
+	_run_climb_surface_cache = _compute_run_climb_surfaces()
+	_run_climb_surface_lookup.clear()
+	_run_climb_surface_spatial_lookup.clear()
+	for surface_variant in _run_climb_surface_cache:
+		var surface: Dictionary = surface_variant
+		var surface_id := str(surface.get("id", ""))
+		_run_climb_surface_lookup[surface_id] = surface
+		_index_run_climb_surface(surface_id, surface)
+
+func _get_run_climb_surface_query_cell(local_position: Vector3) -> Vector3i:
+	return Vector3i(
+		int(floor(local_position.x / RUN_CLIMB_SURFACE_QUERY_CELL_SIZE)),
+		int(floor(local_position.y / RUN_CLIMB_SURFACE_QUERY_CELL_SIZE)),
+		int(floor(local_position.z / RUN_CLIMB_SURFACE_QUERY_CELL_SIZE))
+	)
+
+func _get_run_climb_surface_query_key(cell: Vector3i) -> String:
+	return "%d:%d:%d" % [cell.x, cell.y, cell.z]
+
+func _index_run_climb_surface(surface_id: String, surface: Dictionary) -> void:
+	var anchor_local_position: Vector3 = surface.get("anchor_local_position", Vector3.ZERO)
+	var tangent_extent := maxf(
+		absf(float(surface.get("min_tangent", 0.0))),
+		absf(float(surface.get("max_tangent", 0.0)))
+	)
+	var planar_extent := maxf(
+		float(surface.get("attach_range", RUN_CLIMB_ATTACH_WORLD_RANGE)) + RUN_CLIMB_SURFACE_DEPTH_OFFSET,
+		tangent_extent + RUN_CLIMB_SURFACE_DEPTH_OFFSET
+	)
+	var min_bounds := Vector3(
+		anchor_local_position.x - planar_extent,
+		float(surface.get("min_y", anchor_local_position.y)) - RUN_CLIMB_SURFACE_DEPTH_OFFSET,
+		anchor_local_position.z - planar_extent
+	)
+	var max_bounds := Vector3(
+		anchor_local_position.x + planar_extent,
+		float(surface.get("max_y", anchor_local_position.y)) + RUN_CLIMB_SURFACE_DEPTH_OFFSET,
+		anchor_local_position.z + planar_extent
+	)
+	var min_cell := _get_run_climb_surface_query_cell(min_bounds)
+	var max_cell := _get_run_climb_surface_query_cell(max_bounds)
+	for x in range(min_cell.x, max_cell.x + 1):
+		for y in range(min_cell.y, max_cell.y + 1):
+			for z in range(min_cell.z, max_cell.z + 1):
+				var cell_key := _get_run_climb_surface_query_key(Vector3i(x, y, z))
+				var cell_surface_ids: Array = Array(_run_climb_surface_spatial_lookup.get(cell_key, []))
+				cell_surface_ids.append(surface_id)
+				_run_climb_surface_spatial_lookup[cell_key] = cell_surface_ids
+
+func _query_run_climb_surfaces_near_local(local_position: Vector3, include_ladders: bool = true) -> Array:
+	var cell_key := _get_run_climb_surface_query_key(_get_run_climb_surface_query_cell(local_position))
+	var nearby_surface_ids: Array = Array(_run_climb_surface_spatial_lookup.get(cell_key, []))
+	if nearby_surface_ids.is_empty():
+		var fallback_surfaces: Array = []
+		for surface_variant in _run_climb_surface_cache:
+			var surface: Dictionary = surface_variant
+			if not include_ladders and str(surface.get("type", "")) == "ladder":
+				continue
+			fallback_surfaces.append(surface.duplicate(true))
+		return fallback_surfaces
+	var nearby_surfaces: Array = []
+	for surface_id_variant in nearby_surface_ids:
+		var surface: Dictionary = _run_climb_surface_lookup.get(str(surface_id_variant), {})
+		if surface.is_empty():
+			continue
+		if not include_ladders and str(surface.get("type", "")) == "ladder":
+			continue
+		nearby_surfaces.append(surface.duplicate(true))
+	return nearby_surfaces
+
+func _compute_run_walkable_surfaces() -> Array:
 	var nav_blocks: Array = []
 	var occupied_cells := {}
 	for block_variant in Array(boat_state.get("runtime_blocks", [])):
@@ -4762,9 +4975,123 @@ func get_run_walkable_surfaces() -> Array:
 			"edge_pos_x_open": not occupied_cells.has(_cell_to_key([cell.x + 1, cell.y, cell.z])),
 			"edge_neg_z_open": not occupied_cells.has(_cell_to_key([cell.x, cell.y, cell.z - 1])),
 			"edge_pos_z_open": not occupied_cells.has(_cell_to_key([cell.x, cell.y, cell.z + 1])),
-			"top_clear": not occupied_cells.has(_cell_to_key([cell.x, cell.y + 1, cell.z])),
-		})
+				"top_clear": not occupied_cells.has(_cell_to_key([cell.x, cell.y + 1, cell.z])),
+			})
 	return surfaces
+
+func _build_run_climb_surfaces() -> Array:
+	_ensure_run_navigation_surface_cache()
+	return _run_climb_surface_cache
+
+func _compute_run_climb_surfaces() -> Array:
+	var nav_blocks: Array = []
+	var occupied_cells := {}
+	for block_variant in Array(boat_state.get("runtime_blocks", [])):
+		var block_state: Dictionary = block_variant
+		var block := _get_runtime_block_navigation_data(block_state)
+		if block.is_empty():
+			continue
+		nav_blocks.append(block)
+		occupied_cells[_cell_to_key(block.get("cell", [0, 0, 0]))] = true
+	var surfaces: Array = []
+	for ladder_variant in get_run_ladder_points():
+		var ladder: Dictionary = ladder_variant
+		var water_position: Vector3 = ladder.get("water_position", Vector3.ZERO)
+		var deck_position := get_nearest_run_avatar_deck_position(ladder.get("deck_position", Vector3.ZERO))
+		var outward := Vector3(deck_position.x - water_position.x, 0.0, deck_position.z - water_position.z)
+		if outward.length_squared() <= 0.001:
+			outward = Vector3.BACK
+		outward = outward.normalized()
+		surfaces.append({
+			"id": str(ladder.get("id", "ladder")),
+			"type": "ladder",
+			"label": str(ladder.get("label", "Ladder")),
+			"anchor_local_position": water_position,
+			"water_position": water_position,
+			"deck_position": deck_position,
+			"normal": -outward,
+			"tangent": outward.cross(Vector3.UP).normalized(),
+			"min_y": minf(water_position.y, deck_position.y),
+			"max_y": maxf(water_position.y, deck_position.y),
+			"attach_range": RUN_CLIMB_LADDER_ATTACH_RANGE,
+		})
+	for block_variant in nav_blocks:
+		var block: Dictionary = block_variant
+		var local_position: Vector3 = block.get("local_position", Vector3.ZERO)
+		var cell := _cell_to_vector3i(block.get("cell", [0, 0, 0]))
+		var half_size := RUNTIME_BLOCK_SPACING * 0.5
+		var face_specs := [
+			{"suffix": "neg_x", "neighbor": Vector3i(-1, 0, 0), "normal": Vector3.LEFT, "tangent": Vector3.FORWARD},
+			{"suffix": "pos_x", "neighbor": Vector3i(1, 0, 0), "normal": Vector3.RIGHT, "tangent": Vector3.BACK},
+			{"suffix": "neg_z", "neighbor": Vector3i(0, 0, -1), "normal": Vector3.BACK, "tangent": Vector3.LEFT},
+			{"suffix": "pos_z", "neighbor": Vector3i(0, 0, 1), "normal": Vector3.FORWARD, "tangent": Vector3.RIGHT},
+		]
+		for face_variant in face_specs:
+			var face: Dictionary = face_variant
+			var neighbor: Vector3i = face.get("neighbor", Vector3i.ZERO)
+			if occupied_cells.has(_cell_to_key([cell.x + neighbor.x, cell.y + neighbor.y, cell.z + neighbor.z])):
+				continue
+			var normal: Vector3 = face.get("normal", Vector3.RIGHT)
+			var tangent: Vector3 = face.get("tangent", Vector3.FORWARD)
+			var anchor_local_position := local_position + normal * (half_size + RUN_CLIMB_SURFACE_DEPTH_OFFSET)
+			var top_probe := local_position + normal * half_size + Vector3.UP * (half_size + RUN_AVATAR_STAND_HEIGHT)
+			var top_projection := _project_run_deck_position(top_probe, RUN_DECK_SURFACE_SNAP_DISTANCE * 1.6, true)
+			var deck_position: Vector3 = top_projection.get("deck_position", top_probe)
+			surfaces.append({
+				"id": "hull_%d_%s" % [int(block.get("id", 0)), str(face.get("suffix", "face"))],
+				"type": "hull",
+				"block_id": int(block.get("id", 0)),
+				"block_type": str(block.get("type", "structure")),
+				"cell": [cell.x, cell.y, cell.z],
+				"anchor_local_position": anchor_local_position,
+				"normal": normal,
+				"tangent": tangent,
+				"water_position": Vector3(anchor_local_position.x, RUN_OVERBOARD_WATER_HEIGHT, anchor_local_position.z),
+				"deck_position": deck_position,
+				"min_y": local_position.y - half_size + RUN_CLIMB_SURFACE_VERTICAL_MARGIN,
+				"max_y": local_position.y + half_size - RUN_CLIMB_SURFACE_VERTICAL_MARGIN,
+				"min_tangent": -half_size + RUN_CLIMB_SURFACE_VERTICAL_MARGIN,
+				"max_tangent": half_size - RUN_CLIMB_SURFACE_VERTICAL_MARGIN,
+				"attach_range": RUN_CLIMB_ATTACH_WORLD_RANGE,
+			})
+	return surfaces
+
+func _get_best_run_climb_surface(world_position: Vector3, include_ladders: bool = true) -> Dictionary:
+	var local_position := _run_world_to_local(world_position)
+	var best_surface: Dictionary = {}
+	var best_distance := INF
+	for surface_variant in _query_run_climb_surfaces_near_local(local_position, include_ladders):
+		var surface: Dictionary = surface_variant
+		var anchor_local_position: Vector3 = surface.get("anchor_local_position", Vector3.ZERO)
+		var distance := Vector2(local_position.x, local_position.z).distance_to(Vector2(anchor_local_position.x, anchor_local_position.z))
+		distance = maxf(distance, absf(local_position.y - clampf(local_position.y, float(surface.get("min_y", local_position.y)), float(surface.get("max_y", local_position.y)))))
+		if distance >= best_distance:
+			continue
+		best_distance = distance
+		best_surface = surface.duplicate(true)
+		best_surface["distance"] = distance
+	return best_surface
+
+func _clamp_local_position_to_climb_surface(surface: Dictionary, local_position: Vector3) -> Vector3:
+	var surface_type := str(surface.get("type", ""))
+	if surface_type == "ladder":
+		var water_position: Vector3 = surface.get("water_position", Vector3.ZERO)
+		var deck_position: Vector3 = surface.get("deck_position", water_position)
+		return Vector3(
+			water_position.x,
+			clampf(local_position.y, float(surface.get("min_y", water_position.y)), float(surface.get("max_y", deck_position.y))),
+			water_position.z
+		)
+	var anchor_local_position: Vector3 = surface.get("anchor_local_position", Vector3.ZERO)
+	var tangent: Vector3 = surface.get("tangent", Vector3.FORWARD)
+	var tangent_offset := (local_position - anchor_local_position).dot(tangent)
+	tangent_offset = clampf(tangent_offset, float(surface.get("min_tangent", -0.4)), float(surface.get("max_tangent", 0.4)))
+	var clamped_y := clampf(local_position.y, float(surface.get("min_y", anchor_local_position.y)), float(surface.get("max_y", anchor_local_position.y)))
+	var tangent_position := anchor_local_position + tangent * tangent_offset
+	return Vector3(tangent_position.x, clamped_y, tangent_position.z)
+
+func _sanitize_climb_world_position(surface: Dictionary, world_position: Vector3) -> Vector3:
+	return _run_local_to_world(_clamp_local_position_to_climb_surface(surface, _run_world_to_local(world_position)))
 
 func _get_surface_access_edge(surface: Dictionary, local_position: Vector3, projected_position: Vector3, edge_margin: float) -> Dictionary:
 	if surface.is_empty() or not bool(surface.get("top_clear", true)):
@@ -4989,14 +5316,14 @@ func _get_best_overboard_recovery_target(world_position: Vector3) -> Dictionary:
 		nearest_target["ready"] = distance <= RUN_OVERBOARD_RECOVERY_RANGE
 	return nearest_target
 
-func _sanitize_overboard_world_position(world_position: Vector3) -> Vector3:
+func _sanitize_overboard_world_position(world_position: Vector3, preserve_airborne_height: bool = false) -> Vector3:
 	var boat_position: Vector3 = boat_state.get("position", Vector3.ZERO)
 	var offset := world_position - boat_position
 	offset.y = 0.0
 	if offset.length() > RUN_OVERBOARD_SWIM_RADIUS:
 		offset = offset.normalized() * RUN_OVERBOARD_SWIM_RADIUS
 	var sanitized_position := boat_position + offset
-	sanitized_position.y = RUN_OVERBOARD_WATER_HEIGHT
+	sanitized_position.y = maxf(RUN_OVERBOARD_WATER_HEIGHT, float(world_position.y)) if preserve_airborne_height else RUN_OVERBOARD_WATER_HEIGHT
 	return sanitized_position
 
 func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
@@ -5006,7 +5333,7 @@ func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
 	var avatar_mode := str(avatar_state.get("mode", RUN_AVATAR_MODE_DECK))
 	var max_health := maxf(1.0, float(avatar_state.get("max_health", AVATAR_MAX_HEALTH)))
 	var max_stamina := maxf(1.0, float(avatar_state.get("max_stamina", AVATAR_MAX_STAMINA)))
-	var min_health := 1.0 if avatar_mode == RUN_AVATAR_MODE_OVERBOARD else 0.0
+	var min_health := 0.0
 	avatar_state["max_health"] = max_health
 	avatar_state["health"] = clampf(float(avatar_state.get("health", max_health)), min_health, max_health)
 	avatar_state["max_stamina"] = max_stamina
@@ -5014,16 +5341,39 @@ func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
 	avatar_state["downed_timer"] = maxf(0.0, float(avatar_state.get("downed_timer", 0.0)))
 	if bool(avatar_state.get("stamina_exhausted", false)) and float(avatar_state.get("stamina", max_stamina)) >= AVATAR_STAMINA_EXHAUSTED_RECOVERY_THRESHOLD:
 		avatar_state["stamina_exhausted"] = false
-	if avatar_mode == RUN_AVATAR_MODE_OVERBOARD:
-		var world_position := _sanitize_overboard_world_position(avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO)))
-		var recovery_target := _get_best_overboard_recovery_target(world_position)
+	if avatar_mode == RUN_AVATAR_MODE_SWIM:
+		var current_world_position: Vector3 = avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO))
+		var world_position := _sanitize_overboard_world_position(
+			current_world_position,
+			current_world_position.y > RUN_OVERBOARD_WATER_HEIGHT + 0.02
+		)
 		avatar_state["world_position"] = world_position
-		avatar_state["recovery_target_id"] = str(recovery_target.get("id", ""))
-		avatar_state["recovery_target_label"] = str(recovery_target.get("label", ""))
-		avatar_state["recovery_ready"] = bool(recovery_target.get("ready", false))
 		avatar_state["deck_position"] = get_nearest_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
-		avatar_state["overboard_attrition_delay"] = maxf(0.0, float(avatar_state.get("overboard_attrition_delay", AVATAR_OVERBOARD_ATTRITION_DELAY)))
-		avatar_state["overboard_attrition_timer"] = maxf(0.0, float(avatar_state.get("overboard_attrition_timer", AVATAR_OVERBOARD_ATTRITION_INTERVAL)))
+		_clear_climb_state_fields(avatar_state)
+	elif avatar_mode == RUN_AVATAR_MODE_CLIMB:
+		var climb_surface_id := str(avatar_state.get("climb_surface_id", ""))
+		var climb_surface := get_run_climb_surface(climb_surface_id)
+		if climb_surface.is_empty():
+			climb_surface = _get_best_run_climb_surface(avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO)))
+		if climb_surface.is_empty():
+			avatar_state["mode"] = RUN_AVATAR_MODE_SWIM
+			var fallback_world_position: Vector3 = avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO))
+			avatar_state["world_position"] = _sanitize_overboard_world_position(
+				fallback_world_position,
+				fallback_world_position.y > RUN_OVERBOARD_WATER_HEIGHT + 0.02
+			)
+			avatar_state["grounded"] = false
+			_clear_climb_state_fields(avatar_state)
+		else:
+			var climb_world_position := _sanitize_climb_world_position(climb_surface, avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO)))
+			avatar_state["mode"] = RUN_AVATAR_MODE_CLIMB
+			avatar_state["world_position"] = climb_world_position
+			avatar_state["grounded"] = false
+			avatar_state["climb_surface_id"] = str(climb_surface.get("id", ""))
+			avatar_state["climb_surface_type"] = str(climb_surface.get("type", ""))
+			avatar_state["climb_attach_world_position"] = climb_world_position
+			avatar_state["climb_normal"] = Vector3(climb_surface.get("normal", Vector3.ZERO))
+			avatar_state["deck_position"] = get_nearest_run_avatar_deck_position(climb_surface.get("deck_position", avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0])))
 	elif avatar_mode == RUN_AVATAR_MODE_DOWNED:
 		var downed_position := sanitize_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
 		avatar_state["mode"] = RUN_AVATAR_MODE_DOWNED
@@ -5031,21 +5381,25 @@ func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
 		avatar_state["world_position"] = _run_local_to_world(downed_position)
 		avatar_state["velocity"] = Vector3.ZERO
 		avatar_state["grounded"] = true
-		avatar_state["recovery_target_id"] = ""
-		avatar_state["recovery_target_label"] = ""
-		avatar_state["recovery_ready"] = false
+		_clear_climb_state_fields(avatar_state)
 	else:
 		var deck_position := sanitize_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
 		avatar_state["mode"] = RUN_AVATAR_MODE_DECK
 		avatar_state["deck_position"] = deck_position
 		avatar_state["world_position"] = _run_local_to_world(deck_position)
-		avatar_state["recovery_target_id"] = ""
-		avatar_state["recovery_target_label"] = ""
-		avatar_state["recovery_ready"] = false
+		avatar_state["grounded"] = true
+		_clear_climb_state_fields(avatar_state)
 	run_avatar_state[peer_id] = avatar_state
 
+func _is_peer_swimming(peer_id: int) -> bool:
+	return str(run_avatar_state.get(peer_id, {}).get("mode", RUN_AVATAR_MODE_DECK)) == RUN_AVATAR_MODE_SWIM
+
+func _is_peer_climbing(peer_id: int) -> bool:
+	return str(run_avatar_state.get(peer_id, {}).get("mode", RUN_AVATAR_MODE_DECK)) == RUN_AVATAR_MODE_CLIMB
+
 func _is_peer_overboard(peer_id: int) -> bool:
-	return str(run_avatar_state.get(peer_id, {}).get("mode", RUN_AVATAR_MODE_DECK)) == RUN_AVATAR_MODE_OVERBOARD
+	var avatar_mode := str(run_avatar_state.get(peer_id, {}).get("mode", RUN_AVATAR_MODE_DECK))
+	return avatar_mode == RUN_AVATAR_MODE_SWIM or avatar_mode == RUN_AVATAR_MODE_CLIMB
 
 func _is_peer_downed(peer_id: int) -> bool:
 	return str(run_avatar_state.get(peer_id, {}).get("mode", RUN_AVATAR_MODE_DECK)) == RUN_AVATAR_MODE_DOWNED
@@ -5263,42 +5617,37 @@ func _process_run_avatar_vitals(delta: float) -> void:
 			var drain_rate := 0.0
 			if avatar_mode == RUN_AVATAR_MODE_DECK and move_velocity.length() > RUN_AVATAR_MOVE_SPEED * 1.05:
 				drain_rate = AVATAR_SPRINT_STAMINA_DRAIN
-			elif avatar_mode == RUN_AVATAR_MODE_OVERBOARD and move_velocity.length() > RUN_SWIM_MOVE_SPEED * 1.05:
+			elif avatar_mode == RUN_AVATAR_MODE_SWIM and move_velocity.length() > RUN_SWIM_MOVE_SPEED * 1.05:
 				drain_rate = AVATAR_SWIM_BURST_STAMINA_DRAIN
-			if drain_rate > 0.0 and current_stamina > 0.0:
-				current_stamina = maxf(0.0, current_stamina - drain_rate * delta)
-				avatar_state["stamina"] = current_stamina
-				avatar_state["stamina_regen_delay"] = AVATAR_STAMINA_REGEN_DELAY
-				if current_stamina <= 0.01:
-					avatar_state["stamina"] = 0.0
-					avatar_state["stamina_exhausted"] = true
-				state_changed = true
-			elif regen_delay <= 0.0 and current_stamina < max_stamina:
-				var regen_rate := AVATAR_STAMINA_REGEN_OVERBOARD if avatar_mode == RUN_AVATAR_MODE_OVERBOARD else AVATAR_STAMINA_REGEN_DECK
-				current_stamina = minf(max_stamina, current_stamina + regen_rate * delta)
-				avatar_state["stamina"] = current_stamina
-				if bool(avatar_state.get("stamina_exhausted", false)) and current_stamina >= AVATAR_STAMINA_EXHAUSTED_RECOVERY_THRESHOLD:
-					avatar_state["stamina_exhausted"] = false
-				state_changed = true
-			if avatar_mode == RUN_AVATAR_MODE_OVERBOARD:
+			elif avatar_mode == RUN_AVATAR_MODE_CLIMB and str(avatar_state.get("climb_surface_type", "")) != "ladder":
+				drain_rate = AVATAR_CLIMB_STAMINA_DRAIN
+				if drain_rate > 0.0 and current_stamina > 0.0:
+					current_stamina = maxf(0.0, current_stamina - drain_rate * delta)
+					avatar_state["stamina"] = current_stamina
+					avatar_state["stamina_regen_delay"] = AVATAR_STAMINA_REGEN_DELAY
+					if current_stamina <= 0.01:
+						avatar_state["stamina"] = 0.0
+						avatar_state["stamina_exhausted"] = true
+					state_changed = true
+				elif regen_delay <= 0.0 and current_stamina < max_stamina:
+					var regen_rate := AVATAR_STAMINA_REGEN_SWIM if avatar_mode == RUN_AVATAR_MODE_SWIM else AVATAR_STAMINA_REGEN_DECK
+					current_stamina = minf(max_stamina, current_stamina + regen_rate * delta)
+					avatar_state["stamina"] = current_stamina
+					if bool(avatar_state.get("stamina_exhausted", false)) and current_stamina >= AVATAR_STAMINA_EXHAUSTED_RECOVERY_THRESHOLD:
+						avatar_state["stamina_exhausted"] = false
+					state_changed = true
+				if avatar_mode == RUN_AVATAR_MODE_CLIMB and current_stamina <= 0.01 and str(avatar_state.get("climb_surface_type", "")) != "ladder":
+					var slip_world_position: Vector3 = avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO))
+					var slip_velocity: Vector3 = avatar_state.get("velocity", Vector3.ZERO)
+					slip_velocity.y = minf(slip_velocity.y, -2.6)
+					avatar_state["mode"] = RUN_AVATAR_MODE_SWIM
+					avatar_state["world_position"] = _sanitize_overboard_world_position(slip_world_position, true)
+					avatar_state["velocity"] = slip_velocity.limit_length(6.8)
+					avatar_state["grounded"] = false
+					_clear_climb_state_fields(avatar_state)
+					state_changed = true
+			if avatar_mode == RUN_AVATAR_MODE_SWIM or avatar_mode == RUN_AVATAR_MODE_CLIMB:
 				run_avatar_state[peer_id] = avatar_state
-				if _try_auto_overboard_reboard(peer_id, avatar_state):
-					avatar_changed = true
-					continue
-				var attrition_delay := maxf(0.0, float(avatar_state.get("overboard_attrition_delay", AVATAR_OVERBOARD_ATTRITION_DELAY)) - delta)
-				avatar_state["overboard_attrition_delay"] = attrition_delay
-				state_changed = true
-				if attrition_delay <= 0.0:
-					var attrition_timer := maxf(0.0, float(avatar_state.get("overboard_attrition_timer", AVATAR_OVERBOARD_ATTRITION_INTERVAL)) - delta)
-					avatar_state["overboard_attrition_timer"] = attrition_timer
-					if attrition_timer <= 0.0:
-						avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
-						run_avatar_state[peer_id] = avatar_state
-						state_changed = _apply_peer_health_damage(peer_id, AVATAR_OVERBOARD_ATTRITION_DAMAGE, 1.0) or state_changed
-					else:
-						run_avatar_state[peer_id] = avatar_state
-				else:
-					run_avatar_state[peer_id] = avatar_state
 			else:
 				var current_health := float(avatar_state.get("health", AVATAR_MAX_HEALTH))
 				var max_health := maxf(1.0, float(avatar_state.get("max_health", AVATAR_MAX_HEALTH)))
@@ -5632,6 +5981,7 @@ func _reset_run_runtime() -> void:
 		"pitch_resistance": float(blueprint_stats.get("pitch_resistance", 50.0)),
 		"heel_bias": float(blueprint_stats.get("heel_bias", 0.0)),
 		"trim_bias": float(blueprint_stats.get("trim_bias", 0.0)),
+		"buoyancy_probes": Array(blueprint_stats.get("buoyancy_probes", [])).duplicate(true),
 		"water_surface_offset": 0.0,
 		"buoyancy_heave": 0.0,
 		"buoyancy_heave_velocity": 0.0,
@@ -5639,6 +5989,8 @@ func _reset_run_runtime() -> void:
 		"buoyancy_pitch_velocity": 0.0,
 		"buoyancy_roll": 0.0,
 		"buoyancy_roll_velocity": 0.0,
+		"buoyancy_yaw_velocity": 0.0,
+		"buoyancy_drift_velocity": Vector3.ZERO,
 		"water_drag_multiplier": 1.0,
 		"buoyancy_submersion": 0.0,
 		"freeboard_rating": float(blueprint_stats.get("freeboard_rating", 50.0)),
@@ -6430,6 +6782,7 @@ func _apply_runtime_stats_from_main_blocks(runtime_blocks: Array, main_block_ids
 	boat_state["span_length"] = int(stats.get("span_length", boat_state.get("span_length", 4)))
 	boat_state["hull_length"] = float(hull_dimensions.get("hull_length", boat_state.get("hull_length", 4.4)))
 	boat_state["hull_beam"] = float(hull_dimensions.get("hull_beam", boat_state.get("hull_beam", 2.7)))
+	boat_state["buoyancy_probes"] = Array(stats.get("buoyancy_probes", [])).duplicate(true)
 	boat_state["roll_resistance"] = float(stats.get("roll_resistance", 50.0))
 	boat_state["pitch_resistance"] = float(stats.get("pitch_resistance", 50.0))
 	boat_state["heel_bias"] = float(stats.get("heel_bias", 0.0))
@@ -8224,11 +8577,7 @@ func server_request_propulsion_secondary() -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_request_overboard_recovery() -> void:
-	if not multiplayer.is_server():
-		return
-
-	var peer_id := multiplayer.get_remote_sender_id()
-	_attempt_overboard_recovery(peer_id)
+	return
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_request_assist_rally(target_peer_id: int) -> void:
@@ -8247,12 +8596,28 @@ func server_request_debug_overboard() -> void:
 	_force_peer_overboard_for_debug(peer_id)
 
 @rpc("any_peer", "call_remote", "reliable")
-func server_request_local_overboard_transition(world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
+func server_request_local_swim_transition(world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
 	if not multiplayer.is_server():
 		return
 
 	var peer_id := multiplayer.get_remote_sender_id()
-	_request_peer_overboard_transition(peer_id, world_position, velocity, facing_y)
+	_request_peer_swim_transition(peer_id, world_position, velocity, facing_y)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_local_climb_attach(surface_id: String, world_position: Vector3, facing_y: float) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_request_peer_climb_attach(peer_id, surface_id, world_position, facing_y)
+
+@rpc("any_peer", "call_remote", "reliable")
+func server_request_local_climb_detach(world_position: Vector3, velocity: Vector3) -> void:
+	if not multiplayer.is_server():
+		return
+
+	var peer_id := multiplayer.get_remote_sender_id()
+	_request_peer_climb_detach(peer_id, world_position, velocity)
 
 @rpc("any_peer", "call_remote", "reliable")
 func server_request_place_blueprint_block(cell: Array, block_type: String, rotation_steps: int) -> void:
@@ -8497,24 +8862,57 @@ func _receive_hangar_avatar_state(
 	}
 	_broadcast_hangar_avatar_state()
 
-func _receive_run_avatar_state(peer_id: int, deck_position: Vector3, world_position: Vector3, velocity: Vector3, facing_y: float, grounded: bool, _avatar_mode: String) -> void:
+func _receive_run_avatar_state(peer_id: int, deck_position: Vector3, world_position: Vector3, velocity: Vector3, facing_y: float, grounded: bool, avatar_mode: String) -> void:
 	if not multiplayer.is_server():
 		return
 	if not peer_snapshot.has(peer_id):
 		return
 
 	var previous_overboard_count := int(run_state.get("overboard_count", 0))
+	var previous_state: Dictionary = run_avatar_state.get(peer_id, {})
+	var previous_mode := str(previous_state.get("mode", RUN_AVATAR_MODE_DECK))
 	var existing_state: Dictionary = run_avatar_state.get(peer_id, _make_default_run_avatar_state(run_avatar_state.size()))
-	var normalized_mode := str(existing_state.get("mode", RUN_AVATAR_MODE_DECK))
+	var normalized_mode := avatar_mode.strip_edges().to_lower()
+	if normalized_mode != RUN_AVATAR_MODE_SWIM and normalized_mode != RUN_AVATAR_MODE_CLIMB and normalized_mode != RUN_AVATAR_MODE_DOWNED:
+		normalized_mode = RUN_AVATAR_MODE_DECK
 	existing_state["mode"] = normalized_mode
-	if normalized_mode == RUN_AVATAR_MODE_OVERBOARD:
+	if normalized_mode == RUN_AVATAR_MODE_SWIM:
 		existing_state["velocity"] = velocity.limit_length(9.5)
 		existing_state["facing_y"] = facing_y
-		existing_state["grounded"] = grounded
-		existing_state["world_position"] = _sanitize_overboard_world_position(world_position)
+		existing_state["grounded"] = false
+		existing_state["world_position"] = _sanitize_overboard_world_position(
+			world_position,
+			world_position.y > RUN_OVERBOARD_WATER_HEIGHT + 0.02
+		)
+		_clear_climb_state_fields(existing_state)
+	elif normalized_mode == RUN_AVATAR_MODE_CLIMB:
+		var climb_surface := get_run_climb_surface(str(existing_state.get("climb_surface_id", "")))
+		if climb_surface.is_empty():
+			climb_surface = _get_best_run_climb_surface(world_position)
+		if climb_surface.is_empty():
+			existing_state["mode"] = RUN_AVATAR_MODE_SWIM
+			existing_state["velocity"] = velocity.limit_length(9.5)
+			existing_state["facing_y"] = facing_y
+			existing_state["grounded"] = false
+			existing_state["world_position"] = _sanitize_overboard_world_position(
+				world_position,
+				world_position.y > RUN_OVERBOARD_WATER_HEIGHT + 0.02
+			)
+			_clear_climb_state_fields(existing_state)
+		else:
+			existing_state["mode"] = RUN_AVATAR_MODE_CLIMB
+			existing_state["velocity"] = velocity.limit_length(6.0)
+			existing_state["facing_y"] = facing_y
+			existing_state["grounded"] = false
+			existing_state["world_position"] = _sanitize_climb_world_position(climb_surface, world_position)
+			existing_state["climb_surface_id"] = str(climb_surface.get("id", ""))
+			existing_state["climb_surface_type"] = str(climb_surface.get("type", ""))
+			existing_state["climb_attach_world_position"] = existing_state["world_position"]
+			existing_state["climb_normal"] = Vector3(climb_surface.get("normal", Vector3.ZERO))
 	elif normalized_mode == RUN_AVATAR_MODE_DOWNED:
 		existing_state["velocity"] = Vector3.ZERO
 		existing_state["grounded"] = true
+		_clear_climb_state_fields(existing_state)
 	else:
 		existing_state["deck_position"] = sanitize_run_avatar_deck_position(
 			deck_position,
@@ -8523,11 +8921,15 @@ func _receive_run_avatar_state(peer_id: int, deck_position: Vector3, world_posit
 		existing_state["velocity"] = velocity.limit_length(9.5)
 		existing_state["facing_y"] = facing_y
 		existing_state["grounded"] = grounded
+		_clear_climb_state_fields(existing_state)
 	run_avatar_state[peer_id] = existing_state
 	_refresh_run_avatar_runtime_fields(peer_id)
+	var next_mode := str(run_avatar_state.get(peer_id, {}).get("mode", RUN_AVATAR_MODE_DECK))
+	if previous_mode != RUN_AVATAR_MODE_DECK and next_mode == RUN_AVATAR_MODE_DECK:
+		run_state["recoveries_completed"] = int(run_state.get("recoveries_completed", 0)) + 1
 	_refresh_overboard_run_metrics()
 	_broadcast_run_avatar_state()
-	if int(run_state.get("overboard_count", 0)) != previous_overboard_count:
+	if int(run_state.get("overboard_count", 0)) != previous_overboard_count or previous_mode != next_mode:
 		_broadcast_run_state()
 
 @rpc("authority", "call_remote", "unreliable")
@@ -8577,7 +8979,7 @@ func _maybe_apply_local_run_result() -> void:
 	var run_instance_id := int(run_state.get("run_instance_id", -1))
 	if run_instance_id == _last_applied_local_result_run_instance_id:
 		return
-	var local_peer_id := 1 if multiplayer.multiplayer_peer == null else multiplayer.get_unique_id()
+	var local_peer_id := get_local_peer_id()
 	var eligible_peer_ids := Array(run_state.get("eligible_reward_peer_ids", []))
 	var eligible := false
 	for peer_id_variant in eligible_peer_ids:

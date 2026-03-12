@@ -6,6 +6,7 @@ const RUN_CLIENT_SCENE := "res://scenes/run_client/run_client.tscn"
 const HudIconLibrary = preload("res://scenes/shared/hud_icon_library.gd")
 const ExpeditionHudSkin = preload("res://scenes/shared/expedition_hud_skin.gd")
 const BoatBlockMaterials = preload("res://scenes/shared/boat_block_materials.gd")
+const SeaSkyRigScene = preload("res://scenes/shared/environment/sea_sky_rig.tscn")
 const HANGAR_PLAYER_CONTROLLER_SCENE := preload("res://scenes/shared/avatar/hangar_player_controller.tscn")
 const PLAYER_AVATAR_VISUAL_SCENE := preload("res://scenes/shared/avatar/player_avatar_visual.tscn")
 const BLOCK_CELL_SIZE := 1.25
@@ -89,6 +90,7 @@ var block_strip_slot_panels: Array = []
 var block_strip_slot_icons: Array = []
 var block_strip_slot_labels: Array = []
 var launch_button: Button
+var sea_test_button: Button
 var reset_button: Button
 var unlock_button: Button
 var detail_toggle_button: Button
@@ -396,21 +398,16 @@ func _set_mouse_capture(captured: bool) -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED if captured else Input.MOUSE_MODE_VISIBLE)
 
 func _ensure_world_environment() -> void:
-	var world_environment := get_node_or_null("Environment/WorldEnvironment") as WorldEnvironment
-	if world_environment == null:
-		world_environment = get_node_or_null("WorldEnvironment") as WorldEnvironment
-	if world_environment != null:
+	if get_node_or_null("Environment") is SeaSkyRig:
 		return
-	world_environment = WorldEnvironment.new()
-	world_environment.name = "WorldEnvironment"
-	world_environment.environment = _make_default_environment_resource()
-	add_child(world_environment)
-
-func _make_default_environment_resource() -> Environment:
-	var environment := Environment.new()
-	environment.background_mode = Environment.BG_COLOR
-	environment.background_color = Color(0.58, 0.72, 0.84)
-	return environment
+	var sky_rig := SeaSkyRigScene.instantiate() as SeaSkyRig
+	if sky_rig == null:
+		return
+	sky_rig.name = "Environment"
+	sky_rig.preset_id = &"hangar_harbor"
+	sky_rig.sun_rotation_degrees = Vector3(-42.0, 32.0, 0.0)
+	sky_rig.base_sun_energy = 1.18
+	add_child(sky_rig)
 
 func _build_static_world_fallback() -> void:
 	var fallback_root := get_node_or_null("EnvironmentFallback") as Node3D
@@ -773,6 +770,7 @@ func _build_hud() -> void:
 	launch_readiness_label = hud.get_node("LeftPanel/Margin/Layout/LaunchReadinessLabel") as Label
 	status_label = hud.get_node("LeftPanel/Margin/Layout/StatusLabel") as Label
 	launch_button = hud.get_node("LeftPanel/Margin/Layout/Actions/LaunchButton") as Button
+	sea_test_button = hud.get_node("LeftPanel/Margin/Layout/Actions/SeaTestButton") as Button
 	reset_button = hud.get_node("LeftPanel/Margin/Layout/Actions/ResetButton") as Button
 	var reconnect_button := hud.get_node("LeftPanel/Margin/Layout/Actions/ReturnToConnectButton") as Button
 	var quit_button := hud.get_node("LeftPanel/Margin/Layout/Actions/QuitButton") as Button
@@ -868,6 +866,7 @@ func _build_hud() -> void:
 	ExpeditionHudSkin.apply_muted(last_run_label)
 	ExpeditionHudSkin.apply_crosshair(crosshair_label)
 	ExpeditionHudSkin.apply_compact_button(launch_button, ExpeditionHudSkin.SEA_GLASS_GREEN, ExpeditionHudSkin.RUST_BROWN)
+	ExpeditionHudSkin.apply_compact_button(sea_test_button, ExpeditionHudSkin.BRASS_YELLOW, ExpeditionHudSkin.RUST_BROWN)
 	ExpeditionHudSkin.apply_compact_button(reset_button, ExpeditionHudSkin.OXIDIZED_TEAL, ExpeditionHudSkin.HANGAR_PANEL_SOFT)
 	ExpeditionHudSkin.apply_compact_button(reconnect_button, ExpeditionHudSkin.BUOY_ORANGE, ExpeditionHudSkin.HANGAR_PANEL_SOFT)
 	ExpeditionHudSkin.apply_compact_button(quit_button, ExpeditionHudSkin.FLARE_RED, ExpeditionHudSkin.HANGAR_PANEL_SOFT)
@@ -878,7 +877,7 @@ func _build_hud() -> void:
 	reconnect_button.text = "Back"
 	quit_button.text = "Exit"
 
-	left_panel.offset_right = 388.0
+	left_panel.offset_right = 486.0
 	right_panel.offset_left = -360.0
 	right_panel.offset_bottom = 252.0
 	tool_panel.offset_left = -224.0
@@ -888,6 +887,8 @@ func _build_hud() -> void:
 
 	if not launch_button.pressed.is_connected(_launch_run):
 		launch_button.pressed.connect(_launch_run)
+	if not sea_test_button.pressed.is_connected(_launch_sea_test):
+		sea_test_button.pressed.connect(_launch_sea_test)
 	if not reset_button.pressed.is_connected(_reset_boat):
 		reset_button.pressed.connect(_reset_boat)
 	if not reconnect_button.pressed.is_connected(_return_to_connect):
@@ -1256,6 +1257,10 @@ func _refresh_hud() -> void:
 	launch_button.disabled = launch_transition_pending or NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR
 	launch_button.text = "Launching..." if launch_transition_pending else _build_launch_button_label(readiness_snapshot)
 	launch_button.tooltip_text = "\n".join(warning_lines)
+	if sea_test_button != null:
+		sea_test_button.disabled = launch_transition_pending or NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR
+		sea_test_button.text = "Sea Test Hull" if _blueprint_is_default_core() else "Sea Test"
+		sea_test_button.tooltip_text = _build_sea_test_tooltip()
 	if reset_button != null:
 		var block_count := Array(NetworkRuntime.boat_blueprint.get("blocks", [])).size()
 		reset_button.disabled = launch_transition_pending or NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR or block_count <= 1
@@ -2257,12 +2262,39 @@ func _launch_run() -> void:
 	NetworkRuntime.request_launch_run()
 	_refresh_hud()
 
+func _launch_sea_test() -> void:
+	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
+		return
+	if launch_transition_pending:
+		return
+	if _blueprint_is_default_core():
+		launch_transition_pending = true
+		_set_mouse_capture(false)
+		_queue_autobuild_actions(_build_sea_test_actions(true))
+		_refresh_hud()
+		return
+	_launch_run()
+
 func _reset_boat() -> void:
 	if NetworkRuntime.get_session_phase() != NetworkRuntime.SESSION_PHASE_HANGAR:
 		return
 	_set_mouse_capture(false)
 	NetworkRuntime.request_reset_blueprint()
 	_refresh_hud()
+
+func _blueprint_is_default_core() -> bool:
+	var blocks := Array(NetworkRuntime.boat_blueprint.get("blocks", []))
+	if blocks.size() != 1:
+		return false
+	var block: Dictionary = blocks[0]
+	return int(block.get("id", 0)) == 1 \
+		and str(block.get("type", "")) == "core" \
+		and _normalize_cell(block.get("cell", [0, 0, 0])) == [0, 0, 0]
+
+func _build_sea_test_tooltip() -> String:
+	if _blueprint_is_default_core():
+		return "Build a known-good buoyancy test hull and launch it into the sea."
+	return "Launch the current boat into the sea to preview buoyancy behavior."
 
 func _return_to_connect() -> void:
 	_set_mouse_capture(false)
@@ -2874,56 +2906,9 @@ func _initialize_autobuild() -> void:
 				{"type": "launch"},
 			]
 		"builder_sea_test":
-			autobuild_actions = [
-				{"type": "reset"},
-				{"type": "place", "cell": [0, 0, -1], "block": "engine"},
-				{"type": "place", "cell": [-1, 0, 0], "block": "hull"},
-				{"type": "place", "cell": [1, 0, 0], "block": "hull"},
-				{"type": "place", "cell": [-1, 0, 1], "block": "hull"},
-				{"type": "place", "cell": [0, 0, 1], "block": "hull"},
-				{"type": "place", "cell": [1, 0, 1], "block": "hull"},
-				{"type": "place", "cell": [-1, 0, 2], "block": "hull"},
-				{"type": "place", "cell": [0, 0, 2], "block": "hull"},
-				{"type": "place", "cell": [1, 0, 2], "block": "hull"},
-				{"type": "place", "cell": [-1, 0, 3], "block": "hull"},
-				{"type": "place", "cell": [0, 0, 3], "block": "hull"},
-				{"type": "place", "cell": [1, 0, 3], "block": "hull"},
-				{"type": "place", "cell": [0, 1, -1], "block": "structure"},
-				{"type": "place", "cell": [0, 1, 0], "block": "deck_plate"},
-				{"type": "place", "cell": [-1, 1, 1], "block": "deck_plate"},
-				{"type": "place", "cell": [1, 1, 1], "block": "deck_plate"},
-				{"type": "place", "cell": [0, 1, 1], "block": "utility"},
-				{"type": "place", "cell": [0, 1, 2], "block": "cargo"},
-				{"type": "place", "cell": [0, 1, 3], "block": "light_crane"},
-				{"type": "place", "cell": [-2, 1, 1], "block": "ladder_rig"},
-				{"type": "place", "cell": [2, 1, 1], "block": "ladder_rig"},
-			]
+			autobuild_actions = _build_sea_test_actions(false)
 		"builder_sea_test_launch":
-			autobuild_actions = [
-				{"type": "reset"},
-				{"type": "place", "cell": [0, 0, -1], "block": "engine"},
-				{"type": "place", "cell": [-1, 0, 0], "block": "hull"},
-				{"type": "place", "cell": [1, 0, 0], "block": "hull"},
-				{"type": "place", "cell": [-1, 0, 1], "block": "hull"},
-				{"type": "place", "cell": [0, 0, 1], "block": "hull"},
-				{"type": "place", "cell": [1, 0, 1], "block": "hull"},
-				{"type": "place", "cell": [-1, 0, 2], "block": "hull"},
-				{"type": "place", "cell": [0, 0, 2], "block": "hull"},
-				{"type": "place", "cell": [1, 0, 2], "block": "hull"},
-				{"type": "place", "cell": [-1, 0, 3], "block": "hull"},
-				{"type": "place", "cell": [0, 0, 3], "block": "hull"},
-				{"type": "place", "cell": [1, 0, 3], "block": "hull"},
-				{"type": "place", "cell": [0, 1, -1], "block": "structure"},
-				{"type": "place", "cell": [0, 1, 0], "block": "deck_plate"},
-				{"type": "place", "cell": [-1, 1, 1], "block": "deck_plate"},
-				{"type": "place", "cell": [1, 1, 1], "block": "deck_plate"},
-				{"type": "place", "cell": [0, 1, 1], "block": "utility"},
-				{"type": "place", "cell": [0, 1, 2], "block": "cargo"},
-				{"type": "place", "cell": [0, 1, 3], "block": "light_crane"},
-				{"type": "place", "cell": [-2, 1, 1], "block": "ladder_rig"},
-				{"type": "place", "cell": [2, 1, 1], "block": "ladder_rig"},
-				{"type": "launch"},
-			]
+			autobuild_actions = _build_sea_test_actions(true)
 		"builder_rescue_tug":
 			autobuild_actions = [
 				{"type": "place", "cell": [-2, 0, 0], "block": "hull"},
@@ -2972,6 +2957,41 @@ func _process_autobuild(delta: float) -> void:
 	_execute_autobuild_action(action)
 	autobuild_timer = 0.35
 
+func _queue_autobuild_actions(actions: Array) -> void:
+	autobuild_actions = Array(actions).duplicate(true)
+	autobuild_pending_action.clear()
+	autobuild_index = 0
+	autobuild_timer = 0.1
+
+func _build_sea_test_actions(include_launch: bool) -> Array:
+	var actions: Array = [
+		{"type": "reset"},
+		{"type": "place", "cell": [0, 0, -1], "block": "engine"},
+		{"type": "place", "cell": [-1, 0, 0], "block": "hull"},
+		{"type": "place", "cell": [1, 0, 0], "block": "hull"},
+		{"type": "place", "cell": [-1, 0, 1], "block": "hull"},
+		{"type": "place", "cell": [0, 0, 1], "block": "hull"},
+		{"type": "place", "cell": [1, 0, 1], "block": "hull"},
+		{"type": "place", "cell": [-1, 0, 2], "block": "hull"},
+		{"type": "place", "cell": [0, 0, 2], "block": "hull"},
+		{"type": "place", "cell": [1, 0, 2], "block": "hull"},
+		{"type": "place", "cell": [-1, 0, 3], "block": "hull"},
+		{"type": "place", "cell": [0, 0, 3], "block": "hull"},
+		{"type": "place", "cell": [1, 0, 3], "block": "hull"},
+		{"type": "place", "cell": [0, 1, -1], "block": "structure"},
+		{"type": "place", "cell": [0, 1, 0], "block": "deck_plate"},
+		{"type": "place", "cell": [-1, 1, 1], "block": "deck_plate"},
+		{"type": "place", "cell": [1, 1, 1], "block": "deck_plate"},
+		{"type": "place", "cell": [0, 1, 1], "block": "utility"},
+		{"type": "place", "cell": [0, 1, 2], "block": "cargo"},
+		{"type": "place", "cell": [0, 1, 3], "block": "light_crane"},
+		{"type": "place", "cell": [-2, 1, 1], "block": "ladder_rig"},
+		{"type": "place", "cell": [2, 1, 1], "block": "ladder_rig"},
+	]
+	if include_launch:
+		actions.append({"type": "launch"})
+	return actions
+
 func _execute_autobuild_action(action: Dictionary) -> void:
 	match str(action.get("type", "")):
 		"reset":
@@ -2985,6 +3005,7 @@ func _execute_autobuild_action(action: Dictionary) -> void:
 			var cell := _normalize_cell(action.get("cell", [0, 0, 0]))
 			NetworkRuntime.request_remove_blueprint_block(cell)
 		"launch":
+			launch_transition_pending = true
 			NetworkRuntime.request_launch_run()
 
 func _position_local_avatar_for_autobuild_cell(cell: Array) -> void:

@@ -1,7 +1,7 @@
 extends Node
 
 const DEFAULT_HOST := "127.0.0.1"
-const DEFAULT_PORT := 7000
+const DEFAULT_PORT := 7217
 const MAX_PLAYERS := 4
 const DEFAULT_PLAYER_NAME := "Captain"
 const DEFAULT_RUN_SEED := 424242

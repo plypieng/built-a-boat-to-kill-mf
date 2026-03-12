@@ -87,6 +87,10 @@ theme_override_constants/separation = 10
 layout_mode = 2
 text = "Launch Run"
 
+[node name="SeaTestButton" type="Button" parent="LeftPanel/Margin/Layout/Actions"]
+layout_mode = 2
+text = "Sea Test"
+
 [node name="ResetButton" type="Button" parent="LeftPanel/Margin/Layout/Actions"]
 layout_mode = 2
 text = "Reset Boat"

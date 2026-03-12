@@ -1,0 +1,32 @@
+[gd_scene load_steps=6 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/boats/shared_boat_blueprint.tscn" id="1_boat"]
+[ext_resource type="Script" path="res://scenes/boats/boat_blueprint_preview.gd" id="2_script"]
+[ext_resource type="PackedScene" path="res://scenes/shared/environment/sea_sky_rig.tscn" id="3_env"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_floor"]
+size = Vector3(14, 0.2, 18)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_floor"]
+albedo_color = Color(0.321569, 0.356863, 0.396078, 1)
+roughness = 0.9
+
+[node name="BoatBlueprintPreview" type="Node3D"]
+script = ExtResource("2_script")
+
+[node name="Environment" parent="." instance=ExtResource("3_env")]
+preset_id = "neutral_preview"
+sun_rotation_degrees = Vector3(-18, 39, 0)
+base_sun_energy = 1.6
+
+[node name="PreviewFloor" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.1, 1.875)
+mesh = SubResource("BoxMesh_floor")
+material_override = SubResource("StandardMaterial3D_floor")
+
+[node name="Boat" parent="." instance=ExtResource("1_boat")]
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(0.936329, 0.109382, -0.333807, 0, 0.950137, 0.311833, 0.351123, -0.292176, 0.889642, 4.8, 5.5, 8.4)
+current = true
+fov = 60.0
