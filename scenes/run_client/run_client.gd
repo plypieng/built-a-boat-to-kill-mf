@@ -67,6 +67,7 @@ const RUN_SURFACE_TREAD_BOB_SPEED := 2.7
 const RUN_SURFACE_TREAD_BOB_AMPLITUDE := 0.08
 const RUN_SURFACE_TREAD_LEAN_MAX := 0.12
 const RUN_BRACE_KEY := KEY_B
+const RUN_DEBUG_OVERLAY_TOGGLE_KEY := KEY_F3
 const RUN_SWIM_MOVE_SPEED := 2.6
 const RUN_SWIM_ACCELERATION := 8.5
 const RUN_AVATAR_SPRINT_MULTIPLIER := 1.35
@@ -161,6 +162,7 @@ var hazard_container: Node3D
 var squall_container: Node3D
 var station_container: Node3D
 var recovery_container: Node3D
+var debug_overlay_container: Node3D
 var loot_container: Node3D
 var wreck_root: Node3D
 var wreck_ring_material: StandardMaterial3D
@@ -256,6 +258,7 @@ var local_surface_tread_active := false
 var local_surface_tread_elapsed := 0.0
 var local_surface_contact_feedback_timer := 0.0
 var local_reboard_settle_timer := 0.0
+var debug_overlay_enabled := false
 var boat_visual_velocity := Vector3.ZERO
 var selected_run_tool_index := 0
 var inventory_panel_visible := false
@@ -283,6 +286,7 @@ var sea_water_wave_texture: NoiseTexture2D
 var sea_water_normal_texture: NoiseTexture2D
 var sea_water_normal_texture_secondary: NoiseTexture2D
 var sea_sky_material: ProceduralSkyMaterial
+var debug_overlay_visuals: Dictionary = {}
 
 func _ready() -> void:
 	launch_overrides = GameConfig.parse_cmdline_overrides()
@@ -330,6 +334,7 @@ func _process(delta: float) -> void:
 	_update_crew_visuals(delta)
 	_update_hazard_visuals()
 	_update_loot_visuals()
+	_refresh_debug_overlay_visuals()
 	_update_wreck_visual()
 	_update_rescue_visual()
 	_update_cache_visual()
@@ -391,6 +396,9 @@ func _build_world() -> void:
 	extraction_site_container = _ensure_root_node3d("ExtractionSiteContainer")
 
 	sinking_chunk_container = _ensure_root_node3d("SinkingChunkContainer")
+	debug_overlay_container = _ensure_root_node3d("DebugOverlayContainer")
+	debug_overlay_container.top_level = true
+	_build_debug_overlay_visuals()
 
 	boat_root = _ensure_root_node3d("BoatRoot")
 
@@ -2013,6 +2021,144 @@ func _build_recovery_visuals() -> void:
 		"root": emergency_reboard_node,
 	}
 
+func _create_debug_overlay_marker(node_name: String, marker_text: String, color: Color) -> Node3D:
+	var marker_node := RUN_RECOVERY_MARKER_SCENE.instantiate() as Node3D
+	if marker_node == null:
+		marker_node = Node3D.new()
+	marker_node.name = node_name
+	if marker_node.has_method("set_marker_text"):
+		marker_node.call("set_marker_text", marker_text)
+	if marker_node.has_method("set_marker_color"):
+		marker_node.call("set_marker_color", color)
+	if marker_node.has_method("set_label_visible"):
+		marker_node.call("set_label_visible", true)
+	return marker_node
+
+func _build_debug_overlay_visuals() -> void:
+	if debug_overlay_container == null:
+		return
+	for child in debug_overlay_container.get_children():
+		child.queue_free()
+	debug_overlay_visuals.clear()
+	var overlay_specs := {
+		"support": {
+			"text": "Support",
+			"color": HUD_TEXT_PRIMARY,
+		},
+		"direct_reboard": {
+			"text": "Direct Reboard",
+			"color": HUD_TEXT_SUCCESS,
+		},
+		"emergency_reboard": {
+			"text": "Emergency Reboard",
+			"color": HUD_TEXT_WARNING,
+		},
+	}
+	for marker_id_variant in overlay_specs.keys():
+		var marker_id := str(marker_id_variant)
+		var marker_spec: Dictionary = overlay_specs[marker_id]
+		var marker_node := _create_debug_overlay_marker(
+			"%sDebugMarker" % marker_id.capitalize(),
+			str(marker_spec.get("text", marker_id)),
+			marker_spec.get("color", HUD_TEXT_PRIMARY)
+		)
+		debug_overlay_container.add_child(marker_node)
+		marker_node.visible = false
+		debug_overlay_visuals[marker_id] = {
+			"root": marker_node,
+		}
+	debug_overlay_container.visible = false
+
+func _set_debug_overlay_enabled(is_enabled: bool) -> void:
+	debug_overlay_enabled = is_enabled
+	if debug_overlay_container != null:
+		debug_overlay_container.visible = debug_overlay_enabled
+	if not debug_overlay_enabled:
+		for marker_id_variant in debug_overlay_visuals.keys():
+			_set_debug_marker_state(str(marker_id_variant), false, Vector3.ZERO, "", HUD_TEXT_MUTED)
+	_push_event_callout(
+		"Debug Overlay %s" % ("On" if debug_overlay_enabled else "Off"),
+		HUD_TEXT_PRIMARY if debug_overlay_enabled else HUD_TEXT_MUTED,
+		1.4
+	)
+	_refresh_hud()
+
+func _set_debug_marker_state(marker_id: String, is_visible: bool, world_position: Vector3, label_text: String, color: Color) -> void:
+	var marker_visual: Dictionary = debug_overlay_visuals.get(marker_id, {})
+	var marker_root := marker_visual.get("root") as Node3D
+	if marker_root == null:
+		return
+	marker_root.visible = is_visible and debug_overlay_enabled
+	if not marker_root.visible:
+		if marker_root.has_method("set_label_visible"):
+			marker_root.call("set_label_visible", false)
+		return
+	marker_root.global_position = world_position
+	if marker_root.has_method("set_marker_text"):
+		marker_root.call("set_marker_text", label_text)
+	if marker_root.has_method("set_marker_color"):
+		marker_root.call("set_marker_color", color)
+	if marker_root.has_method("set_label_visible"):
+		marker_root.call("set_label_visible", true)
+
+func _refresh_debug_overlay_visuals() -> void:
+	if debug_overlay_container == null:
+		return
+	debug_overlay_container.visible = debug_overlay_enabled
+	if not debug_overlay_enabled or boat_root == null:
+		for marker_id_variant in debug_overlay_visuals.keys():
+			_set_debug_marker_state(str(marker_id_variant), false, Vector3.ZERO, "", HUD_TEXT_MUTED)
+		return
+	var local_world_position := _get_local_avatar_world_position()
+	var local_probe := boat_root.to_local(local_world_position)
+	var support_projection := NetworkRuntime.get_run_avatar_support_projection(
+		local_probe,
+		maxf(NetworkRuntime.RUN_OVERBOARD_EDGE_MARGIN, RUN_AVATAR_EDGE_EXIT_GRACE_DISTANCE)
+	)
+	var support_valid := bool(support_projection.get("valid", false))
+	var support_local_position: Vector3 = support_projection.get("deck_position", local_probe)
+	if not support_valid:
+		support_local_position = NetworkRuntime.get_nearest_run_avatar_deck_position(local_probe)
+	var support_world_position := boat_root.to_global(support_local_position)
+	var support_planar_gap := Vector2(
+		local_world_position.x - support_world_position.x,
+		local_world_position.z - support_world_position.z
+	).length()
+	var support_vertical_gap := local_world_position.y - support_world_position.y
+	_set_debug_marker_state(
+		"support",
+		true,
+		support_world_position,
+		"Support %s\nPlanar %.2f | Vertical %.2f" % [
+			"OK" if support_valid else "Lost",
+			support_planar_gap,
+			support_vertical_gap,
+		],
+		HUD_TEXT_SUCCESS if support_valid else HUD_TEXT_DANGER
+	)
+	var direct_reboard_target := _get_local_direct_reboard_target()
+	_set_debug_marker_state(
+		"direct_reboard",
+		not direct_reboard_target.is_empty(),
+		direct_reboard_target.get("world_position", support_world_position),
+		"Direct Reboard\nPlanar %.2f | Vertical %.2f" % [
+			float(direct_reboard_target.get("horizontal_distance", 0.0)),
+			float(direct_reboard_target.get("vertical_gap", 0.0)),
+		],
+		HUD_TEXT_SUCCESS
+	)
+	var emergency_reboard_target := _get_local_emergency_reboard_target()
+	_set_debug_marker_state(
+		"emergency_reboard",
+		not emergency_reboard_target.is_empty(),
+		emergency_reboard_target.get("world_position", support_world_position),
+		"Emergency Reboard\nPlanar %.2f | Vertical %.2f" % [
+			float(emergency_reboard_target.get("horizontal_distance", 0.0)),
+			float(emergency_reboard_target.get("vertical_gap", 0.0)),
+		],
+		HUD_TEXT_WARNING
+	)
+
 func _build_wreck_visual() -> void:
 	var ring_mesh_instance := MeshInstance3D.new()
 	ring_mesh_instance.name = "WreckRing"
@@ -2838,12 +2984,13 @@ func _refresh_hud() -> void:
 		run_label.text = "\n".join(risk_lines)
 
 	if interaction_label != null:
-		interaction_label.text = "Inspect: hold Alt (or Tab). %s" % local_hint
+		var debug_hint := " F3 debug %s." % ("on" if debug_overlay_enabled else "off")
+		interaction_label.text = "Inspect: hold Alt (or Tab). %s%s" % [local_hint, debug_hint]
 	if status_label != null:
 		var item_label := "None"
 		if not active_tool_id.is_empty():
 			item_label = _get_run_tool_label(active_tool_id)
-		status_label.text = "%s | Heading %s %03d | Item %s\nQ/E stations | F claim/use | Space jump/climb | B brace | I inventory" % [
+		status_label.text = "%s | Heading %s %03d | Item %s\nQ/E stations | F claim/use | Space jump/climb | B brace | I inventory | F3 debug" % [
 			phase.capitalize(),
 			compass_cardinal,
 			int(round(compass_heading_degrees)),
@@ -5162,6 +5309,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			_set_mouse_capture(not _is_mouse_captured())
 			return
 		if event is InputEventKey and event.pressed and not event.echo:
+			if event.keycode == RUN_DEBUG_OVERLAY_TOGGLE_KEY:
+				_set_debug_overlay_enabled(not debug_overlay_enabled)
+				return
 			match event.keycode:
 				KEY_I:
 					_toggle_inventory_panel()
