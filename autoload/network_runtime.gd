@@ -4804,6 +4804,21 @@ func _get_runtime_boat_visual_basis() -> Basis:
 		float(boat_state.get("buoyancy_roll", 0.0))
 	)).orthonormalized()
 
+
+func _sanitize_run_deck_airborne_world_position(deck_position: Vector3, world_position: Vector3) -> Vector3:
+	var deck_world_position := _run_local_to_world(deck_position)
+	var offset := world_position - deck_world_position
+	var planar_offset := Vector2(offset.x, offset.z)
+	if planar_offset.length() > RUN_OVERBOARD_DIRECT_REBOARD_WORLD_DISTANCE:
+		planar_offset = planar_offset.normalized() * RUN_OVERBOARD_DIRECT_REBOARD_WORLD_DISTANCE
+	var sanitized_world_position := deck_world_position + Vector3(
+		planar_offset.x,
+		clampf(offset.y, RUN_OVERBOARD_TRANSITION_SURFACE_HEIGHT_BUFFER * -1.5, 4.6),
+		planar_offset.y
+	)
+	sanitized_world_position.y = maxf(sanitized_world_position.y, RUN_OVERBOARD_WATER_HEIGHT + 0.02)
+	return sanitized_world_position
+
 func _run_local_to_world(local_position: Vector3) -> Vector3:
 	return _get_runtime_boat_visual_position() + (_get_runtime_boat_visual_basis() * local_position)
 
@@ -5399,10 +5414,14 @@ func _refresh_run_avatar_runtime_fields(peer_id: int) -> void:
 		_clear_climb_state_fields(avatar_state)
 	else:
 		var deck_position := sanitize_run_avatar_deck_position(avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0]))
+		var grounded := bool(avatar_state.get("grounded", true))
 		avatar_state["mode"] = RUN_AVATAR_MODE_DECK
 		avatar_state["deck_position"] = deck_position
-		avatar_state["world_position"] = _run_local_to_world(deck_position)
-		avatar_state["grounded"] = true
+		avatar_state["world_position"] = _run_local_to_world(deck_position) if grounded else _sanitize_run_deck_airborne_world_position(
+			deck_position,
+			avatar_state.get("world_position", _run_local_to_world(deck_position))
+		)
+		avatar_state["grounded"] = grounded
 		_clear_climb_state_fields(avatar_state)
 	run_avatar_state[peer_id] = avatar_state
 
@@ -8936,6 +8955,10 @@ func _receive_run_avatar_state(peer_id: int, deck_position: Vector3, world_posit
 		existing_state["velocity"] = velocity.limit_length(9.5)
 		existing_state["facing_y"] = facing_y
 		existing_state["grounded"] = grounded
+		existing_state["world_position"] = _run_local_to_world(existing_state["deck_position"]) if grounded else _sanitize_run_deck_airborne_world_position(
+			existing_state["deck_position"],
+			world_position
+		)
 		_clear_climb_state_fields(existing_state)
 	run_avatar_state[peer_id] = existing_state
 	_refresh_run_avatar_runtime_fields(peer_id)
