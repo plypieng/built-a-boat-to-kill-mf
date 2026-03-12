@@ -1012,10 +1012,15 @@ const RUN_OVERBOARD_RECOVERY_RANGE := 1.15
 const RUN_OVERBOARD_DIRECT_REBOARD_RANGE := 0.72
 const RUN_OVERBOARD_DIRECT_REBOARD_MAX_HEIGHT := 1.42
 const RUN_OVERBOARD_DIRECT_REBOARD_WORLD_DISTANCE := 1.9
+const RUN_OVERBOARD_DIRECT_REBOARD_EDGE_MARGIN := 0.16
 const RUN_OVERBOARD_EMERGENCY_REBOARD_RANGE := 1.1
 const RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_HEIGHT := 1.8
 const RUN_OVERBOARD_EMERGENCY_REBOARD_WORLD_DISTANCE := 2.45
 const RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_SPEED := 2.1
+const RUN_OVERBOARD_EMERGENCY_REBOARD_EDGE_MARGIN := 0.24
+const RUN_OVERBOARD_TRANSITION_VALIDATE_EDGE_MARGIN := 0.10
+const RUN_OVERBOARD_TRANSITION_SURFACE_HEIGHT_BUFFER := 0.18
+const RUN_OVERBOARD_TRANSITION_WATER_BUFFER := 0.32
 const RUN_OVERBOARD_EDGE_MARGIN := 0.24
 const RUN_OVERBOARD_MIN_STRENGTH := 0.54
 const AVATAR_MAX_HEALTH := 100.0
@@ -3317,13 +3322,12 @@ func request_debug_overboard() -> void:
 func request_local_overboard_transition(world_position: Vector3, velocity: Vector3, facing_y: float) -> void:
 	if session_phase != SESSION_PHASE_RUN:
 		return
-	var sanitized_world_position := _sanitize_overboard_world_position(world_position)
 	var sanitized_velocity := velocity.limit_length(6.8)
 	if multiplayer.is_server():
-		_request_peer_overboard_transition(multiplayer.get_unique_id(), sanitized_world_position, sanitized_velocity, facing_y)
+		_request_peer_overboard_transition(multiplayer.get_unique_id(), world_position, sanitized_velocity, facing_y)
 		return
 
-	server_request_local_overboard_transition.rpc_id(1, sanitized_world_position, sanitized_velocity, facing_y)
+	server_request_local_overboard_transition.rpc_id(1, world_position, sanitized_velocity, facing_y)
 
 func request_place_blueprint_block(cell_value: Variant, block_type: String, rotation_steps: int) -> void:
 	var cell := _normalize_blueprint_cell(cell_value)
@@ -4380,8 +4384,21 @@ func _request_peer_overboard_transition(peer_id: int, world_position: Vector3, v
 	if avatar_state.is_empty() or _is_peer_overboard(peer_id) or _is_peer_downed(peer_id):
 		return
 	var deck_position: Vector3 = avatar_state.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
-	var local_position := _run_world_to_local(_sanitize_overboard_world_position(world_position))
-	local_position.y = deck_position.y
+	var local_position := _run_world_to_local(world_position)
+	var support_projection := get_run_avatar_support_projection(local_position, RUN_OVERBOARD_EDGE_MARGIN)
+	var support_valid := bool(support_projection.get("valid", false))
+	var support_position: Vector3 = support_projection.get("deck_position", deck_position)
+	var support_cleared := not support_valid
+	if support_valid:
+		var support_surface: Dictionary = support_projection.get("surface", {})
+		support_cleared = not _get_surface_access_edge(support_surface, local_position, support_position, RUN_OVERBOARD_TRANSITION_VALIDATE_EDGE_MARGIN).is_empty()
+	var near_water_surface := world_position.y <= RUN_OVERBOARD_WATER_HEIGHT + RUN_OVERBOARD_TRANSITION_WATER_BUFFER
+	var dropped_below_support := world_position.y <= support_position.y - RUN_OVERBOARD_TRANSITION_SURFACE_HEIGHT_BUFFER
+	if not support_cleared and not near_water_surface and not dropped_below_support:
+		return
+	if not support_valid:
+		local_position = _run_world_to_local(_sanitize_overboard_world_position(world_position))
+	local_position.y = support_position.y if support_valid else deck_position.y
 	_set_peer_overboard(peer_id, local_position, velocity, facing_y)
 
 func _force_peer_overboard_for_debug(peer_id: int) -> void:
@@ -4675,33 +4692,95 @@ func _get_runtime_block_navigation_data(block_state: Dictionary) -> Dictionary:
 	var local_position: Vector3 = block_state.get("local_position", Vector3.ZERO)
 	if not block_state.has("local_position"):
 		local_position = _block_cell_to_local_position(blueprint_block.get("cell", [0, 0, 0]))
+	var cell := _cell_to_vector3i(blueprint_block.get("cell", [
+		int(round(local_position.x / maxf(0.001, RUNTIME_BLOCK_SPACING))),
+		int(round(local_position.y / maxf(0.001, RUNTIME_BLOCK_SPACING))),
+		int(round(local_position.z / maxf(0.001, RUNTIME_BLOCK_SPACING))),
+	]))
 	var block_size := Vector3.ONE * RUNTIME_BLOCK_SPACING
 	return {
 		"id": block_id,
 		"type": block_type,
 		"rotation_steps": rotation_steps,
 		"local_position": local_position,
+		"cell": [cell.x, cell.y, cell.z],
 		"size": block_size,
 	}
 
 func get_run_walkable_surfaces() -> Array:
-	var surfaces: Array = []
+	var nav_blocks: Array = []
+	var occupied_cells := {}
 	for block_variant in Array(boat_state.get("runtime_blocks", [])):
 		var block_state: Dictionary = block_variant
 		var block := _get_runtime_block_navigation_data(block_state)
 		if block.is_empty():
 			continue
+		nav_blocks.append(block)
+		occupied_cells[_cell_to_key(block.get("cell", [0, 0, 0]))] = true
+	var surfaces: Array = []
+	for block_variant in nav_blocks:
+		var block: Dictionary = block_variant
 		var local_position: Vector3 = block.get("local_position", Vector3.ZERO)
 		var block_size: Vector3 = block.get("size", Vector3.ONE)
+		var cell := _cell_to_vector3i(block.get("cell", [0, 0, 0]))
 		surfaces.append({
 			"block_id": int(block.get("id", 0)),
 			"block_type": str(block.get("type", "structure")),
+			"cell": [cell.x, cell.y, cell.z],
 			"local_center": local_position,
 			"half_size_x": maxf(0.14, float(block_size.x) * 0.5 - RUN_DECK_SURFACE_MARGIN),
 			"half_size_z": maxf(0.14, float(block_size.z) * 0.5 - RUN_DECK_SURFACE_MARGIN),
 			"deck_y": local_position.y + float(block_size.y) * 0.5 + RUN_AVATAR_STAND_HEIGHT,
+			"edge_neg_x_open": not occupied_cells.has(_cell_to_key([cell.x - 1, cell.y, cell.z])),
+			"edge_pos_x_open": not occupied_cells.has(_cell_to_key([cell.x + 1, cell.y, cell.z])),
+			"edge_neg_z_open": not occupied_cells.has(_cell_to_key([cell.x, cell.y, cell.z - 1])),
+			"edge_pos_z_open": not occupied_cells.has(_cell_to_key([cell.x, cell.y, cell.z + 1])),
+			"top_clear": not occupied_cells.has(_cell_to_key([cell.x, cell.y + 1, cell.z])),
 		})
 	return surfaces
+
+func _get_surface_access_edge(surface: Dictionary, local_position: Vector3, projected_position: Vector3, edge_margin: float) -> Dictionary:
+	if surface.is_empty() or not bool(surface.get("top_clear", true)):
+		return {}
+	var local_center: Vector3 = surface.get("local_center", Vector3.ZERO)
+	var half_size_x := float(surface.get("half_size_x", 0.4))
+	var half_size_z := float(surface.get("half_size_z", 0.4))
+	var deck_y := float(surface.get("deck_y", projected_position.y))
+	var candidates: Array = []
+	var min_x := local_center.x - half_size_x
+	var max_x := local_center.x + half_size_x
+	var min_z := local_center.z - half_size_z
+	var max_z := local_center.z + half_size_z
+	if bool(surface.get("edge_neg_x_open", false)) and absf(projected_position.x - min_x) <= 0.05 and local_position.x <= min_x + edge_margin:
+		candidates.append({
+			"side": "port edge",
+			"distance": absf(local_position.x - min_x),
+			"edge_position": Vector3(min_x, deck_y, clampf(projected_position.z, min_z, max_z)),
+		})
+	if bool(surface.get("edge_pos_x_open", false)) and absf(projected_position.x - max_x) <= 0.05 and local_position.x >= max_x - edge_margin:
+		candidates.append({
+			"side": "starboard edge",
+			"distance": absf(local_position.x - max_x),
+			"edge_position": Vector3(max_x, deck_y, clampf(projected_position.z, min_z, max_z)),
+		})
+	if bool(surface.get("edge_neg_z_open", false)) and absf(projected_position.z - min_z) <= 0.05 and local_position.z <= min_z + edge_margin:
+		candidates.append({
+			"side": "stern edge",
+			"distance": absf(local_position.z - min_z),
+			"edge_position": Vector3(clampf(projected_position.x, min_x, max_x), deck_y, min_z),
+		})
+	if bool(surface.get("edge_pos_z_open", false)) and absf(projected_position.z - max_z) <= 0.05 and local_position.z >= max_z - edge_margin:
+		candidates.append({
+			"side": "bow edge",
+			"distance": absf(local_position.z - max_z),
+			"edge_position": Vector3(clampf(projected_position.x, min_x, max_x), deck_y, max_z),
+		})
+	if candidates.is_empty():
+		return {}
+	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("distance", INF)) < float(b.get("distance", INF))
+	)
+	return candidates[0]
 
 func _project_run_deck_position(deck_position: Vector3, max_snap_distance: float = RUN_DECK_SURFACE_SNAP_DISTANCE, force_nearest: bool = false) -> Dictionary:
 	var surfaces := get_run_walkable_surfaces()
@@ -4784,6 +4863,10 @@ func get_direct_overboard_reboard_target(world_position: Vector3) -> Dictionary:
 	if not bool(projection.get("valid", false)):
 		return {}
 	var deck_position: Vector3 = projection.get("deck_position", local_position)
+	var surface: Dictionary = projection.get("surface", {})
+	var access_edge := _get_surface_access_edge(surface, local_position, deck_position, RUN_OVERBOARD_DIRECT_REBOARD_EDGE_MARGIN)
+	if access_edge.is_empty():
+		return {}
 	var vertical_gap := deck_position.y - local_position.y
 	if vertical_gap < 0.0 or vertical_gap > RUN_OVERBOARD_DIRECT_REBOARD_MAX_HEIGHT:
 		return {}
@@ -4795,7 +4878,7 @@ func get_direct_overboard_reboard_target(world_position: Vector3) -> Dictionary:
 		"world_position": board_world_position,
 		"horizontal_distance": float(projection.get("horizontal_distance", 0.0)),
 		"vertical_gap": vertical_gap,
-		"label": "gunwale",
+		"label": str(access_edge.get("side", "gunwale")),
 		"ready": true,
 	}
 
@@ -4818,6 +4901,10 @@ func get_emergency_overboard_reboard_target(world_position: Vector3) -> Dictiona
 	if not bool(projection.get("valid", false)):
 		return {}
 	var deck_position: Vector3 = projection.get("deck_position", local_position)
+	var surface: Dictionary = projection.get("surface", {})
+	var access_edge := _get_surface_access_edge(surface, local_position, deck_position, RUN_OVERBOARD_EMERGENCY_REBOARD_EDGE_MARGIN)
+	if access_edge.is_empty():
+		return {}
 	var vertical_gap := deck_position.y - local_position.y
 	if vertical_gap < 0.0 or vertical_gap > RUN_OVERBOARD_EMERGENCY_REBOARD_MAX_HEIGHT:
 		return {}
@@ -4829,7 +4916,7 @@ func get_emergency_overboard_reboard_target(world_position: Vector3) -> Dictiona
 		"world_position": board_world_position,
 		"horizontal_distance": float(projection.get("horizontal_distance", 0.0)),
 		"vertical_gap": vertical_gap,
-		"label": "emergency climb",
+		"label": "%s emergency climb" % str(access_edge.get("side", "hull")),
 		"ready": true,
 	}
 

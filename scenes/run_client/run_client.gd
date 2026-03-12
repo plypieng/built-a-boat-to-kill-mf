@@ -3239,19 +3239,34 @@ func _make_runtime_block_visual(block: Dictionary, detached_visual: bool) -> Nod
 
 	return block_node
 
+func _set_runtime_block_collision_enabled(block_node: Node3D, enabled: bool) -> void:
+	if block_node == null:
+		return
+	var collision_body := block_node.get_node_or_null("CollisionBody") as StaticBody3D
+	if collision_body == null:
+		return
+	collision_body.collision_layer = RUN_BLOCK_COLLISION_LAYER if enabled else 0
+	collision_body.collision_mask = RUN_BLOCK_COLLISION_LAYER if enabled else 0
+	var collision_shape := collision_body.get_node_or_null("CollisionShape3D") as CollisionShape3D
+	if collision_shape != null:
+		collision_shape.disabled = not enabled
+
 func _update_runtime_block_visuals() -> void:
 	var runtime_blocks: Array = Array(NetworkRuntime.boat_state.get("runtime_blocks", []))
 	_update_placeholder_boat_visibility(runtime_blocks.is_empty())
+	var seen_block_ids := {}
 	for block_variant in runtime_blocks:
 		var block_state: Dictionary = block_variant
 		var block := _build_runtime_block_render_data(block_state)
 		if block.is_empty():
 			continue
 		var block_id := int(block.get("id", 0))
+		seen_block_ids[block_id] = true
 		var block_node := main_block_visuals.get(block_id) as Node3D
 		if bool(block.get("destroyed", false)) or bool(block.get("detached", false)):
 			if block_node != null:
 				block_node.visible = false
+				_set_runtime_block_collision_enabled(block_node, false)
 			continue
 		if block_node == null:
 			_refresh_runtime_block_visuals()
@@ -3260,6 +3275,7 @@ func _update_runtime_block_visuals() -> void:
 		block_node.position = block_local_position
 		block_node.rotation_degrees.y = float(int(block.get("rotation_steps", 0)) * 90)
 		block_node.visible = true
+		_set_runtime_block_collision_enabled(block_node, true)
 		_apply_runtime_block_visual_style(
 			block_node,
 			NetworkRuntime.get_builder_block_definition(str(block.get("type", "structure"))),
@@ -3267,6 +3283,11 @@ func _update_runtime_block_visuals() -> void:
 			float(block.get("max_hp", 1.0)),
 			false
 		)
+	for block_id_variant in main_block_visuals.keys():
+		if seen_block_ids.has(int(block_id_variant)):
+			continue
+		_refresh_runtime_block_visuals()
+		return
 
 func _update_sinking_chunk_visuals(delta: float) -> void:
 	var sinking_chunks: Array = Array(NetworkRuntime.boat_state.get("sinking_chunks", [])).duplicate(true)
