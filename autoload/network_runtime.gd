@@ -4518,6 +4518,33 @@ func _attempt_overboard_recovery(peer_id: int) -> void:
 		str(recovery_target.get("label", "recovery line")),
 	])
 
+func _try_auto_overboard_reboard(peer_id: int, avatar_state: Dictionary) -> bool:
+	if not multiplayer.is_server():
+		return false
+	if str(avatar_state.get("mode", RUN_AVATAR_MODE_DECK)) != RUN_AVATAR_MODE_OVERBOARD:
+		return false
+	var world_position: Vector3 = avatar_state.get("world_position", boat_state.get("position", Vector3.ZERO))
+	var reboard_target := get_direct_overboard_reboard_target(world_position)
+	if reboard_target.is_empty():
+		reboard_target = get_emergency_overboard_reboard_target(world_position)
+	if reboard_target.is_empty():
+		return false
+	avatar_state["mode"] = RUN_AVATAR_MODE_DECK
+	avatar_state["deck_position"] = reboard_target.get("deck_position", RUN_DECK_SPAWN_POINTS[0])
+	avatar_state["velocity"] = Vector3.ZERO
+	avatar_state["grounded"] = true
+	avatar_state["overboard_attrition_delay"] = AVATAR_OVERBOARD_ATTRITION_DELAY
+	avatar_state["overboard_attrition_timer"] = AVATAR_OVERBOARD_ATTRITION_INTERVAL
+	run_avatar_state[peer_id] = avatar_state
+	_refresh_run_avatar_runtime_fields(peer_id)
+	run_state["recoveries_completed"] = int(run_state.get("recoveries_completed", 0)) + 1
+	_refresh_overboard_run_metrics()
+	_set_status("%s climbed aboard from %s." % [
+		_get_peer_name(peer_id),
+		str(reboard_target.get("label", "hull edge")),
+	])
+	return true
+
 func _attempt_assist_rally(source_peer_id: int, target_peer_id: int) -> void:
 	if session_phase != SESSION_PHASE_RUN:
 		return
@@ -5254,6 +5281,10 @@ func _process_run_avatar_vitals(delta: float) -> void:
 					avatar_state["stamina_exhausted"] = false
 				state_changed = true
 			if avatar_mode == RUN_AVATAR_MODE_OVERBOARD:
+				run_avatar_state[peer_id] = avatar_state
+				if _try_auto_overboard_reboard(peer_id, avatar_state):
+					avatar_changed = true
+					continue
 				var attrition_delay := maxf(0.0, float(avatar_state.get("overboard_attrition_delay", AVATAR_OVERBOARD_ATTRITION_DELAY)) - delta)
 				avatar_state["overboard_attrition_delay"] = attrition_delay
 				state_changed = true

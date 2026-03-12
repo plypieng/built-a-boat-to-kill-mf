@@ -1645,11 +1645,11 @@ func _update_local_run_avatar_controller(delta: float) -> void:
 		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, 0.0, minf(1.0, delta * 10.0))
 	elif overboard:
 		var target_world_position := local_run_avatar_world_position
-		target_world_position.y += _get_local_surface_tread_height_offset()
 		var surface_tread_tilt := _get_local_surface_tread_tilt(target_yaw)
 		_set_local_run_avatar_collision_enabled(true)
 		local_run_avatar_controller.top_level = true
-		local_run_avatar_controller.global_position = target_world_position
+		if local_run_avatar_controller.global_position.distance_to(target_world_position) > 0.02:
+			local_run_avatar_controller.global_position = target_world_position
 		local_run_avatar_controller.rotation.y = lerp_angle(local_run_avatar_controller.rotation.y, target_yaw, minf(1.0, delta * 10.0))
 		local_run_avatar_controller.rotation.x = lerp_angle(local_run_avatar_controller.rotation.x, surface_tread_tilt.x + clampf(local_knockback.z * -0.03 * intensity, -0.18, 0.18), minf(1.0, delta * 9.0))
 		local_run_avatar_controller.rotation.z = lerp_angle(local_run_avatar_controller.rotation.z, surface_tread_tilt.y + clampf(local_knockback.x * 0.04 * intensity, -0.18, 0.18), minf(1.0, delta * 9.0))
@@ -4333,11 +4333,7 @@ func _collect_station_interaction_input(delta: float, input_state: Dictionary) -
 func _collect_action_input(input_state: Dictionary) -> void:
 	var item_use_pressed := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 	if _is_local_off_deck() or _is_local_downed():
-		var recovery_target := _get_local_recovery_target()
-		var recovery_ready := bool(recovery_target.get("ready", false))
-		var direct_reboard_ready := not _get_local_direct_reboard_target().is_empty()
-		var emergency_reboard_ready := not _get_local_emergency_reboard_target().is_empty()
-		var recover_pressed := Input.is_key_pressed(KEY_F) or ((recovery_ready or direct_reboard_ready or emergency_reboard_ready) and Input.is_physical_key_pressed(KEY_SPACE))
+		var recover_pressed := Input.is_key_pressed(KEY_F) or Input.is_physical_key_pressed(KEY_SPACE)
 		if _is_local_overboard() and item_use_pressed and not item_use_request_latched and _get_selected_run_tool_id() == "recover":
 			input_state["request_recover"] = true
 		elif _is_local_overboard() and recover_pressed and not recover_request_latched:
