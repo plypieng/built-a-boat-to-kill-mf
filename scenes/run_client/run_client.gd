@@ -55,6 +55,8 @@ const RUN_AVATAR_FLOOR_SNAP_LENGTH := 0.28
 const RUN_AVATAR_SUPPORT_DROP_THRESHOLD := 0.16
 const RUN_AVATAR_OVERBOARD_ENTRY_BUFFER := 0.14
 const RUN_AVATAR_EDGE_EXIT_GRACE_DISTANCE := 0.42
+const RUN_WATER_ENTRY_RELAND_HORIZONTAL_GRACE := 0.34
+const RUN_WATER_ENTRY_RELAND_VERTICAL_GRACE := 0.52
 const RUN_WATER_ENTRY_GRAVITY := 20.0
 const RUN_WATER_ENTRY_MAX_DURATION := 1.35
 const RUN_WATER_ENTRY_SURFACE_BLEND_HEIGHT := 0.9
@@ -1711,6 +1713,47 @@ func _clamp_local_swim_world_position(world_position: Vector3) -> Vector3:
 
 func _get_boat_world_linear_velocity() -> Vector3:
 	return boat_visual_velocity
+
+func _try_reacquire_local_deck_from_water_entry() -> bool:
+	if local_run_avatar_controller == null:
+		return false
+	var local_probe := boat_root.to_local(local_run_avatar_world_position)
+	var support_projection := NetworkRuntime.get_run_avatar_support_projection(
+		local_probe,
+		maxf(NetworkRuntime.RUN_OVERBOARD_EDGE_MARGIN, RUN_WATER_ENTRY_RELAND_HORIZONTAL_GRACE)
+	)
+	if not bool(support_projection.get("valid", false)):
+		return false
+	var deck_position: Vector3 = support_projection.get("deck_position", local_probe)
+	var deck_world_position := boat_root.to_global(deck_position)
+	var planar_gap := Vector2(
+		local_run_avatar_world_position.x - deck_world_position.x,
+		local_run_avatar_world_position.z - deck_world_position.z
+	).length()
+	var vertical_gap := local_run_avatar_world_position.y - deck_world_position.y
+	if planar_gap > RUN_WATER_ENTRY_RELAND_HORIZONTAL_GRACE:
+		return false
+	if vertical_gap < -0.08 or vertical_gap > RUN_WATER_ENTRY_RELAND_VERTICAL_GRACE:
+		return false
+	if local_run_avatar_velocity.y > 1.2:
+		return false
+	local_water_entry_active = false
+	local_water_entry_elapsed = 0.0
+	local_overboard_transition_pending = false
+	local_off_deck_entry_elapsed = RUN_OFF_DECK_BLEND_DURATION
+	local_surface_tread_active = false
+	local_surface_tread_elapsed = 0.0
+	local_run_avatar_position = deck_position
+	local_run_avatar_world_position = deck_world_position
+	local_run_avatar_grounded = true
+	var local_velocity := boat_root.global_transform.basis.inverse() * local_run_avatar_velocity
+	local_velocity.y = 0.0
+	local_run_avatar_velocity = local_velocity
+	_set_local_run_avatar_collision_enabled(true)
+	local_run_avatar_controller.top_level = false
+	local_run_avatar_controller.position = deck_position
+	local_run_avatar_controller.velocity = local_velocity
+	return true
 
 func _get_local_recovery_target() -> Dictionary:
 	var local_state := _get_local_run_avatar_state()
@@ -3727,6 +3770,8 @@ func _process_local_run_avatar_movement(delta: float) -> void:
 			local_run_avatar_controller.top_level = true
 			local_run_avatar_controller.global_position = local_run_avatar_world_position
 			local_run_avatar_controller.velocity = local_run_avatar_velocity
+		if _try_reacquire_local_deck_from_water_entry():
+			return
 		if local_run_avatar_world_position.y <= surface_height or local_water_entry_elapsed >= RUN_WATER_ENTRY_MAX_DURATION:
 			local_run_avatar_world_position.y = surface_height
 			local_water_entry_active = false
