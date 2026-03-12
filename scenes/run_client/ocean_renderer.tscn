@@ -1,0 +1,18 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://assets/ocean/water/ocean_water.gd" id="1_script"]
+[ext_resource type="Material" path="res://assets/ocean/materials/ocean_water.tres" id="2_material"]
+[ext_resource type="ArrayMesh" path="res://assets/ocean/water/clipmap_high_8k.obj" id="3_mesh"]
+
+[node name="OceanRenderer" type="MeshInstance3D"]
+sorting_offset = 999.0
+material_override = ExtResource("2_material")
+cast_shadow = 0
+extra_cull_margin = 1000.0
+mesh = ExtResource("3_mesh")
+script = ExtResource("1_script")
+map_size = 512
+mesh_quality = 2
+updates_per_second = 30.0
+displacement_updates_per_second = 10
+sea_surface_y = -0.12

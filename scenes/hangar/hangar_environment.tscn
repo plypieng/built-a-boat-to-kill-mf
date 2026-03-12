@@ -1,8 +1,6 @@
-[gd_scene format=3 uid="uid://bjxfuker15nnc"]
+[gd_scene load_steps=8 format=3 uid="uid://bjxfuker15nnc"]
 
-[sub_resource type="Environment" id="hangar_environment_settings"]
-background_mode = 1
-background_color = Color(0.58, 0.72, 0.84, 1)
+[ext_resource type="PackedScene" path="res://scenes/shared/environment/sea_sky_rig.tscn" id="1_rig"]
 
 [sub_resource type="StandardMaterial3D" id="dock_material"]
 albedo_color = Color(0.65, 0.56, 0.42, 1)
@@ -30,59 +28,55 @@ top_radius = 0.18
 bottom_radius = 0.22
 height = 0.95
 
-[node name="HangarEnvironment" type="Node3D" unique_id=541743211]
+[node name="HangarEnvironment" instance=ExtResource("1_rig")]
+preset_id = "hangar_harbor"
+sun_rotation_degrees = Vector3(-42, 32, 0)
+base_sun_energy = 1.18
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=294548886]
-environment = SubResource("hangar_environment_settings")
-
-[node name="SunLight" type="DirectionalLight3D" parent="." unique_id=1840394744]
-transform = Transform3D(0.8480481, -0.3545852, 0.39380676, 0, 0.7431448, 0.6691306, -0.52991927, -0.56745493, 0.63022256, 0, 0, 0)
-light_energy = 1.18
-
-[node name="DockVisual" type="MeshInstance3D" parent="." unique_id=1478663093]
+[node name="DockVisual" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.35, 0)
 material_override = SubResource("dock_material")
 mesh = SubResource("dock_mesh")
 
-[node name="DockBody" type="StaticBody3D" parent="." unique_id=732075932]
+[node name="DockBody" type="StaticBody3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.35, 0)
 
-[node name="CollisionShape3D" type="CollisionShape3D" parent="DockBody" unique_id=1160081446]
+[node name="CollisionShape3D" type="CollisionShape3D" parent="DockBody"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.32534206, 0)
 shape = SubResource("dock_shape")
 
-[node name="Water" type="MeshInstance3D" parent="." unique_id=620655477]
+[node name="Water" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.68, 0)
 material_override = SubResource("water_material")
 mesh = SubResource("water_mesh")
 
-[node name="BollardNorthWest" type="MeshInstance3D" parent="." unique_id=629842252]
+[node name="BollardNorthWest" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -8, 0.12, 8.6)
 material_override = SubResource("bollard_material")
 mesh = SubResource("bollard_mesh")
 
-[node name="BollardNorthEast" type="MeshInstance3D" parent="." unique_id=383760279]
+[node name="BollardNorthEast" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 0.12, 8.6)
 material_override = SubResource("bollard_material")
 mesh = SubResource("bollard_mesh")
 
-[node name="BollardSouthWest" type="MeshInstance3D" parent="." unique_id=1154814371]
+[node name="BollardSouthWest" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -8, 0.12, -7.6)
 material_override = SubResource("bollard_material")
 mesh = SubResource("bollard_mesh")
 
-[node name="BollardSouthEast" type="MeshInstance3D" parent="." unique_id=911456102]
+[node name="BollardSouthEast" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 0.12, -7.6)
 material_override = SubResource("bollard_material")
 mesh = SubResource("bollard_mesh")
 
-[node name="LampLeft" type="OmniLight3D" parent="." unique_id=168529277]
+[node name="LampLeft" type="OmniLight3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -4.6, 2.8, 8.1)
 light_color = Color(1, 0.88, 0.64, 1)
 light_energy = 0.85
 omni_range = 12.0
 
-[node name="LampRight" type="OmniLight3D" parent="." unique_id=1680368111]
+[node name="LampRight" type="OmniLight3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.6, 2.8, 8.1)
 light_color = Color(1, 0.88, 0.64, 1)
 light_energy = 0.85

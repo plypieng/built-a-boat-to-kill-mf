@@ -49,3 +49,26 @@ window/size/viewport_width=1600
 window/size/viewport_height=900
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
+
+[shader_globals]
+
+displacements={
+"type": "sampler2DArray",
+"value": ""
+}
+normals={
+"type": "sampler2DArray",
+"value": ""
+}
+water_color={
+"type": "color",
+"value": Color(0.08, 0.22, 0.3, 1)
+}
+foam_color={
+"type": "color",
+"value": Color(0.92, 0.97, 0.99, 1)
+}
+num_cascades={
+"type": "uint",
+"value": 0
+}

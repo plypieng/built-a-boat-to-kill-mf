@@ -19,6 +19,7 @@ static var motion_cache_ready := false
 
 @export_group("Presentation")
 @export_range(0.5, 2.0, 0.01) var avatar_scale := 1.15
+@export_range(-0.2, 0.4, 0.01) var visual_floor_padding := 0.02
 @export_range(-180.0, 180.0, 0.1) var model_yaw_offset_degrees := 180.0
 @export var nameplate_height := 2.05
 @export var tool_offset := Vector3(0.36, 1.0, -0.10)
@@ -47,6 +48,7 @@ func _ready() -> void:
 	_ensure_nodes()
 	_ensure_avatar_rig()
 	_apply_avatar_scale()
+	_apply_model_height_offset()
 	_apply_model_orientation()
 	_apply_highlight()
 	_apply_tool_color()
@@ -323,9 +325,51 @@ func _apply_avatar_scale() -> void:
 	_ensure_nodes()
 	model_root.scale = Vector3.ONE * avatar_scale
 
+func _apply_model_height_offset() -> void:
+	_ensure_nodes()
+	model_root.position = Vector3(0.0, -_get_model_floor_y() + visual_floor_padding, 0.0)
+
 func _apply_model_orientation() -> void:
 	_ensure_nodes()
 	model_root.rotation_degrees = Vector3(0.0, model_yaw_offset_degrees, 0.0)
+
+func _get_model_floor_y() -> float:
+	if model_root == null:
+		return 0.0
+	var found_mesh := false
+	var floor_y := 0.0
+	for mesh_instance in _collect_model_mesh_instances(model_root):
+		var mesh_aabb := mesh_instance.get_aabb()
+		if mesh_aabb.size.is_zero_approx():
+			continue
+		for corner in _get_aabb_corners(mesh_aabb):
+			var model_space_corner := model_root.to_local(mesh_instance.to_global(corner))
+			if not found_mesh or model_space_corner.y < floor_y:
+				floor_y = model_space_corner.y
+				found_mesh = true
+	return floor_y if found_mesh else 0.0
+
+func _collect_model_mesh_instances(root: Node) -> Array[MeshInstance3D]:
+	var meshes: Array[MeshInstance3D] = []
+	if root is MeshInstance3D:
+		meshes.append(root as MeshInstance3D)
+	for child in root.get_children():
+		meshes.append_array(_collect_model_mesh_instances(child))
+	return meshes
+
+func _get_aabb_corners(bounds: AABB) -> Array[Vector3]:
+	var start := bounds.position
+	var end := bounds.position + bounds.size
+	return [
+		Vector3(start.x, start.y, start.z),
+		Vector3(start.x, start.y, end.z),
+		Vector3(start.x, end.y, start.z),
+		Vector3(start.x, end.y, end.z),
+		Vector3(end.x, start.y, start.z),
+		Vector3(end.x, start.y, end.z),
+		Vector3(end.x, end.y, start.z),
+		Vector3(end.x, end.y, end.z),
+	]
 
 func _apply_highlight() -> void:
 	_ensure_nodes()

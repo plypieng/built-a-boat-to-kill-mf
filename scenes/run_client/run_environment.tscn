@@ -1,25 +1,11 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=3 format=3]
 
-[sub_resource type="Environment" id="run_environment_settings"]
-background_mode = 1
-background_color = Color(0.46, 0.71, 0.92, 1)
+[ext_resource type="PackedScene" path="res://scenes/shared/environment/sea_sky_rig.tscn" id="1_rig"]
+[ext_resource type="PackedScene" path="res://scenes/run_client/ocean_renderer.tscn" id="2_ocean"]
 
-[sub_resource type="PlaneMesh" id="water_mesh"]
-size = Vector2(220, 220)
+[node name="RunEnvironment" instance=ExtResource("1_rig")]
+preset_id = "open_ocean"
+sun_rotation_degrees = Vector3(-42, 28, 0)
+base_sun_energy = 1.0
 
-[sub_resource type="StandardMaterial3D" id="water_material"]
-albedo_color = Color(0.08, 0.43, 0.65, 1)
-roughness = 0.14
-
-[node name="RunEnvironment" type="Node3D"]
-
-[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
-environment = SubResource("run_environment_settings")
-
-[node name="SunLight" type="DirectionalLight3D" parent="."]
-light_energy = 1.2
-rotation_degrees = Vector3(-48, 38, 0)
-
-[node name="Water" type="MeshInstance3D" parent="."]
-mesh = SubResource("water_mesh")
-material_override = SubResource("water_material")
+[node name="Water" parent="." instance=ExtResource("2_ocean")]

@@ -70,4 +70,4 @@ func _apply_capsule_shape() -> void:
 		collision_shape.shape = shape
 	shape.radius = capsule_radius
 	shape.height = capsule_height
-	collision_shape.position = Vector3(0.0, (capsule_height * 0.5) + capsule_radius, 0.0)
+	collision_shape.position = Vector3(0.0, capsule_height * 0.5, 0.0)
